@@ -1,0 +1,62 @@
+# Failure classes and the operators that address them. Diagnose classifies into exactly one
+# class per failed task; Mutate applies operators in listed order until one is promoted.
+# severity weights the ledger ranking (count * severity).
+classes:
+  - id: unsafe_action
+    severity: 5
+    detect: deterministic   # forbidden tool call or hard-fail flag from eval.py
+    description: The agent took an action the evaluator marks as a hard fail (e.g. auto-approved a mismatched invoice, wrote outside the sandbox).
+    operators: [add_escalation_node, add_validator_node, rewrite_tool_desc]
+
+  - id: wrong_tool
+    severity: 4
+    detect: llm
+    description: A tool was called when another tool (or no tool) was correct; or correct tool with wrong arguments.
+    operators: [rewrite_tool_desc, add_fewshots, switch_topology]
+
+  - id: missing_capability
+    severity: 4
+    detect: llm
+    description: The task needed an action no available tool can perform (e.g. no way to run tests, no way to fetch a receipt).
+    operators: [synthesize_tool]
+
+  - id: output_format
+    severity: 3
+    detect: deterministic   # schema validation failure on the final answer
+    description: Final output did not match the required structure or type.
+    operators: [add_validator_node, add_fewshots]
+
+  - id: unsupported_claim
+    severity: 3
+    detect: llm
+    description: The agent asserted a fact or value not grounded in tool results or task context.
+    operators: [add_cite_or_abstain, add_fewshots]
+
+  - id: loop_or_timeout
+    severity: 3
+    detect: deterministic   # step budget or wall-clock exceeded
+    description: The agent repeated actions or never produced a final answer.
+    operators: [add_step_budget_and_critic, switch_topology]
+
+  - id: context_overflow
+    severity: 2
+    detect: deterministic   # token detection rule or truncation error
+    description: Prompt grew beyond the model's useful window; earlier decisions were lost.
+    operators: [add_memory, switch_topology]
+
+  - id: policy_misread
+    severity: 3
+    detect: llm
+    description: The agent misunderstood a rule in goal.md (tolerance, cancellation policy, edge case).
+    operators: [add_fewshots, add_cite_or_abstain]
+
+operators:
+  rewrite_tool_desc:        {touches: tools,        needs_ao: false, note: "contrastive 'use when / do not use when' text from failing traces"}
+  add_fewshots:             {touches: prompts,      needs_ao: false, note: "2-3 failing cases with corrected reasoning, from train split only"}
+  add_validator_node:       {touches: orchestration, needs_ao: false}
+  add_cite_or_abstain:      {touches: prompts,      needs_ao: false}
+  add_step_budget_and_critic: {touches: orchestration, needs_ao: false}
+  add_memory:               {touches: memory,       needs_ao: false}
+  add_escalation_node:      {touches: orchestration, needs_ao: false}
+  switch_topology:          {touches: orchestration, needs_ao: false}
+  synthesize_tool:          {touches: tools,        needs_ao: true,  note: "AO worker writes tool + tests; accept on pytest"}

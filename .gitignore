@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+runs/*
+!runs/final/
+!runs/.gitkeep
+prompts/cache/
+domains/*/generated_tools/*
+!domains/*/generated_tools/.gitkeep
+.pytest_cache/
+.ruff_cache/
+*.mp4

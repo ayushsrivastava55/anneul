@@ -1,0 +1,24 @@
+# Model tiers used by Architect (initial assignment) and Anneal (downshift order).
+# Fill model ids and prices from the keys you receive in Discord. Prices are USD per 1M tokens.
+# Keep this the ONLY place model names live.
+tiers:
+  frontier:
+    provider: frontier          # direct key if TensorMux passthrough is unavailable
+    model: REPLACE_ME           # e.g. the strongest model you have access to
+    price_in: 0.0
+    price_out: 0.0
+  mid:
+    provider: tensormux
+    model: REPLACE_ME           # e.g. a 70B-class open model on TensorMux hosted
+    price_in: 0.0
+    price_out: 0.0
+  cheap:
+    provider: tensormux         # or aigi
+    model: REPLACE_ME           # e.g. an 8B-class model or the AIGI "nano" key
+    price_in: 0.0
+    price_out: 0.0
+downshift_order: [frontier, mid, cheap]
+providers:
+  tensormux: {base_url_env: TENSORMUX_BASE_URL, api_key_env: TENSORMUX_API_KEY}
+  frontier:  {base_url_env: FRONTIER_BASE_URL,  api_key_env: FRONTIER_API_KEY}
+  aigi:      {base_url_env: AIGI_BASE_URL,      api_key_env: AIGI_API_KEY}
