@@ -117,3 +117,22 @@ def test_reject_bad_tool_impl() -> None:
     data["tools"][0]["impl"] = "shell:foo"
     with pytest.raises(ValidationError, match="python:"):
         ToolsManifest.model_validate(data)
+
+
+def test_parse_tools_with_mutates_flag(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "tools.yaml"
+    manifest_path.write_text(
+        "tools:\n"
+        "  - name: get_thing\n"
+        "    description: Read a thing.\n"
+        "    args: {type: object, properties: {}}\n"
+        "    impl: python:pkg.get_thing\n"
+        "  - name: set_thing\n"
+        "    description: Write a thing.\n"
+        "    args: {type: object, properties: {}}\n"
+        "    impl: mcp:server/set_thing\n"
+        "    mutates: true\n"
+    )
+    manifest = load_tools(manifest_path)
+    assert manifest.tools[0].mutates is False
+    assert manifest.tools[1].mutates is True
