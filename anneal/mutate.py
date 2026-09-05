@@ -138,15 +138,16 @@ def _sync_to_neatlogs(name: str, text: str, label: str, version: int) -> None:
     try:
         import neatlogs
 
+        from anneal.tracing import init_tracing
+
+        init_tracing()  # idempotent; the SDK's prompt client reads the key set by init
         commit = f"anneal mutate: local v{version}"
         try:
+            neatlogs.save_as_version(prompt_name=name, content=text, labels=[label],
+                                     commit_message=commit)
+        except neatlogs.PromptNotFoundError:
             neatlogs.create_prompt(name=name, prompt=text, type="text", labels=[label],
                                    commit_message=commit)
-        except neatlogs.PromptClientError:
-            base_url = os.environ.get("NEATLOGS_BASE_URL") or "https://app.neatlogs.com"
-            neatlogs.PromptClient(base_url=base_url, api_key=api_key).save_as_version(
-                prompt_name=name, content=text, labels=[label], commit_message=commit
-            )
     except Exception as exc:  # noqa: BLE001 - registry sync must never break a mutation
         logger.warning("neatlogs prompt sync failed for %s v%s: %s", name, version, exc)
 
