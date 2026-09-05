@@ -1,4 +1,7 @@
-"""Tests for anneal.llm: model resolution and cost math (offline) plus a live smoke (skipped without key)."""
+"""Tests for anneal.llm: model resolution and cost math (offline).
+
+Also a live smoke test, skipped without a key.
+"""
 
 from __future__ import annotations
 
@@ -81,9 +84,12 @@ def test_real_models_yaml_parses() -> None:
     assert models["downshift_order"][0] == "frontier"
 
 
-@pytest.mark.skipif(not os.getenv("TENSORMUX_API_KEY"), reason="ready pending key: TENSORMUX_API_KEY unset")
+@pytest.mark.skipif(
+    not os.getenv("TENSORMUX_API_KEY"), reason="ready pending key: TENSORMUX_API_KEY unset"
+)
 def test_live_hello_world_is_traced_and_costed() -> None:
-    text, usage = llm.chat("mid", [{"role": "user", "content": "Say hello in one word."}], max_tokens=16)
+    messages = [{"role": "user", "content": "Say hello in one word."}]
+    text, usage = llm.chat("mid", messages, max_tokens=16)
     assert text.strip()
     assert usage.tokens_out > 0
     assert usage.latency_ms > 0
