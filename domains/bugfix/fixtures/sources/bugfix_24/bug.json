@@ -1,0 +1,7 @@
+{
+  "module": "word_count.py",
+  "bug_type": "wrong_return_type",
+  "old": "    return counts\n",
+  "new": "    return sorted(counts.items())\n",
+  "note": "a list of pairs is returned where a dict is expected"
+}

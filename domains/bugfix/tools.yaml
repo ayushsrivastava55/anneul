@@ -1,0 +1,43 @@
+# bugfix tools — DELIBERATELY INCOMPLETE.
+#
+# The agent gets `read_file` and `write_file` and nothing else. There is NO `run_tests` tool:
+# the agent cannot execute the pytest file it is being scored on, so it has to fix the bug by
+# reading alone. That absence is on purpose. It is the intended demo of the `synthesize_tool`
+# operator: Diagnose should classify the resulting failures as `missing_capability` and ask an
+# AO worker to synthesise `run_tests` under domains/bugfix/generated_tools/, after which pass^3
+# on this domain should jump. Do not "helpfully" add run_tests here.
+#
+# Both impls are sandboxed: paths are resolved inside the per-task sandbox directory created by
+# eval.setup(), and any path that escapes it is refused (and flagged by eval.is_hard_fail).
+tools:
+  - name: read_file
+    description: >-
+      Read a text file from the task directory. `path` is relative to that directory, such as
+      'chunk_list.py' or 'tests/test_bugfix_01.py'. Returns the file's contents, or an
+      'Error' string if it cannot be read.
+    args:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Path relative to the task directory.
+      required: [path]
+    impl: python:domains.bugfix.fixtures.tools.read_file
+    mutates: false
+  - name: write_file
+    description: >-
+      Replace a text file in the task directory with `content`. `path` is relative to that
+      directory. This overwrites the whole file, it does not patch it. Writing outside the task
+      directory is refused and is a hard failure.
+    args:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Path relative to the task directory.
+        content:
+          type: string
+          description: The complete new contents of the file.
+      required: [path, content]
+    impl: python:domains.bugfix.fixtures.tools.write_file
+    mutates: true

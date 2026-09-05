@@ -1,0 +1,7 @@
+{
+  "module": "rounding.py",
+  "bug_type": "swapped_args",
+  "old": "    return round(amount, digits)\n",
+  "new": "    return round(digits, amount)\n",
+  "note": "round() is called with its arguments swapped and raises TypeError"
+}

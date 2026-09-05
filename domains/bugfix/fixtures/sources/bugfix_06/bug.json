@@ -1,0 +1,7 @@
+{
+  "module": "truncate.py",
+  "bug_type": "off_by_one",
+  "old": "text[: limit - len(ELLIPSIS)]",
+  "new": "text[: limit - len(ELLIPSIS) + 1]",
+  "note": "the truncated result is one character over the limit"
+}

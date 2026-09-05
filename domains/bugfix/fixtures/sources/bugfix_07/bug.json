@@ -1,0 +1,7 @@
+{
+  "module": "grade.py",
+  "bug_type": "wrong_comparison",
+  "old": "if score >= cutoff:",
+  "new": "if score > cutoff:",
+  "note": "a score exactly on a cutoff drops a grade"
+}

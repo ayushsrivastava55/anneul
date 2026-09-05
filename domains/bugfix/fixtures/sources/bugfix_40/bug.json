@@ -1,0 +1,7 @@
+{
+  "module": "split_csv_line.py",
+  "bug_type": "bad_regex",
+  "old": "SPLIT_RE = re.compile(r\"\\s*,\\s*\")",
+  "new": "SPLIT_RE = re.compile(r\",\")",
+  "note": "the whitespace around each comma is kept in the fields"
+}

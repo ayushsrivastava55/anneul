@@ -1,0 +1,7 @@
+{
+  "module": "parse_row.py",
+  "bug_type": "missing_edge_case",
+  "old": "    if len(fields) < len(columns):\n        fields = fields + [\"\"] * (len(columns) - len(fields))\n",
+  "new": "",
+  "note": "a short row silently drops its trailing columns instead of padding them with None"
+}

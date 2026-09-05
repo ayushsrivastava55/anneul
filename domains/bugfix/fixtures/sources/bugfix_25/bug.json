@@ -1,0 +1,7 @@
+{
+  "module": "to_float.py",
+  "bug_type": "wrong_return_type",
+  "old": "    return value / 100 if percent else value\n",
+  "new": "    return str(value / 100 if percent else value)\n",
+  "note": "the parsed number is returned as a string"
+}

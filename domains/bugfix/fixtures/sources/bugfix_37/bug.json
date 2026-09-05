@@ -1,0 +1,7 @@
+{
+  "module": "hashtags.py",
+  "bug_type": "bad_regex",
+  "old": "HASHTAG_RE = re.compile(r\"#(\\w+)\")",
+  "new": "HASHTAG_RE = re.compile(r\"#(\\w*)\")",
+  "note": "a bare # matches as an empty hashtag"
+}
