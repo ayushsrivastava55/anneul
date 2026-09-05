@@ -5,11 +5,11 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 ## AO sessions (project `anneal`)
 | Session | Task | Branch | State |
 |---|---|---|---|
-| anneal-1 | 0.1 scaffold | ao/scaffold | running |
-| anneal-2 | 0.2 spec-models | ao/spec-models | running |
-| anneal-3 | 0.3 llm-gateway | ao/llm-gateway | running |
-| anneal-4 | 0.4 tracing | ao/tracing | running |
-| anneal-5 | 0.5 domain-airline | ao/domain-airline | running |
+| anneal-1 | 0.1 scaffold | ao/scaffold | blocked: Bash permission prompt (needs_input) |
+| anneal-2 | 0.2 spec-models | ao/spec-models | blocked: Bash permission prompt (needs_input) |
+| anneal-3 | 0.3 llm-gateway | ao/llm-gateway | blocked: Bash permission prompt (needs_input) |
+| anneal-4 | 0.4 tracing | ao/tracing | blocked: Bash permission prompt (needs_input) |
+| anneal-5 | 0.5 domain-airline | ao/domain-airline | blocked: Bash permission prompt (needs_input) |
 
 ## Done
 - [x] orchestrator: git init, kit imported, AO desktop installed, daemon up, project registered
@@ -18,6 +18,7 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 ## Blockers
 - keys: `.env` exists but every value is empty (TensorMux, Neatlogs, Dodo, AIGI). `specs/models.yaml` still REPLACE_ME.
 - GitHub remote: `gh repo create` was blocked in the orchestrator session; `origin` is a local bare repo at ~/.ao/data/anneal-origin.git. Swap to GitHub before submission.
+- Worker sessions anneal-1..5 are paused on Claude Code Bash permission prompts; AO project permission mode is accept-edits. Orchestrator cannot escalate (classifier blocks bypass-permissions and approval API). Needs the user.
 - Docker daemon down (only needed for the optional TensorMux OSS gateway).
 
 ## Decisions
