@@ -253,6 +253,23 @@ def test_planner_executor_replans_once(domain: Domain) -> None:
     assert len(client.calls) == 6
 
 
+def test_planner_executor_keeps_result_when_budget_ends_before_verdict(domain: Domain) -> None:
+    task = _task(domain, "airline-43")
+    actions = task.expected["actions"]
+    spec = planner_spec(domain)
+    spec.step_budget = 1 + len(actions) + 1  # plan + executor turns, no room for the verdict
+    turns: list[Turn] = ["1. Do it"]
+    turns += [tool_turn(a["name"], **a["kwargs"]) for a in actions]
+    turns += ["Finished.", "DONE"]
+    client = FakeClient(turns)
+
+    result = run_task(spec, task, domain, client_factory=factory_for(client))
+
+    assert result.output == "Finished."
+    assert result.hit_step_budget is True
+    assert domain.eval.score(task, result.output) == 1.0
+
+
 # --- output parsing + schema -------------------------------------------------------------
 
 

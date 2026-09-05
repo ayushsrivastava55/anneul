@@ -11,6 +11,11 @@ Topologies implemented here:
 - ``planner_executor``: the planner emits a numbered step list as text, the executor runs
   it with tools, the planner may replan once (any reply other than ``DONE``).
 
+Schema check: a node's ``schema_ref`` names an attribute on the domain's eval module holding a
+JSON-schema dict (e.g. ``schema_ref: output_schema`` -> ``eval.output_schema``). When the
+attribute is absent no check runs; when present and the final output fails the shallow
+required/type check, ``schema_error`` is set.
+
 Tool dispatch: ``python:<module>.<fn>`` via ``importlib.import_module`` on the dotted module
 path; ``mcp:`` raises ``NotImplementedError`` for now. Arguments get a shallow
 required/type check against the JSON schema in tools.yaml (``jsonschema`` is not a
@@ -313,7 +318,10 @@ class _Run:
                 "content": f"Executor result:\n{result}\n\nReply DONE or a revised plan.",
             }
         )
-        verdict = self.run_node(planner, self.call_llm, planner, plan_msgs).get("content") or ""
+        try:
+            verdict = self.run_node(planner, self.call_llm, planner, plan_msgs).get("content") or ""
+        except StepBudgetExceeded:
+            return result  # the executor already finished; keep its answer
         if verdict.strip().upper().startswith("DONE"):
             return result
         exec_msgs.append({"role": "user", "content": f"Revised plan:\n{verdict}"})
