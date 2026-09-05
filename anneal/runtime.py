@@ -10,6 +10,20 @@ Topologies implemented here:
   ``max_steps`` / ``spec.step_budget`` is hit.
 - ``planner_executor``: the planner emits a numbered step list as text, the executor runs
   it with tools, the planner may replan once (any reply other than ``DONE``).
+- ``critic_loop``: the executor answers, the critic replies PASS/FAIL plus one line of
+  reasoning, and on FAIL the executor retries with the critique appended -- at most
+  ``CRITIC_MAX_RETRIES`` (2) retries, and never past the critic node's ``max_steps``.
+- ``tool_router``: the router names one tool group, then the executor runs with only that
+  group's tools. Groups come from the tools manifest: an explicit ``group`` field when the
+  manifest carries one, else a cluster by name prefix, else a single ``all`` group. The
+  choice is recorded in the trace (``{"tool": "route", ...}``) and as a span tag.
+
+Optional roles, available to every topology and costing no LLM steps:
+
+- ``validator``: re-checks the final output against its ``schema_ref`` and, when the check
+  fails, forces exactly one executor retry with the problem appended.
+- ``escalate``: when the run ends without an accepted answer (budget exhausted, or the critic
+  still failing after its retries), the final output becomes ``{"escalate": <reason>}``.
 
 Schema check: a node's ``schema_ref`` names an attribute on the domain's eval module holding a
 JSON-schema dict (e.g. ``schema_ref: output_schema`` -> ``eval.output_schema``). When the
@@ -27,6 +41,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -64,6 +79,15 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "validator": "You are the validator. Check the output against the required schema.",
     "escalate": "You escalate. Reply with a JSON object {\"escalate\": <reason>}.",
 }
+
+# critic_loop: how many times the executor may retry after a FAIL verdict.
+CRITIC_MAX_RETRIES = 2
+# First word of a critic reply that counts as "the answer is good enough".
+CRITIC_PASS_WORDS = frozenset({"PASS", "PASSED", "APPROVE", "APPROVED", "OK", "YES", "DONE"})
+# tool_router: the pseudo tool name under which the routing decision lands in the trace.
+ROUTE_TRACE_TOOL = "route"
+# tool_router: group name used when the manifest yields no meaningful clustering.
+SINGLE_GROUP = "all"
 
 
 @dataclass
@@ -194,6 +218,55 @@ def _load_prompt_ref(ref: str) -> str | None:
         return None
 
 
+def _critic_passed(verdict: str) -> bool:
+    """True when the critic's first word approves the answer (PASS / APPROVE / ...)."""
+    match = re.match(r"\W*([A-Za-z]+)", verdict or "")
+    return bool(match) and match.group(1).upper() in CRITIC_PASS_WORDS
+
+
+# --- tool groups (tool_router) ----------------------------------------------------------------
+
+
+def _tool_group(tool: ToolSpec) -> str | None:
+    """Explicit group for ``tool``: a ``group`` field on the manifest entry, if any."""
+    explicit = getattr(tool, "group", None)
+    if explicit is None:
+        explicit = (getattr(tool, "model_extra", None) or {}).get("group")
+    return str(explicit) if explicit else None
+
+
+def tool_groups(tools: list[ToolSpec], allowed: list[str] | None = None) -> dict[str, list[str]]:
+    """Group tool names for the router, restricted to ``allowed`` when given.
+
+    An explicit ``group`` field on every entry wins; otherwise tools cluster by the prefix
+    before the first underscore. When that clustering yields fewer than two groups there is
+    nothing to route between, so everything lands in a single ``SINGLE_GROUP``.
+    """
+    names = [t.name for t in tools if allowed is None or t.name in allowed]
+    if not names:
+        return {}
+    groups: dict[str, list[str]] = {}
+    for tool in tools:
+        if tool.name not in names:
+            continue
+        key = _tool_group(tool) or tool.name.split("_", 1)[0] or SINGLE_GROUP
+        groups.setdefault(key, []).append(tool.name)
+    return groups if len(groups) > 1 else {SINGLE_GROUP: names}
+
+
+def _group_listing(groups: dict[str, list[str]]) -> str:
+    return "\n".join(f"- {name}: {', '.join(members)}" for name, members in groups.items())
+
+
+def _match_group(reply: str, groups: dict[str, list[str]]) -> str:
+    """Pick the group the router named; falls back to the first group when nothing matches."""
+    words = {w.lower() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", reply or "")}
+    for name in groups:
+        if name.lower() in words:
+            return name
+    return next(iter(groups))
+
+
 def _task_message(task: Any) -> str:
     payload = getattr(task, "input", task)
     return payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
@@ -214,6 +287,10 @@ class _Run:
     steps: int = 0
     hit_step_budget: bool = False
     _clients: dict[str, Any] = field(default_factory=dict)
+    # last (executor node, message list) seen by ``react``; the validator retries with it
+    _last_exec: tuple[Node, list[dict[str, Any]]] | None = None
+    # set by critic_loop when it gives up; turned into an escalation by ``execute``
+    _escalate_reason: str | None = None
 
     def __post_init__(self) -> None:
         self.tools_by_name = {t.name: t for t in self.domain.tools.tools}
@@ -223,6 +300,10 @@ class _Run:
             if node.role == role:
                 return node
         raise ValueError(f"spec {self.spec.id} has no {role} node")
+
+    def optional_node(self, role: str) -> Node | None:
+        """The first node with ``role``, or None when the spec has none."""
+        return next((n for n in self.spec.nodes if n.role == role), None)
 
     def _client(self, tier: str) -> Any:
         if tier not in self._clients:
@@ -274,6 +355,8 @@ class _Run:
 
     def react(self, node: Node, messages: list[dict[str, Any]]) -> str | None:
         """ReAct loop for ``node``. Returns the final text, or None when a budget stopped it."""
+        if node.role == "executor":
+            self._last_exec = (node, messages)
         for _ in range(node.max_steps):
             message = self.call_llm(node, messages)
             calls = message.get("tool_calls") or []
@@ -327,18 +410,152 @@ class _Run:
         exec_msgs.append({"role": "user", "content": f"Revised plan:\n{verdict}"})
         return self.run_node(executor, self.react, executor, exec_msgs)
 
+    def run_critic_loop(self, task: Any) -> str | None:
+        executor, critic = self.node("executor"), self.node("critic")
+        exec_msgs = [
+            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "user", "content": _task_message(task)},
+        ]
+        critic_msgs = [
+            {"role": "system", "content": _system_prompt(critic, self.domain)},
+            {"role": "user", "content": _task_message(task)},
+        ]
+        result = self.run_node(executor, self.react, executor, exec_msgs)
+        for _ in range(min(CRITIC_MAX_RETRIES, critic.max_steps)):
+            if result is None:
+                return None  # the executor ran out of budget; nothing to judge
+            critic_msgs.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Executor answer:\n{result}\n\n"
+                        "Reply PASS or FAIL followed by one line of reasoning."
+                    ),
+                }
+            )
+            try:
+                verdict = self.run_node(critic, self.call_llm, critic, critic_msgs)
+            except StepBudgetExceeded:
+                return result  # the executor already answered; keep it
+            reason = verdict.get("content") or ""
+            if _critic_passed(reason):
+                return result
+            exec_msgs.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"The critic rejected your answer:\n{reason}\n\n"
+                        "Address it and reply with a corrected final answer."
+                    ),
+                }
+            )
+            result = self.run_node(executor, self.react, executor, exec_msgs)
+        # every retry used up and the last verdict was still a FAIL
+        self._escalate_reason = f"critic still failing after {CRITIC_MAX_RETRIES} retries"
+        return result
+
+    def run_tool_router(self, task: Any) -> str | None:
+        router, executor = self.node("router"), self.node("executor")
+        groups = tool_groups(self.domain.tools.tools, executor.tools)
+        if not groups:  # the executor declares no tools: nothing to route
+            messages = self._exec_messages(executor, task)
+            return self.run_node(executor, self.react, executor, messages)
+        route_msgs = [
+            {"role": "system", "content": _system_prompt(router, self.domain)},
+            {
+                "role": "user",
+                "content": (
+                    f"{_task_message(task)}\n\nTool groups:\n{_group_listing(groups)}\n\n"
+                    "Reply with the name of the single group best suited to this task."
+                ),
+            },
+        ]
+        reply = self.run_node(router, self.call_llm, router, route_msgs).get("content") or ""
+        chosen = self.record_route(router, reply, groups)
+        scoped = executor.model_copy(update={"tools": groups[chosen]})
+        return self.run_node(scoped, self.react, scoped, self._exec_messages(scoped, task))
+
+    def _exec_messages(self, executor: Node, task: Any) -> list[dict[str, Any]]:
+        return [
+            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "user", "content": _task_message(task)},
+        ]
+
+    def record_route(self, router: Node, reply: str, groups: dict[str, list[str]]) -> str:
+        """Resolve the router's reply to a group; record it in the trace and as a span tag."""
+        chosen = _match_group(reply, groups)
+        tracing.node_span(f"route.{router.name}", tags=[f"tool_group:{chosen}"])(lambda: chosen)()
+        self.trace.append(
+            {
+                "tool": ROUTE_TRACE_TOOL,
+                "args": {"groups": list(groups), "reply": reply},
+                "result": chosen,
+            }
+        )
+        return chosen
+
+    # --- optional roles ---
+
+    def validate(self, result: str | None) -> str | None:
+        """Optional validator node: schema re-check of the final output, at most one retry.
+
+        Deterministic (``shallow_check`` against the validator's ``schema_ref``), so it costs
+        no LLM step of its own; the forced retry is an ordinary executor turn.
+        """
+        node = self.optional_node("validator")
+        if node is None or result is None or self._last_exec is None or not node.schema_ref:
+            return result
+        schema = getattr(self.domain.eval, node.schema_ref, None)
+        if not isinstance(schema, dict):
+            return result
+        problem = shallow_check(parse_output(result), schema)
+        if problem is None:
+            return result
+        executor, messages = self._last_exec
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Your answer does not match the required output schema: {problem}. "
+                    "Reply again with a corrected final answer."
+                ),
+            }
+        )
+        try:
+            retry = self.run_node(executor, self.react, executor, messages)
+        except StepBudgetExceeded:
+            self.hit_step_budget = True
+            return result
+        return result if retry is None else retry
+
+    def escalate_output(self, reason: str) -> str | None:
+        """``{"escalate": reason}`` when the spec has an escalate node, else None."""
+        node = self.optional_node("escalate")
+        if node is None:
+            return None
+        return str(self.run_node(node, lambda: json.dumps({"escalate": reason})))
+
     def execute(self, task: Any) -> str | None:
         runners = {
             "single": self.run_single,
             "planner_executor": self.run_planner_executor,
+            "critic_loop": self.run_critic_loop,
+            "tool_router": self.run_tool_router,
         }
         if self.spec.topology not in runners:
             raise NotImplementedError(f"topology {self.spec.topology!r} is not implemented yet")
         try:
-            return runners[self.spec.topology](task)
+            result = runners[self.spec.topology](task)
         except StepBudgetExceeded:
             self.hit_step_budget = True
-            return None
+            result = None
+        result = self.validate(result)
+        reason = self._escalate_reason or (
+            "no answer produced within the step budget" if result is None else None
+        )
+        if reason is None:
+            return result
+        return self.escalate_output(reason) or result
 
 
 def _parse_args(raw: Any) -> tuple[dict[str, Any], str | None]:
