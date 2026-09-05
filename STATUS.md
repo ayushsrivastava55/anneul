@@ -27,3 +27,4 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 
 ## Latest numbers
 none
+- [x] 0.1 scaffold - uv project (pyproject, hatchling, uv.lock), anneal/ package with __version__, config.env() via python-dotenv, argparse+rich cli stub (`uv run anneal`), ruff (100 cols, py312, fixtures excluded), pytest (3 tests). `uv run ruff check . && uv run pytest` green.
