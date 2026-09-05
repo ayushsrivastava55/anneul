@@ -5,9 +5,9 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 ## AO sessions (project `anneal`)
 | Session | Task | Branch | State |
 |---|---|---|---|
-| anneal-10 | 0.1 scaffold | ao/scaffold | working |
-| anneal-6 | 0.2 spec-models | ao/spec-models | done, accept green (10 tests), awaiting scaffold merge |
-| anneal-7 | 0.3 llm-gateway | ao/llm-gateway | done, accept green (9 pass, live test skipped: no key) |
+| anneal-10 | 0.1 scaffold | ao/scaffold | merged to main (3 tests) |
+| anneal-6 | 0.2 spec-models | ao/spec-models | merged to main (10 tests) |
+| anneal-7 | 0.3 llm-gateway | ao/llm-gateway | merged to main (9 pass, live skipped: no key) |
 | anneal-8 | 0.4 tracing | ao/tracing | working |
 | anneal-9 | 0.5 domain-airline | ao/domain-airline | working |
 
