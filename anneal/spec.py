@@ -66,6 +66,9 @@ class HarnessSpec(BaseModel):
     memory: MemoryCfg = Field(default_factory=MemoryCfg)
     nodes: list[Node] = Field(min_length=1)
     lineage: Lineage | None = None
+    # tool name -> description override written by mutate.rewrite_tool_desc. The runtime
+    # prefers these over tools.yaml descriptions when building the tool schema for a node.
+    tool_overrides: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_nodes(self) -> HarnessSpec:
