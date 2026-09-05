@@ -1,6 +1,6 @@
 # STATUS
 
-Phase: 1 (core loop, H2–H8) — six workers running; Phase 0 fully merged (49 tests). H2 checkpoint (traced call through TensorMux visible in Neatlogs) is blocked on keys.
+Phase: 1 core loop merged (architect, runtime, runner, diagnose, mutate, gate). cli-run in flight for the H8 row. Phase 2 and 3 tasks running in parallel. H2 checkpoint (traced call through TensorMux visible in Neatlogs) is blocked on keys.
 
 ## AO sessions (project `anneal`)
 | Session | Task | Branch | State |
@@ -14,13 +14,23 @@ Phase: 1 (core loop, H2–H8) — six workers running; Phase 0 fully merged (49 
 ## Phase 1 AO sessions
 | Session | Task | Branch | State |
 |---|---|---|---|
-| anneal-11 | 1.1 runtime-single | ao/runtime-single | stalled once, nudged, working |
+| anneal-11 | 1.1 runtime-single | ao/runtime-single | merged to main |
 | anneal-12 | 1.2 runner | ao/runner | merged to main |
 | anneal-13 | 1.3 architect (+ prompts.py) | ao/architect | merged to main |
-| anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | stalled once, nudged, working |
-| anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | stalled once, nudged, working |
+| anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | merged to main |
+| anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | merged to main |
 | anneal-15 | 1.6 gate | ao/gate | merged to main |
-| — | 1.7 cli-run | — | held until runtime + runner merge |
+| anneal-23 | 1.7 cli-run | ao/cli-run | working (H8 checkpoint) |
+
+## Parallel track (no dependency on the core loop)
+| Session | Task | Branch | State |
+|---|---|---|---|
+| anneal-17 | 2.4 ao-spawn | ao/ao-spawn | working |
+| anneal-18 | 3.1 domain-invoice | ao/domain-invoice | working |
+| anneal-19 | 3.2 domain-bugfix | ao/domain-bugfix | working |
+| anneal-24 | 2.3 topo-critic | ao/topo-critic | working |
+| anneal-25 | 2.2 ops-full | ao/ops-full | working |
+| anneal-26 | 2.1 taxonomy-full | ao/taxonomy-full | working |
 | anneal-7 | llm-gateway follow-up: complete() + tests/fakes.py | ao/llm-gateway | merged to main (57 tests) |
 
 Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
@@ -42,7 +52,7 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - Merge order: scaffold first (owns pyproject), then rebase the other four onto it.
 
 ## Latest numbers
-main: 99 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 139 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
