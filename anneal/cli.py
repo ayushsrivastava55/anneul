@@ -36,11 +36,6 @@ DEFAULT_CANDIDATES = len(architect.MENU)
 PLATEAU = 2
 DASH = "—"
 
-REPORT_COLUMNS = (
-    "Domain", "Stage", "Holdout acc", "pass^3", "Gen gap",
-    "Hard fails", "$/task", "p95 ms", "p (gate)",
-)
-
 
 class BudgetExceeded(RuntimeError):
     """Raised by the budgeted run wrapper once cumulative spend reaches ``--budget``."""
@@ -286,10 +281,14 @@ def _progress(console: Console, rows: list[dict[str, Any]]) -> None:
 
 
 def cmd_run(args: argparse.Namespace, console: Console) -> int:
+    domain = load_domain(args.domain_dir)
+    runs_dir = Path(args.runs_dir)
     loop = Loop(
-        domain=load_domain(args.domain_dir),
-        runs_dir=Path(args.runs_dir),
-        ledger=Path(args.ledger) if args.ledger else Path(args.runs_dir) / "ledger.json",
+        domain=domain,
+        runs_dir=runs_dir,
+        # per domain: diagnose keys issues on (class, node) and node names repeat across
+        # domains, so one shared ledger would merge unrelated issues and their operators_tried.
+        ledger=Path(args.ledger) if args.ledger else runs_dir / domain.name / "ledger.json",
         budget=float(args.budget),
         concurrency=args.concurrency,
         seed=args.seed,
@@ -329,7 +328,7 @@ def cmd_run(args: argparse.Namespace, console: Console) -> int:
 
 def _summaries(runs_dir: Path) -> list[dict[str, Any]]:
     paths = sorted(
-        runs_dir.glob("*/*/summary.json"),
+        (p for p in runs_dir.glob("*/*/summary.json") if p.parent.name.isdigit()),
         key=lambda p: (p.parent.parent.name, int(p.parent.name)),
     )
     return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
@@ -345,20 +344,33 @@ def cmd_gate(args: argparse.Namespace, console: Console) -> int:
     for body in summaries:
         latest[body["domain"]] = body
     gate.clear_cache()
-    for body in latest.values():
+    try:
+        _regate(latest.values(), args, console)
+    except BudgetExceeded as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 1
+    return 0
+
+
+def _regate(bodies: Any, args: argparse.Namespace, console: Console) -> None:
+    for body in bodies:
         if not body.get("candidate_id"):
             console.print(f"[yellow]{body['domain']}: no gated candidate to re-run[/yellow]")
             continue
         domain = load_domain(body["domain_path"])
         specs = body["specs"]
+        loop = Loop(
+            domain=domain, runs_dir=Path(args.runs_dir),
+            ledger=Path(args.runs_dir) / domain.name / "ledger.json",
+            budget=float(args.budget), concurrency=args.concurrency, seed=0,
+        )
         result = gate.gate(
             spec.load_spec(specs[body["incumbent_id"]]),
             spec.load_spec(specs[body["candidate_id"]]),
-            domain, body["iteration"], Path(args.runs_dir),
+            domain, body["iteration"], Path(args.runs_dir), run=_budgeted_run(loop),
         )
         console.print(f"{body['domain']} i{body['iteration']}: "
                       f"{result.reason} (p={result.p:.3f})")
-    return 0
 
 
 def _num(value: Any, digits: int = 3) -> str:
@@ -375,13 +387,18 @@ def _row(domain: str, stage: str, block: dict[str, Any], search: dict[str, Any],
     return "| " + " | ".join(cells) + " |"
 
 
-def _winner_block(body: dict[str, Any]) -> tuple[dict[str, Any], Any]:
-    """The metrics of the spec that survived this iteration, plus its gate p-value."""
-    winner = body["winner_id"]
-    for key in ("candidate", "incumbent"):
-        block = body.get(key) or {}
-        if block.get("candidate_id") == winner:
-            return block, (body.get("p_value") if key == "candidate" else None)
+def _winner_block(summaries: list[dict[str, Any]]) -> tuple[dict[str, Any], Any]:
+    """Metrics of the spec that survived the last iteration, plus its gate p-value.
+
+    The final iteration may have halted before the gate ran (budget, no operator left), so
+    walk backwards to the most recent summary that actually scored the winning spec.
+    """
+    winner = summaries[-1]["winner_id"]
+    for body in reversed(summaries):
+        for key in ("candidate", "incumbent"):
+            block = body.get(key) or {}
+            if block.get("candidate_id") == winner:
+                return block, (body.get("p_value") if key == "candidate" else None)
     return {}, None
 
 
@@ -394,7 +411,7 @@ def _report_rows(summaries: list[dict[str, Any]]) -> list[str]:
             _row(name, "iteration 0", first.get("incumbent") or {},
                  first["search"].get(first["incumbent_id"], {}), None)
         )
-        block, p = _winner_block(last)
+        block, p = _winner_block(got)
         rows.append(_row(name, "final", block, last["search"].get(last["winner_id"], {}), p))
     return rows
 
@@ -431,6 +448,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name in ("gate", "report"):
         sub.choices[name].add_argument("runs_dir", help="runs/ directory to read")
+    sub.choices["gate"].add_argument("--budget", type=float, default=DEFAULT_BUDGET,
+                                     metavar="USD")
+    sub.choices["gate"].add_argument("--concurrency", type=int, default=None)
     return parser
 
 

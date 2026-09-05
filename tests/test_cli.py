@@ -132,14 +132,7 @@ def loop(monkeypatch, tmp_path):
 
 
 def run_cli(tmp_path, *extra: str) -> int:
-    return cli.main(
-        [
-            "run", "domains/airline",
-            "--runs-dir", str(tmp_path / "runs"),
-            "--ledger", str(tmp_path / "ledger.json"),
-            *extra,
-        ]
-    )
+    return cli.main(["run", "domains/airline", "--runs-dir", str(tmp_path / "runs"), *extra])
 
 
 def summaries(tmp_path) -> list[dict[str, Any]]:
@@ -173,6 +166,13 @@ def test_best_candidate_by_mean_score_becomes_incumbent(loop, tmp_path):
     loop.state["scores"] = {"cand-1": 0.2, "cand-2": 0.8, "cand-3": 0.4}
     run_cli(tmp_path, "--iterations", "1")
     assert summaries(tmp_path)[0]["incumbent_id"] == "cand-2"
+
+
+def test_ledger_defaults_to_one_file_per_domain(loop, tmp_path):
+    """diagnose keys issues on (class, node) and node names repeat across domains."""
+    run_cli(tmp_path, "--iterations", "1")
+    assert (tmp_path / "runs" / "airline" / "ledger.json").is_file()
+    assert not (tmp_path / "runs" / "ledger.json").exists()
 
 
 def test_cli_never_names_the_reserved_split(loop, tmp_path):
@@ -324,6 +324,25 @@ def test_report_renders_rows_generated_by_a_real_run(loop, tmp_path, capsys):
     assert cli.main(["report", str(tmp_path / "runs")]) == 0
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
     assert [ln.split("|")[2].strip() for ln in lines] == ["iteration 0", "final"]
+
+
+def test_report_final_row_survives_a_halted_last_iteration(loop, tmp_path, capsys):
+    """The run ends on no_candidate, whose summary has no gate blocks; the row is still real."""
+    loop.state["classes"] = ["wrong_tool"]
+    run_cli(tmp_path, "--iterations", "5")
+    assert summaries(tmp_path)[-1]["decision"] == "no_candidate"
+    cli.main(["report", str(tmp_path / "runs")])
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    assert lines[1].split("|")[3].strip() == "0.900"
+
+
+def test_report_ignores_non_numeric_dirs(tmp_path, capsys):
+    root = tmp_path / "runs"
+    write_summary(root, 0)
+    junk = root / "airline" / "latest"
+    junk.mkdir()
+    (junk / "summary.json").write_text("not json")
+    assert cli.main(["report", str(root)]) == 0
 
 
 def test_report_on_an_empty_dir_is_an_error(tmp_path):
