@@ -29,7 +29,7 @@ Phase: 1 core loop merged (architect, runtime, runner, diagnose, mutate, gate). 
 | anneal-18 | 3.1 domain-invoice | ao/domain-invoice | merged |
 | anneal-19 | 3.2 domain-bugfix | ao/domain-bugfix | working |
 | anneal-30 | 2.5 synth-tool | ao/synth-tool | merged |
-| anneal-28 | 3.3 anneal-stage + 3.4 cost-attrib | ao/anneal-stage | working |
+| anneal-28 | 3.3 anneal-stage + 3.4 cost-attrib | ao/anneal-stage | merged |
 | anneal-29 | 4.1 dodo-credits + 4.2 dodo-ship | ao/dodo-credits | working |
 | anneal-31 | 4.3 dashboard | ao/dashboard | working |
 | anneal-24 | 2.3 topo-critic | ao/topo-critic | merged |
@@ -61,8 +61,14 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 3 API-probe sessions spawned by the ao-spawn worker, 1 selftest session (anneal-27) spawned by
 Anneal itself through anneal/ao.py, plus 5 killed first-attempt sessions kept for history.
 
+## Holdout hygiene note
+`grep -rn holdout anneal/` matches two lines in `anneal/anneal.py`: a docstring and the call
+`gate.run_holdout(...)`. Both are the *function name*, not the split. The split literal
+(`HOLDOUT_SPLIT`) exists only in `anneal/gate.py`, and the annealing stage evaluates by
+delegating to gate. This is deliberate and compliant; do not "fix" it by inlining the split.
+
 ## Latest numbers
-main: 269 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 284 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
