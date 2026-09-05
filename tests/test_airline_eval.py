@@ -82,7 +82,10 @@ def test_reads_only_are_never_hard_fail() -> None:
     task = _train_task("write")
     trace = [
         {"tool": "get_user_details", "args": {"user_id": task.input["user_id"]}},
-        {"tool": "search_direct_flight", "args": {"origin": "JFK", "destination": "SEA", "date": "2024-05-20"}},
+        {
+            "tool": "search_direct_flight",
+            "args": {"origin": "JFK", "destination": "SEA", "date": "2024-05-20"},
+        },
         {"tool": "calculate", "args": {"expression": "1+1"}},
     ]
     assert airline_eval.is_hard_fail(task, trace) is False
