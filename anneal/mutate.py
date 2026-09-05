@@ -4,9 +4,10 @@
 the issue's class that has not been tried yet, applies it, and returns a new validated
 ``HarnessSpec`` with lineage set. One operator per call so the gate result is attributable.
 
-Operators here only edit the spec (tool description overrides) and prompts (new version
-saved with label ``staging``). Evidence comes from the ``search`` split only; few-shot
-material comes from the ``train`` split only. This module never reads any other split.
+Operators edit the spec (tool description overrides, nodes, topology, step budget, memory)
+and prompts (a new version saved with label ``staging``, node refs bumped to it).
+Evidence comes from the ``search`` split only; few-shot material comes from the ``train``
+split only. This module never reads any other split.
 """
 
 from __future__ import annotations
@@ -42,13 +43,27 @@ MAX_EVIDENCE = 5
 MAX_TRAIN_TASKS = 6
 MAX_CHARS_PER_ITEM = 2500
 
+# Structural knobs used by the orchestration operators. Steps a new node may take are added
+# to the spec's step budget so appending a node never starves the nodes already there.
+VALIDATOR_STEPS = 1
+ESCALATE_STEPS = 1
+PLANNER_STEPS = 2
+CRITIC_STEPS = 4
+STEP_BUDGET_BUMP = 4  # add_step_budget_and_critic raises the budget once, on top of the node
+DEFAULT_SCHEMA_REF = "output_schema"  # attribute the runtime looks up on the eval module
+ESCALATE_TOOL = "escalate"
+MEMORY_TOP_K = 3
+MEMORY_TOP_K_STEP = 2
+# switch_topology only ever moves right along this ladder.
+TOPOLOGY_LADDER = ("single", "planner_executor", "critic_loop")
+
 Issue = dict[str, Any]
 Evidence = list[dict[str, Any]]
 Operator = Callable[[HarnessSpec, Issue, Evidence, Any, Any], HarnessSpec]
 
 
 class NoOperatorAvailable(RuntimeError):
-    """Every operator mapped to the issue's class has been tried or is not implemented."""
+    """No operator for the issue's class is implemented, untried and applicable to this spec."""
 
 
 # --- taxonomy ------------------------------------------------------------------------
@@ -322,11 +337,304 @@ def add_fewshots(
     return HarnessSpec.model_validate(data)
 
 
+# --- structural helpers (shared by the orchestration operators) -------------------------
+
+NODE_PROMPTS: dict[str, str] = {
+    "validator": (
+        "You are the validator. You call no tools. You are given the task and the agent's "
+        "final answer. Check the answer against the required output structure and against the "
+        "values in the task. Reply with the corrected final answer in the required structure, "
+        "or the answer unchanged when it is already correct."
+    ),
+    "critic": (
+        "You are the critic. You call no tools. Review the executor's tool calls and draft "
+        "answer against the goal. Reply APPROVE on the first line when the work is complete "
+        "and policy-safe; otherwise reply REVISE followed by the concrete corrections the "
+        "executor must make, one per line."
+    ),
+    "escalate": (
+        "You are the escalation node. You are reached when a rule blocks the action the user "
+        'asked for. Reply with a JSON object {"escalate": <reason>} naming the rule that was '
+        "hit and what a human needs to decide. Never perform the blocked action yourself."
+    ),
+    "planner": (
+        "You are the planner. You call no tools. Write a short numbered plan of tool calls and "
+        "checks for an executor that has the tools, flagging every rule that must be verified "
+        "before a write. When asked to review the executor's result, reply exactly DONE if the "
+        "task is complete, otherwise a revised numbered plan."
+    ),
+}
+
+CITE_SECTION = """## Cite or abstain
+
+Every value you assert in the final answer must come from a tool result or from the task text.
+Name the source next to the value, e.g. `(from get_reservation_details)`. If nothing you have
+read supports a value, do not guess it: say you could not verify it and state what is missing.
+"""
+
+
+def _prompt_name(spec: HarnessSpec, role: str) -> str:
+    """Prompt name for a new ``role`` node, in the same namespace as the spec's first node."""
+    name, _version = split_ref(spec.nodes[0].system_prompt_ref)
+    head, sep, _tail = name.rpartition("/")
+    return f"{head}/{role}" if sep else role
+
+
+def _role_node(spec: HarnessSpec, role: str) -> Node | None:
+    for node in spec.nodes:
+        if node.role == role:
+            return node
+    return None
+
+
+def _append_node(
+    spec: HarnessSpec,
+    op: str,
+    *,
+    name: str,
+    role: str,
+    model_tier: str,
+    prompt_text: str,
+    tools: list[str] | None = None,
+    max_steps: int = 1,
+    schema_ref: str | None = None,
+) -> dict[str, Any]:
+    """Spec data with a new node appended, its prompt saved and the step budget raised."""
+    if any(node.name == name for node in spec.nodes):
+        raise NoOperatorAvailable(f"{op}: spec {spec.id!r} already has a node named {name!r}")
+    prompt = _prompt_name(spec, role)
+    version = PROMPT_STORE.save_version(prompt, prompt_text, STAGING_LABEL)
+    data = spec.model_dump()
+    data["nodes"] = [
+        *data["nodes"],
+        {
+            "name": name,
+            "role": role,
+            "model_tier": model_tier,
+            "system_prompt_ref": f"{prompt}@v{version}",
+            "tools": list(tools or []),
+            "max_steps": max_steps,
+            "schema_ref": schema_ref,
+        },
+    ]
+    data["step_budget"] = int(data["step_budget"]) + max_steps
+    return data
+
+
+def _bump_prompt(data: dict[str, Any], node: Node, section: str, op: str) -> None:
+    """Append ``section`` to ``node``'s prompt as a new version and repoint the node at it."""
+    name, version = split_ref(node.system_prompt_ref)
+    base = PROMPT_STORE.get(node.system_prompt_ref)
+    if section.strip() in base:
+        raise NoOperatorAvailable(f"{op}: node {node.name!r} already carries this instruction")
+    text = f"{base.rstrip()}\n\n{section}" if base.strip() else section
+    new_version = PROMPT_STORE.save_version(name, text, STAGING_LABEL, at_least=version + 1)
+    for entry in data["nodes"]:
+        if entry["name"] == node.name:
+            entry["system_prompt_ref"] = f"{name}@v{new_version}"
+
+
+# --- operator: add_validator_node -------------------------------------------------------
+
+
+def add_validator_node(
+    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
+) -> HarnessSpec:
+    """Append a cheap validator node that checks the final output against the schema."""
+    data = _append_node(
+        spec,
+        "add_validator_node",
+        name="validator",
+        role="validator",
+        model_tier="cheap",
+        prompt_text=NODE_PROMPTS["validator"],
+        max_steps=VALIDATOR_STEPS,
+        schema_ref=str(issue.get("schema_ref") or DEFAULT_SCHEMA_REF),
+    )
+    return HarnessSpec.model_validate(data)
+
+
+# --- operator: add_cite_or_abstain ------------------------------------------------------
+
+
+def add_cite_or_abstain(
+    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
+) -> HarnessSpec:
+    """Require every asserted value to cite a tool result, or to abstain (prompt edit)."""
+    node = _node(spec, issue["node"])
+    data = spec.model_dump()
+    _bump_prompt(data, node, CITE_SECTION, "add_cite_or_abstain")
+    return HarnessSpec.model_validate(data)
+
+
+# --- operator: add_step_budget_and_critic -----------------------------------------------
+
+
+def add_step_budget_and_critic(
+    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
+) -> HarnessSpec:
+    """Raise the step budget once and add a critic, moving to the critic_loop topology."""
+    data = _append_node(
+        spec,
+        "add_step_budget_and_critic",
+        name="critic",
+        role="critic",
+        model_tier=TIER,
+        prompt_text=NODE_PROMPTS["critic"],
+        max_steps=CRITIC_STEPS,
+    )
+    data["step_budget"] = int(data["step_budget"]) + STEP_BUDGET_BUMP
+    data["topology"] = "critic_loop"  # the critic only runs when the topology reviews
+    return HarnessSpec.model_validate(data)
+
+
+# --- operator: add_memory ---------------------------------------------------------------
+
+
+def add_memory(
+    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
+) -> HarnessSpec:
+    """Turn on episodic memory, or widen ``top_k`` when it is already on."""
+    data = spec.model_dump()
+    memory = dict(data["memory"])
+    if memory.get("enabled") and memory.get("kind") == "episodic":
+        memory["top_k"] = int(memory.get("top_k") or 0) + MEMORY_TOP_K_STEP
+    else:
+        memory.update(
+            enabled=True, kind="episodic", top_k=int(issue.get("top_k") or MEMORY_TOP_K)
+        )
+    data["memory"] = memory
+    return HarnessSpec.model_validate(data)
+
+
+# --- operator: add_escalation_node ------------------------------------------------------
+
+
+def _escalation_tools(issue: Issue, domain: Any) -> list[str]:
+    """The hand-off tool: the issue's explicit one, else a manifest tool named ``escalate``."""
+    explicit = issue.get("tool")
+    if explicit:
+        return [str(explicit)]
+    manifest = getattr(domain, "tools", None)
+    names = [tool.name for tool in getattr(manifest, "tools", []) or []]
+    return [ESCALATE_TOOL] if ESCALATE_TOOL in names else []
+
+
+def _escalation_section(tools: list[str]) -> str:
+    hand_off = f"call `{tools[0]}`" if tools else "hand the task to the escalate node"
+    return (
+        "## Escalate instead of acting\n\n"
+        "Before any action that changes state, check the rules in the goal that cover it. "
+        f"If a rule is not satisfied, or you cannot verify that it is, do not act: {hand_off} "
+        "and state which rule was hit and what a human must decide. Escalating is always "
+        "preferred to acting on an unverified assumption.\n"
+    )
+
+
+def add_escalation_node(
+    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
+) -> HarnessSpec:
+    """Append an escalate node and tell the failing node to use it when a rule fails."""
+    node = _node(spec, issue["node"])
+    tools = _escalation_tools(issue, domain)
+    data = _append_node(
+        spec,
+        "add_escalation_node",
+        name="escalate",
+        role="escalate",
+        model_tier="cheap",
+        prompt_text=NODE_PROMPTS["escalate"],
+        tools=tools,
+        max_steps=ESCALATE_STEPS,
+    )
+    _bump_prompt(data, node, _escalation_section(tools), "add_escalation_node")
+    return HarnessSpec.model_validate(data)
+
+
+# --- operator: switch_topology ----------------------------------------------------------
+
+
+def _carry_prompt(spec: HarnessSpec, role: str) -> str:
+    """New node's prompt: its role brief plus the executor's prompt carried across."""
+    brief = NODE_PROMPTS[role]
+    executor = _role_node(spec, "executor")
+    base = PROMPT_STORE.get(executor.system_prompt_ref) if executor else ""
+    if not base.strip():
+        return brief
+    return f"{brief}\n\n## Context carried from the executor prompt\n\n{base.rstrip()}\n"
+
+
+def _grow_to(spec: HarnessSpec, target: str) -> dict[str, Any]:
+    """Spec data holding the node ``target`` needs, added only when it is not there yet."""
+    role, max_steps = {
+        "planner_executor": ("planner", PLANNER_STEPS),
+        "critic_loop": ("critic", CRITIC_STEPS),
+    }[target]
+    if _role_node(spec, role) is not None:
+        return spec.model_dump()
+    return _append_node(
+        spec,
+        "switch_topology",
+        name=role,
+        role=role,
+        model_tier=TIER,
+        prompt_text=_carry_prompt(spec, role),
+        max_steps=max_steps,
+    )
+
+
+def switch_topology(
+    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
+) -> HarnessSpec:
+    """Move one rung right along single -> planner_executor -> critic_loop. Never back."""
+    if spec.topology not in TOPOLOGY_LADDER:
+        raise NoOperatorAvailable(
+            f"switch_topology: topology {spec.topology!r} is not on the ladder "
+            f"{list(TOPOLOGY_LADDER)}"
+        )
+    index = TOPOLOGY_LADDER.index(spec.topology) + 1
+    if index >= len(TOPOLOGY_LADDER):
+        raise NoOperatorAvailable(
+            f"switch_topology: {spec.topology!r} is the top of the ladder; the ladder never "
+            "moves back down"
+        )
+    target = TOPOLOGY_LADDER[index]
+    data = _grow_to(spec, target)
+    data["topology"] = target
+    return HarnessSpec.model_validate(data)
+
+
+# --- operator: synthesize_tool (deferred) -----------------------------------------------
+
+
+def synthesize_tool(
+    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
+) -> HarnessSpec:
+    """Deferred: an AO worker writes the missing tool plus its tests, accepted on pytest."""
+    raise NotImplementedError(
+        "synthesize_tool is task 2.5: it spawns an AO worker session (anneal/ao.py) to write "
+        "the missing tool and its tests, then accepts the mutation on pytest. Not implemented "
+        "in task 2.2 (ops-full)."
+    )
+
+
 # --- registry + apply ---------------------------------------------------------------------
 
 OPERATORS: dict[str, Operator] = {
     "rewrite_tool_desc": rewrite_tool_desc,
     "add_fewshots": add_fewshots,
+    "add_validator_node": add_validator_node,
+    "add_cite_or_abstain": add_cite_or_abstain,
+    "add_step_budget_and_critic": add_step_budget_and_critic,
+    "add_memory": add_memory,
+    "add_escalation_node": add_escalation_node,
+    "switch_topology": switch_topology,
+}
+
+# Operators declared in the taxonomy that are deliberately not registered yet: select_operator
+# skips them, so a class whose only operator is deferred raises NoOperatorAvailable.
+DEFERRED: dict[str, str] = {
+    "synthesize_tool": "task 2.5 - AO worker writes the tool + tests (anneal/ao.py)",
 }
 
 
