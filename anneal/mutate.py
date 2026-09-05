@@ -24,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from anneal import llm
+from anneal import llm, prompts
 from anneal.spec import HarnessSpec, Node
 from anneal.tracing import llm_span
 
@@ -73,18 +73,11 @@ def operators_for(failure_class: str, path: Path | str | None = None) -> list[st
 
 
 # --- prompt versions -------------------------------------------------------------------
-# Minimal local version writer matching the anneal/prompts.py contract
-# (prompts/<name>/<version>.md). Swap PROMPT_STORE for anneal.prompts once it lands.
+# Reads go through anneal.prompts. Writes use a local writer so the new version is always
+# above the node's current ref (anneal.prompts.save_version only does latest+1, which
+# would yield v1 when the v1 file is missing locally).
 
-_REF_RE = re.compile(r"^(?P<name>.+)@v(?P<version>\d+)$")
-
-
-def split_ref(ref: str) -> tuple[str, int]:
-    """``name@vN`` -> (name, N)."""
-    match = _REF_RE.match(ref)
-    if not match:
-        raise ValueError(f"system_prompt_ref must look like name@vN, got {ref!r}")
-    return match.group("name"), int(match.group("version"))
+split_ref = prompts.parse_ref
 
 
 class LocalPromptStore:
@@ -98,9 +91,10 @@ class LocalPromptStore:
 
     def get(self, ref: str) -> str:
         """Prompt text for ``name@vN``; empty string when the file does not exist yet."""
-        name, version = split_ref(ref)
-        path = self._dir(name) / f"v{version}.md"
-        return path.read_text() if path.exists() else ""
+        try:
+            return prompts.get_prompt(ref, root=self.root)
+        except FileNotFoundError:
+            return ""
 
     def versions(self, name: str) -> list[int]:
         folder = self._dir(name)
