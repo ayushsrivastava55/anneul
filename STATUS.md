@@ -28,7 +28,7 @@ Phase: 1 core loop merged (architect, runtime, runner, diagnose, mutate, gate). 
 | anneal-17 | 2.4 ao-spawn | ao/ao-spawn | merged; selftest spawned real session anneal-27 |
 | anneal-18 | 3.1 domain-invoice | ao/domain-invoice | merged |
 | anneal-19 | 3.2 domain-bugfix | ao/domain-bugfix | working |
-| anneal-30 | 2.5 synth-tool | ao/synth-tool | working |
+| anneal-30 | 2.5 synth-tool | ao/synth-tool | merged |
 | anneal-28 | 3.3 anneal-stage + 3.4 cost-attrib | ao/anneal-stage | working |
 | anneal-29 | 4.1 dodo-credits + 4.2 dodo-ship | ao/dodo-credits | working |
 | anneal-31 | 4.3 dashboard | ao/dashboard | working |
@@ -46,6 +46,7 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - [x] 0.4 anneal-8 - anneal/tracing.py: init_tracing (once, no-op without key), wrap_client, node_span/tool_span/llm_span (sync+async, offline pass-through), run-context tags via contextvar, flush/shutdown, current_trace_id; tests/test_tracing.py (15 tests); smoke `uv run python -m anneal.tracing`
 
 ## Blockers
+- Generated tools are carried on a spec but not yet loadable at runtime (load_domain reads only tools.yaml). Fix sent to anneal-11; gates the end-to-end tool-synthesis demo.
 - Clock: machine time was 6:50 PM IST when Phase 1 spawned; docs say the window opens 9:30 PM IST. User to confirm which is right.
 - keys: `.env` exists but every value is empty (TensorMux, Neatlogs, Dodo, AIGI). `specs/models.yaml` still REPLACE_ME.
 - GitHub remote: `gh repo create` was blocked in the orchestrator session; `origin` is a local bare repo at ~/.ao/data/anneal-origin.git. Swap to GitHub before submission.
@@ -61,7 +62,7 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 Anneal itself through anneal/ao.py, plus 5 killed first-attempt sessions kept for history.
 
 ## Latest numbers
-main: 254 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 269 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
