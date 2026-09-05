@@ -180,6 +180,8 @@ def test_critic_loop_scores_one_on_airline_task(domain: Domain) -> None:
     assert [s["tool"] for s in result.trace] == [a["name"] for a in task.expected["actions"]]
     assert result.steps == len(task.expected["actions"]) + 2
     assert result.schema_error is False
+    # the critic reviews the executor's tool calls, not just its final text
+    assert "update_reservation_passengers" in texts(client.calls[-1])
 
 
 # --- tool groups ---------------------------------------------------------------------------

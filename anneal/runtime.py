@@ -10,8 +10,9 @@ Topologies implemented here:
   ``max_steps`` / ``spec.step_budget`` is hit.
 - ``planner_executor``: the planner emits a numbered step list as text, the executor runs
   it with tools, the planner may replan once (any reply other than ``DONE``).
-- ``critic_loop``: the executor answers, the critic replies PASS/FAIL plus one line of
-  reasoning, and on FAIL the executor retries with the critique appended -- at most
+- ``critic_loop``: the executor answers, the critic sees the tool calls made since the last
+  critique plus that answer and replies PASS/FAIL with one line of reasoning; on FAIL the
+  executor retries with the critique appended -- at most
   ``CRITIC_MAX_RETRIES`` (2) retries, and never past the critic node's ``max_steps``.
 - ``tool_router``: the router names one tool group, then the executor runs with only that
   group's tools. Groups come from the tools manifest: an explicit ``group`` field when the
@@ -218,6 +219,15 @@ def _load_prompt_ref(ref: str) -> str | None:
         return None
 
 
+def _trace_digest(steps: list[dict[str, Any]], limit: int = 400) -> str:
+    """Render trace entries as ``- name(args) -> result`` lines for a reviewing node."""
+    lines = [
+        f"- {s['tool']}({json.dumps(s['args'], default=str)}) -> {str(s['result'])[:limit]}"
+        for s in steps
+    ]
+    return "\n".join(lines) or "- (none)"
+
+
 def _critic_passed(verdict: str) -> bool:
     """True when the critic's first word approves the answer (PASS / APPROVE / ...)."""
     match = re.match(r"\W*([A-Za-z]+)", verdict or "")
@@ -420,6 +430,7 @@ class _Run:
             {"role": "system", "content": _system_prompt(critic, self.domain)},
             {"role": "user", "content": _task_message(task)},
         ]
+        seen = 0  # trace entries already shown to the critic
         result = self.run_node(executor, self.react, executor, exec_msgs)
         for _ in range(min(CRITIC_MAX_RETRIES, critic.max_steps)):
             if result is None:
@@ -428,11 +439,13 @@ class _Run:
                 {
                     "role": "user",
                     "content": (
+                        f"Executor tool calls:\n{_trace_digest(self.trace[seen:])}\n\n"
                         f"Executor answer:\n{result}\n\n"
                         "Reply PASS or FAIL followed by one line of reasoning."
                     ),
                 }
             )
+            seen = len(self.trace)
             try:
                 verdict = self.run_node(critic, self.call_llm, critic, critic_msgs)
             except StepBudgetExceeded:
@@ -451,7 +464,8 @@ class _Run:
             )
             result = self.run_node(executor, self.react, executor, exec_msgs)
         # every retry used up and the last verdict was still a FAIL
-        self._escalate_reason = f"critic still failing after {CRITIC_MAX_RETRIES} retries"
+        if result is not None:
+            self._escalate_reason = f"critic still failing after {CRITIC_MAX_RETRIES} retries"
         return result
 
     def run_tool_router(self, task: Any) -> str | None:
