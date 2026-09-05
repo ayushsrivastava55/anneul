@@ -70,21 +70,18 @@ def test_every_taxonomy_operator_is_registered_or_deferred() -> None:
     declared = set(TAXONOMY["operators"])
     assert set(OPERATORS) | set(DEFERRED) == declared
     assert not set(OPERATORS) & set(DEFERRED), "an operator is either implemented or deferred"
-    assert set(DEFERRED) == {"synthesize_tool"}
+    assert DEFERRED == {}, f"nothing is deferred any more, found {sorted(DEFERRED)}"
     for cls in TAXONOMY["classes"]:
         for name in cls["operators"]:
             assert name in OPERATORS or name in DEFERRED, f"{cls['id']}: {name} is unaccounted for"
 
 
-def test_synthesize_tool_is_deferred_to_task_2_5(store: LocalPromptStore) -> None:
-    with pytest.raises(NotImplementedError, match="2.5"):
-        mutate.synthesize_tool(make_spec(), make_issue("missing_capability"), [], None, None)
-
-
-def test_missing_capability_has_no_available_operator(store: LocalPromptStore) -> None:
+def test_missing_capability_selects_synthesize_tool(store: LocalPromptStore) -> None:
+    # The operator itself (AO worker, generated tool, adoption) is covered offline in
+    # tests/test_synth_tool.py; here we only pin the taxonomy -> operator routing.
+    assert mutate.select_operator(make_issue("missing_capability")) == "synthesize_tool"
     with pytest.raises(mutate.NoOperatorAvailable):
-        apply(make_spec(), make_issue("missing_capability"), EVIDENCE, make_domain(),
-              client=FakeClient(turns=[]))
+        mutate.select_operator(make_issue("missing_capability", ["synthesize_tool"]))
 
 
 # --- add_validator_node -------------------------------------------------------------------
