@@ -1,0 +1,18 @@
+# Minimal pyproject for the domain-airline session. The scaffold session owns the real one;
+# the orchestrator merges scaffold first and rebases this on top.
+[project]
+name = "anneal"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2", "pyyaml>=6"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["domains/airline/fixtures/tau_airline"]

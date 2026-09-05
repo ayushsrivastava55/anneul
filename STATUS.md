@@ -9,7 +9,7 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 | anneal-2 | 0.2 spec-models | ao/spec-models | blocked: Bash permission prompt (needs_input) |
 | anneal-3 | 0.3 llm-gateway | ao/llm-gateway | blocked: Bash permission prompt (needs_input) |
 | anneal-4 | 0.4 tracing | ao/tracing | blocked: Bash permission prompt (needs_input) |
-| anneal-5 | 0.5 domain-airline | ao/domain-airline | blocked: Bash permission prompt (needs_input) |
+| anneal-5 | 0.5 domain-airline | ao/domain-airline | done, awaiting merge |
 
 ## Done
 - [x] orchestrator: git init, kit imported, AO desktop installed, daemon up, project registered
@@ -27,3 +27,4 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 
 ## Latest numbers
 none
+- [x] 0.5 domain-airline - domains/airline/{goal.md,tools.yaml,eval.py,tasks.jsonl}: tau-bench airline vendored package made standalone, module-level DB store + 13 python: tools, hash-equality eval with setup/score/is_hard_fail, 40 tasks split 20/10/10 seed 0, tests in tests/test_airline_eval.py
