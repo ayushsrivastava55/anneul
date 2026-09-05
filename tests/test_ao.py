@@ -50,7 +50,9 @@ class FakeRun:
 
     def __call__(self, cmd, *, cwd=None, timeout_s=None):
         self.calls.append((list(cmd), str(cwd) if cwd else None))
-        rc, out = self.script.get(self.key(cmd), (0, ""))
+        key = self.key(cmd)
+        # default: a resolved tip is NOT an ancestor of main, i.e. the agent did commit
+        rc, out = self.script.get(key, (1, "") if key.startswith("merge-base") else (0, ""))
         if isinstance(rc, Exception):
             raise rc
         return subprocess.CompletedProcess(cmd, rc, out, "")
@@ -62,6 +64,8 @@ class FakeRun:
             rest = cmd[3:]  # drop ["git", "-C", <repo>]
             if rest[0] == "rev-parse":
                 return f"rev-parse:{rest[-1]}"
+            if rest[0] == "merge-base":
+                return f"merge-base:{rest[-2]}"
             return ":".join(rest[:2])
         return "accept"
 
@@ -184,6 +188,8 @@ def test_waits_while_the_branch_only_holds_the_base_commit(
             return subprocess.CompletedProcess(
                 cmd, 0, SHA_EMPTY if counter["n"] <= 2 else SHA_WORK, ""
             )
+        if key == f"merge-base:{SHA_EMPTY}":
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         return fake(cmd, cwd=cwd, timeout_s=timeout_s)
 
     monkeypatch.setattr(ao, "_run", script)
@@ -193,6 +199,24 @@ def test_waits_while_the_branch_only_holds_the_base_commit(
     assert len(no_sleep) == 2, "should have polled twice before the commit appeared"
     assert len(fake.ran("pytest")) == 1, "accept must run exactly once, on the new sha"
     assert fake.ran("worktree add")[0][-1] == SHA_WORK
+
+
+def test_a_tip_reachable_from_main_is_not_accepted_even_with_a_different_sha(
+    monkeypatch: pytest.MonkeyPatch, no_sleep: list[float]
+) -> None:
+    """AO may branch from a commit newer than our local main; ancestry, not equality, decides."""
+    fake = FakeRun(
+        {
+            "rev-parse:main^{commit}": (0, SHA_EMPTY),
+            "rev-parse:ao/tool-add^{commit}": (0, SHA_WORK),
+            f"merge-base:{SHA_WORK}": (0, ""),  # tip already reachable from main => no work
+        }
+    )
+    ok, out = wait(fake, monkeypatch, timeout_s=25.0)
+
+    assert ok is False
+    assert "timed out" in out
+    assert not fake.ran("pytest")
 
 
 def test_accept_failure_returns_false_with_output_and_still_removes_the_worktree(

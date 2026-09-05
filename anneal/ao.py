@@ -282,6 +282,18 @@ def _branch_tip(branch: str, repo: Path) -> str | None:
     return _rev_parse(branch, repo) or _rev_parse(f"origin/{branch}", repo)
 
 
+def _is_workless(sha: str, base_ref: str, repo: Path) -> bool:
+    """True when `sha` is already reachable from `base_ref`, i.e. the agent has not committed.
+
+    AO creates the session branch at spawn time, so a branch tip that is an ancestor of the
+    base branch carries no work yet. Comparing shas alone is not enough: AO may branch from a
+    commit newer than our local `base_ref`.
+    """
+    if sha == _rev_parse(base_ref, repo):
+        return True
+    return _git(["merge-base", "--is-ancestor", sha, base_ref], repo).returncode == 0
+
+
 def _run_accept(sha: str, accept_cmd: list[str], repo: Path, timeout_s: float) -> tuple[bool, str]:
     """Check `sha` out in a throwaway detached worktree and run `accept_cmd` inside it.
 
@@ -320,12 +332,11 @@ def wait_for_branch(
 
     Each poll reads the session (when `session_id` is given) and resolves the branch tip.
     `accept_cmd` runs in a detached checkout of that tip, once per distinct sha; a tip still
-    equal to `base_ref` means AO created the branch but the agent has not committed yet.
+    reachable from `base_ref` means AO created the branch but the agent has not committed yet.
     Returns ``(ok, output)`` and gives up when the session terminates or `timeout_s` passes.
     """
     repo = Path(repo)
     deadline = time.monotonic() + timeout_s
-    base_sha = _rev_parse(base_ref, repo)
     tested: set[str] = set()
     last = ""
     while True:
@@ -336,7 +347,7 @@ def wait_for_branch(
             except AOError as exc:  # a flaky daemon must not abort the wait
                 logger.warning(json.dumps({"event": "ao.poll_failed", "error": str(exc)}))
         sha = _branch_tip(branch, repo)
-        if sha and sha != base_sha and sha not in tested:
+        if sha and sha not in tested and not _is_workless(sha, base_ref, repo):
             tested.add(sha)
             ok, last = _run_accept(sha, accept_cmd, repo, accept_timeout_s)
             logger.info(json.dumps({"event": "ao.accept", "branch": branch, "sha": sha, "ok": ok}))
