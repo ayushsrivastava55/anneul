@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import re
+import sys
+import uuid
 from collections import Counter
 from collections.abc import Callable
 from functools import lru_cache
@@ -26,8 +28,8 @@ from typing import Any
 import yaml
 
 from anneal import llm, prompts
-from anneal.spec import HarnessSpec, Node
-from anneal.tracing import llm_span
+from anneal.spec import HarnessSpec, Node, ToolsManifest
+from anneal.tracing import llm_span, tool_span
 
 logger = logging.getLogger("anneal.mutate")
 
@@ -54,6 +56,18 @@ DEFAULT_SCHEMA_REF = "output_schema"  # attribute the runtime looks up on the ev
 ESCALATE_TOOL = "escalate"
 MEMORY_TOP_K = 3
 MEMORY_TOP_K_STEP = 2
+# synthesize_tool: an AO worker writes the tool; the branch is accepted on its own test.
+GENERATED_TOOLS_YAML = "tools.generated.yaml"  # never tools.yaml: that one is human-written
+GENERATED_PKG = "generated_tools"
+TOOL_NAME_RE = re.compile(r"[a-z][a-z0-9_]{1,30}")
+SYNTH_BRANCH_PREFIX = "ao/tool-"
+SYNTH_NAME_PREFIX = "tool-"
+SYNTH_NAME_STEM = 10  # "tool-" + 10 + "-" + 4 hex = 20 = AO's display-name limit
+SYNTH_TIMEOUT_S = 1800.0
+SYNTH_POLL_S = 15.0
+SYNTH_ACCEPT_TIMEOUT_S = 600.0
+SYNTH_EXAMPLES = 3
+
 # switch_topology only ever moves right along this ladder.
 TOPOLOGY_LADDER = ("single", "planner_executor", "critic_loop")
 
@@ -604,18 +618,254 @@ def switch_topology(
     return HarnessSpec.model_validate(data)
 
 
-# --- operator: synthesize_tool (deferred) -----------------------------------------------
+# --- operator: synthesize_tool ----------------------------------------------------------
+# The only operator that changes code rather than configuration: it delegates to an AO
+# worker session (anneal/ao.py), which writes the tool and its test on its own branch. The
+# branch is accepted only when pytest passes on that one test file in a detached checkout.
 
 
-def synthesize_tool(
-    spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
-) -> HarnessSpec:
-    """Deferred: an AO worker writes the missing tool plus its tests, accepted on pytest."""
-    raise NotImplementedError(
-        "synthesize_tool is task 2.5: it spawns an AO worker session (anneal/ao.py) to write "
-        "the missing tool and its tests, then accepts the mutation on pytest. Not implemented "
-        "in task 2.2 (ops-full)."
+def _synth_messages(domain: Any, issue: Issue, evidence: Evidence) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You design one new Python tool for an LLM agent that is missing a "
+                "capability. Reply with a single JSON object and nothing else (no prose, no "
+                'markdown fences), with keys: "name" (snake_case, short, a valid Python '
+                'identifier), "description" (one or two sentences: what it does, when to '
+                'use it), "args" (a JSON Schema object with "type": "object", "properties" '
+                'and "required"), and "examples": a list of exactly '
+                f"{SYNTH_EXAMPLES} objects "
+                '{"args": {...}, "expected": <the value the tool must return>}. The tool '
+                "must be pure Python over the data the agent already has; it must not need "
+                "network access. Do not duplicate an existing tool."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Goal:\n{_goal_excerpt(domain)}\n\n"
+                f"Existing tools: {sorted(_manifest_names(domain))}\n"
+                f"Failure class: {issue.get('class')}\nFailing node: {issue.get('node')}\n"
+                f"Failing runs (one JSON per line):\n{_format_evidence(evidence)}"
+            ),
+        },
+    ]
+
+
+def _manifest_names(domain: Any) -> list[str]:
+    manifest = getattr(domain, "tools", None)
+    return [tool.name for tool in getattr(manifest, "tools", []) or []]
+
+
+def _strip_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", stripped).strip()
+    return stripped
+
+
+def _parse_tool_spec(text: str, domain: Any) -> dict[str, Any]:
+    """Validate the model's JSON reply into a tool spec we are willing to hand to a worker."""
+    try:
+        data = json.loads(_strip_fences(text))
+    except ValueError as exc:
+        raise RuntimeError(f"synthesize_tool: model reply is not JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"synthesize_tool: expected a JSON object, got {type(data).__name__}")
+    name = str(data.get("name") or "")
+    if not TOOL_NAME_RE.fullmatch(name):
+        raise RuntimeError(f"synthesize_tool: {name!r} is not a snake_case tool name")
+    if name in _manifest_names(domain):
+        raise RuntimeError(f"synthesize_tool: {name!r} already exists in the human tools.yaml")
+    description = str(data.get("description") or "").strip()
+    if not description:
+        raise RuntimeError("synthesize_tool: model returned no description")
+    args = data.get("args") or {"type": "object", "properties": {}}
+    if not isinstance(args, dict):
+        raise RuntimeError("synthesize_tool: 'args' must be a JSON Schema object")
+    examples = [e for e in (data.get("examples") or []) if isinstance(e, dict)]
+    if not examples:
+        raise RuntimeError("synthesize_tool: model returned no example calls")
+    return {"name": name, "description": description, "args": args, "examples": examples}
+
+
+_SYNTH_PROMPT = """You are adding one missing tool to the `{domain}` domain of this repo.
+
+The agent working on `{domain}` cannot do this today:
+
+{description}
+
+Create exactly two files, nothing else:
+
+1. `{module_path}` — a module defining a single public function `{name}` whose keyword
+   arguments are exactly the properties of this JSON schema:
+
+```json
+{args}
+```
+
+   It must be pure Python (no network, no new dependencies), return a JSON-serialisable
+   value, and raise a clear `ValueError` on bad input. Any data it needs must come from its
+   arguments or from fixtures already in `domains/{domain}/`.
+
+2. `{test_path}` — pytest tests that import it as `from {dotted} import {name}` and cover
+   at least these cases:
+
+```json
+{examples}
+```
+
+Then `git add` both files and commit them on the current branch with the message
+"{session}: add generated tool {name}". Do not push, do not open a PR, do not modify
+`domains/{domain}/tools.yaml` or any other existing file, and do not run any other command.
+"""
+
+
+def _worker_prompt(tool: dict[str, Any], domain_name: str, session: str) -> str:
+    name = tool["name"]
+    return _SYNTH_PROMPT.format(
+        domain=domain_name,
+        name=name,
+        description=tool["description"],
+        args=json.dumps(tool["args"], indent=2),
+        examples=json.dumps(tool["examples"], indent=2),
+        module_path=f"domains/{domain_name}/{GENERATED_PKG}/{name}.py",
+        test_path=f"tests/test_{name}.py",
+        dotted=f"domains.{domain_name}.{GENERATED_PKG}.{name}",
+        session=session,
     )
+
+
+def _session_name(name: str) -> str:
+    """A unique AO display name for this tool that fits AO's 20-character limit."""
+    return f"{SYNTH_NAME_PREFIX}{name[:SYNTH_NAME_STEM]}-{uuid.uuid4().hex[:4]}"
+
+
+def _domain_dir(domain: Any) -> Path:
+    path = getattr(domain, "path", None)
+    return Path(path) if path else ROOT / "domains" / str(domain.name)
+
+
+def _repo_rel(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _materialize(ao_module: Any, branch: str, dest: Path, *, required: bool) -> bool:
+    """Bring one file from the accepted branch into this tree (``git show``, never checkout).
+
+    A file the worker already wrote into this worktree is kept as it is. Returns whether the
+    file is present afterwards; a missing non-required file (the test) is not an error.
+    """
+    if dest.exists():
+        return True
+    done = ao_module._git(["show", f"{branch}:{_repo_rel(dest)}"], ROOT)
+    if done.returncode != 0 or not done.stdout:
+        if required:
+            raise RuntimeError(f"synthesize_tool: {branch} has no {_repo_rel(dest)}")
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(done.stdout)
+    return True
+
+
+def _append_generated_tool(domain_dir: Path, tool: dict[str, Any], impl: str) -> Path:
+    """Append the tool to ``<domain>/tools.generated.yaml``; tools.yaml is never touched."""
+    path = domain_dir / GENERATED_TOOLS_YAML
+    data = yaml.safe_load(path.read_text()) if path.exists() else None
+    entries = list((data or {}).get("tools") or [])
+    entries = [e for e in entries if e.get("name") != tool["name"]]
+    entries.append(
+        {
+            "name": tool["name"],
+            "description": tool["description"],
+            "args": tool["args"],
+            "impl": impl,
+            "mutates": False,
+        }
+    )
+    manifest = {"tools": entries}
+    ToolsManifest.model_validate(manifest)  # a generated tool must parse like any other
+    path.write_text(
+        "# Tools synthesised by anneal.mutate.synthesize_tool via an AO worker session.\n"
+        "# Written by the machine; the human-written tools.yaml is never edited here.\n"
+        + yaml.safe_dump(manifest, sort_keys=False)
+    )
+    return path
+
+
+def _mark_attempted(issue: Issue, reason: str) -> None:
+    """Record that synthesize_tool ran and did not produce a tool, with why."""
+    tried = list(issue.get("operators_tried") or [])
+    if "synthesize_tool" not in tried:
+        tried.append("synthesize_tool")
+    issue["operators_tried"] = tried
+    issue["last_attempt"] = {"operator": "synthesize_tool", "ok": False, "reason": reason}
+    logger.info(json.dumps({"event": "mutate.synthesize_tool.failed",
+                            "issue": issue.get("id"), "reason": reason}))
+
+
+@tool_span("mutate.synthesize_tool")
+def synthesize_tool(
+    spec: HarnessSpec,
+    issue: Issue,
+    evidence: Evidence,
+    domain: Any,
+    client: Any = None,
+    *,
+    ao_module: Any = None,
+) -> HarnessSpec:
+    """Spawn an AO worker to write the missing tool; adopt it only if its tests pass.
+
+    Returns ``spec`` itself when the worker fails, times out or writes nothing, after
+    marking ``issue`` attempted with the reason. ``ao_module`` injects a fake AO in tests.
+    """
+    if ao_module is None:
+        from anneal import ao as ao_module  # local: keeps the AO dependency off import time
+    node = _node(spec, issue["node"])
+    tool = _parse_tool_spec(_complete(client, _synth_messages(domain, issue, evidence)), domain)
+    name = tool["name"]
+    session_name = _session_name(name)
+    branch = f"{SYNTH_BRANCH_PREFIX}{name}"
+    domain_dir = _domain_dir(domain)
+    try:
+        session_id = ao_module.spawn_worker(
+            session_name, branch, _worker_prompt(tool, str(domain.name), session_name)
+        )
+        ok, output = ao_module.wait_for_branch(
+            branch,
+            [sys.executable, "-m", "pytest", "-q", f"tests/test_{name}.py"],
+            SYNTH_TIMEOUT_S,
+            SYNTH_POLL_S,
+            session_id=session_id,
+            accept_timeout_s=SYNTH_ACCEPT_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 - an unreachable daemon is a failed attempt
+        _mark_attempted(issue, f"AO spawn/wait failed: {exc}")
+        return spec
+    if not ok:
+        _mark_attempted(issue, f"{branch} was not accepted: {output.strip()[-500:]}")
+        return spec
+    try:
+        module = domain_dir / GENERATED_PKG / f"{name}.py"
+        _materialize(ao_module, branch, module, required=True)
+        _materialize(ao_module, branch, ROOT / "tests" / f"test_{name}.py", required=False)
+        _append_generated_tool(
+            domain_dir, tool, f"python:domains.{domain.name}.{GENERATED_PKG}.{name}.{name}"
+        )
+    except (RuntimeError, ValueError) as exc:
+        _mark_attempted(issue, f"could not adopt {branch}: {exc}")
+        return spec
+    logger.info(json.dumps({"event": "mutate.synthesize_tool.adopted", "tool": name,
+                            "branch": branch, "session": session_id, "node": node.name}))
+    data = spec.model_dump()
+    for entry in data["nodes"]:
+        if entry["name"] == node.name and name not in entry["tools"]:
+            entry["tools"] = [*entry["tools"], name]
+    return HarnessSpec.model_validate(data)
 
 
 # --- registry + apply ---------------------------------------------------------------------
@@ -629,13 +879,12 @@ OPERATORS: dict[str, Operator] = {
     "add_memory": add_memory,
     "add_escalation_node": add_escalation_node,
     "switch_topology": switch_topology,
+    "synthesize_tool": synthesize_tool,
 }
 
 # Operators declared in the taxonomy that are deliberately not registered yet: select_operator
 # skips them, so a class whose only operator is deferred raises NoOperatorAvailable.
-DEFERRED: dict[str, str] = {
-    "synthesize_tool": "task 2.5 - AO worker writes the tool + tests (anneal/ao.py)",
-}
+DEFERRED: dict[str, str] = {}
 
 
 def select_operator(issue: Issue) -> str:
@@ -673,4 +922,10 @@ def apply(
     logger.info(json.dumps({"event": "mutate.apply", "issue": issue.get("id"),
                             "class": issue.get("class"), "operator": name, "parent": spec.id}))
     mutated = OPERATORS[name](spec, issue, evidence, domain, client)
+    if mutated is spec:
+        # synthesize_tool returns its input untouched when the AO worker did not deliver.
+        # A no-op candidate must never reach the gate, so this is a failed operator, not a
+        # mutation; the operator has already marked the issue attempted with the reason.
+        reason = (issue.get("last_attempt") or {}).get("reason", "operator made no change")
+        raise NoOperatorAvailable(f"{name} on issue {issue.get('id')!r} changed nothing: {reason}")
     return _with_lineage(mutated, spec, name, issue)
