@@ -20,7 +20,7 @@ Phase: 1 core loop merged (architect, runtime, runner, diagnose, mutate, gate). 
 | anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | merged to main |
 | anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | merged to main |
 | anneal-15 | 1.6 gate | ao/gate | merged to main |
-| anneal-23 | 1.7 cli-run | ao/cli-run | working (H8 checkpoint) |
+| anneal-23 | 1.7 cli-run | ao/cli-run | merged (H8 wiring complete) |
 
 ## Parallel track (no dependency on the core loop)
 | Session | Task | Branch | State |
@@ -55,8 +55,13 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - Airline: no user simulator; task instruction is the single customer message. eval.py exposes setup(task) to reset DB state. 40 of 50 tasks, split 20/10/10, seed 0.
 - Merge order: scaffold first (owns pyproject), then rebase the other four onto it.
 
+## AO session count
+31 sessions in project `anneal`: 1 orchestrator equivalent (this session), 24 task workers,
+3 API-probe sessions spawned by the ao-spawn worker, 1 selftest session (anneal-27) spawned by
+Anneal itself through anneal/ao.py, plus 5 killed first-attempt sessions kept for history.
+
 ## Latest numbers
-main: 233 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 254 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
