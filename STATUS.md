@@ -27,3 +27,4 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 
 ## Latest numbers
 none
+- [x] 0.2 anneal-6 — anneal/spec.py: HarnessSpec/Node/MemoryCfg/Lineage + ToolSpec/ToolsManifest models, load_spec/dump_spec/load_tools; tests/test_spec.py (10 tests)
