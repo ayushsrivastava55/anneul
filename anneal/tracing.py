@@ -193,14 +193,16 @@ def _active_span() -> Any | None:
     """The recording neatlogs span for this context, or None."""
     if not _enabled:
         return None
-    from neatlogs._wrap_utils import active_neatlogs_context
     from opentelemetry import trace as otel_trace
 
-    ctx = active_neatlogs_context()
-    if ctx is None:
-        return None
-    span = otel_trace.get_current_span(ctx)
-    return span if span.is_recording() else None
+    try:
+        from neatlogs._wrap_utils import active_neatlogs_context
+    except ImportError:  # private path moved in a newer SDK: fall back to the OTel span
+        span = otel_trace.get_current_span()
+    else:
+        ctx = active_neatlogs_context()
+        span = otel_trace.get_current_span(ctx) if ctx is not None else None
+    return span if span is not None and span.is_recording() else None
 
 
 def current_trace_id() -> str | None:
