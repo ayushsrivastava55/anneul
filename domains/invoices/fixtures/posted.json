@@ -1,0 +1,44 @@
+[
+  {
+    "currency": "EUR",
+    "entry_id": "GL-0001",
+    "invoice_number": "INV-90388",
+    "total": 2149.75,
+    "vendor": "Corvid Electronics GmbH"
+  },
+  {
+    "currency": "GBP",
+    "entry_id": "GL-0002",
+    "invoice_number": "INV-90271",
+    "total": 806.5,
+    "vendor": "Kestrel Industrial Ltd"
+  },
+  {
+    "currency": "USD",
+    "entry_id": "GL-0003",
+    "invoice_number": "INV-10003",
+    "total": 14729.76,
+    "vendor": "Pinebrook Supply Co"
+  },
+  {
+    "currency": "USD",
+    "entry_id": "GL-0004",
+    "invoice_number": "INV-90114",
+    "total": 1240.0,
+    "vendor": "Pinebrook Supply Co"
+  },
+  {
+    "currency": "USD",
+    "entry_id": "GL-0005",
+    "invoice_number": "INV-10016",
+    "total": 12472.8,
+    "vendor": "Tidewater Logistics Inc"
+  },
+  {
+    "currency": "USD",
+    "entry_id": "GL-0006",
+    "invoice_number": "INV-10012",
+    "total": 6723.0,
+    "vendor": "Vermillion Packaging"
+  }
+]

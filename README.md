@@ -67,9 +67,30 @@ No domain-specific code exists in `anneal/`; the core sees only the three input 
 
 ## How we used AO
 
-_Fill from AO session list at submission: orchestrator session, worker sessions per task in
-`docs/TASKS.md`, and the in-product spawns (`synthesize_tool`) that wrote generated tools on
-their own branches._
+AO is not a wrapper we bolted on at the end. It is both how Anneal was built and how Anneal
+executes code-level mutations at runtime.
+
+**As the build system.** Every task in `docs/TASKS.md` ran as its own AO worker session on its
+own branch and git worktree, driven by one orchestrator session. The orchestrator wrote each
+worker's prompt from the task's Deliverable and Accept cells, ran the Accept check itself
+against the branch, and merged only when `uv run ruff check . && uv run pytest` was green.
+Nothing was merged on a worker's say-so. Shared interfaces were pinned in `docs/CONTRACTS.md`
+before the parallel phases so that six to seven workers could build disjoint modules at once
+without stepping on each other. Commit messages carry the session name, so `git log` reads as
+the session history.
+
+**As a runtime executor.** `anneal/ao.py` drives the same daemon from inside the product. When
+Diagnose classifies a failure as `missing_capability`, the `synthesize_tool` operator asks for a
+tool specification, spawns an AO worker on `ao/tool-<name>`, and waits. The branch is accepted
+only when `pytest` passes on the generated tool's own test file, checked in a throwaway
+worktree. A rejected branch leaves the candidate spec untouched and marks the ledger issue
+attempted. This path is verified end to end: `uv run python -m anneal.ao --selftest` spawned a
+real session that wrote a tool, committed it, and passed the gate.
+
+Two things we learned about AO and worked around, both documented in `anneal/ao.py`: `ao spawn`
+has no `--json` flag despite what the architecture notes assumed, so the REST body was recovered
+by probing; and a project needs a remote with a resolved default branch before it will create
+worktrees.
 
 ## Sponsor usage
 

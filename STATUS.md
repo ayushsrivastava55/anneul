@@ -20,17 +20,21 @@ Phase: 1 core loop merged (architect, runtime, runner, diagnose, mutate, gate). 
 | anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | merged to main |
 | anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | merged to main |
 | anneal-15 | 1.6 gate | ao/gate | merged to main |
-| anneal-23 | 1.7 cli-run | ao/cli-run | working (H8 checkpoint) |
+| anneal-23 | 1.7 cli-run | ao/cli-run | merged (H8 wiring complete) |
 
 ## Parallel track (no dependency on the core loop)
 | Session | Task | Branch | State |
 |---|---|---|---|
-| anneal-17 | 2.4 ao-spawn | ao/ao-spawn | working |
-| anneal-18 | 3.1 domain-invoice | ao/domain-invoice | working |
+| anneal-17 | 2.4 ao-spawn | ao/ao-spawn | merged; selftest spawned real session anneal-27 |
+| anneal-18 | 3.1 domain-invoice | ao/domain-invoice | merged |
 | anneal-19 | 3.2 domain-bugfix | ao/domain-bugfix | working |
-| anneal-24 | 2.3 topo-critic | ao/topo-critic | working |
-| anneal-25 | 2.2 ops-full | ao/ops-full | working |
-| anneal-26 | 2.1 taxonomy-full | ao/taxonomy-full | working |
+| anneal-30 | 2.5 synth-tool | ao/synth-tool | working |
+| anneal-28 | 3.3 anneal-stage + 3.4 cost-attrib | ao/anneal-stage | working |
+| anneal-29 | 4.1 dodo-credits + 4.2 dodo-ship | ao/dodo-credits | working |
+| anneal-31 | 4.3 dashboard | ao/dashboard | working |
+| anneal-24 | 2.3 topo-critic | ao/topo-critic | merged |
+| anneal-25 | 2.2 ops-full | ao/ops-full | merged |
+| anneal-26 | 2.1 taxonomy-full | ao/taxonomy-full | merged |
 | anneal-7 | llm-gateway follow-up: complete() + tests/fakes.py | ao/llm-gateway | merged to main (57 tests) |
 
 Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
@@ -51,8 +55,13 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - Airline: no user simulator; task instruction is the single customer message. eval.py exposes setup(task) to reset DB state. 40 of 50 tasks, split 20/10/10, seed 0.
 - Merge order: scaffold first (owns pyproject), then rebase the other four onto it.
 
+## AO session count
+31 sessions in project `anneal`: 1 orchestrator equivalent (this session), 24 task workers,
+3 API-probe sessions spawned by the ao-spawn worker, 1 selftest session (anneal-27) spawned by
+Anneal itself through anneal/ao.py, plus 5 killed first-attempt sessions kept for history.
+
 ## Latest numbers
-main: 139 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 254 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
