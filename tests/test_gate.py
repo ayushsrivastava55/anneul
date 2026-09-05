@@ -1,0 +1,204 @@
+"""Unit tests for anneal.gate on synthetic rows. No LLM calls, no runner, no network."""
+
+from __future__ import annotations
+
+import json
+import types
+from pathlib import Path
+from typing import Any
+
+import pytest
+from scipy.stats import binomtest
+
+from anneal import gate
+from anneal.spec import HarnessSpec, Node
+
+
+def _spec(spec_id: str) -> HarnessSpec:
+    return HarnessSpec(
+        id=spec_id,
+        topology="single",
+        step_budget=4,
+        nodes=[Node(name="exec", role="executor", model_tier="mid", system_prompt_ref="p@v1")],
+    )
+
+
+def _domain(threshold: float = 1.0) -> Any:
+    return types.SimpleNamespace(name="synthetic", eval=types.SimpleNamespace(THRESHOLD=threshold))
+
+
+def _row(task_id: str, score: float, hard_fail: bool = False) -> dict[str, Any]:
+    return {"task_id": task_id, "score": score, "hard_fail": hard_fail}
+
+
+def _rows(scores: dict[str, list[float]], hard: set[str] = frozenset()) -> list[list[dict]]:
+    """scores[task] = [score seed0, seed1, seed2] -> rows grouped by seed."""
+    n_runs = len(next(iter(scores.values())))
+    return [
+        [_row(t, s[i], hard_fail=t in hard and i == 0) for t, s in scores.items()]
+        for i in range(n_runs)
+    ]
+
+
+class FakeRunner:
+    """Scripted stand-in for runner.run keyed by candidate_id, returns rows per seed."""
+
+    def __init__(self, by_spec: dict[str, list[list[dict]]]):
+        self.by_spec = by_spec
+        self.calls: list[tuple[str, str, int, int]] = []
+
+    def __call__(self, spec, domain, split, *, seed=0, iteration=0, **kw):
+        self.calls.append((spec.id, split, seed, iteration))
+        rows = self.by_spec[spec.id][seed]
+        return [dict(r, candidate_id=spec.id) for r in rows]
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("NEATLOGS_API_KEY", raising=False)
+    gate.clear_cache()
+    yield
+    gate.clear_cache()
+
+
+# --- pass^3 math ---------------------------------------------------------------------------
+
+
+def test_pass3_requires_all_runs_at_or_above_threshold():
+    rows = _rows({"a": [1.0, 1.0, 1.0], "b": [1.0, 0.0, 1.0], "c": [0.8, 0.8, 0.8]})
+    assert gate.pass3_by_task(rows, threshold=1.0) == {"a": True, "b": False, "c": False}
+    assert gate.pass3_by_task(rows, threshold=0.8) == {"a": True, "b": False, "c": True}
+
+
+def test_spec_metrics_mean_pass3_hard_fails_and_gen_gap():
+    rows = _rows({"a": [1.0, 1.0, 1.0], "b": [0.0, 0.0, 0.0]}, hard={"b"})
+    m = gate.spec_metrics(rows, threshold=1.0, search_rows=[_row("s1", 1.0), _row("s2", 0.5)])
+    assert m.mean_score == pytest.approx(0.5)
+    assert m.pass3_rate == pytest.approx(0.5)
+    assert m.hard_fails == 1
+    assert m.gen_gap == pytest.approx(0.75 - 0.5)
+    assert m.n_tasks == 2 and m.n_runs == 3
+
+
+def test_gen_gap_is_none_without_search_rows():
+    rows = _rows({"a": [1.0, 1.0, 1.0]})
+    assert gate.spec_metrics(rows, threshold=1.0, search_rows=[]).gen_gap is None
+
+
+# --- binomial paired test ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("wins,losses", [(5, 0), (4, 1), (3, 3), (0, 2), (7, 1)])
+def test_paired_test_matches_scipy_exact_two_sided(wins: int, losses: int):
+    tasks = [f"w{i}" for i in range(wins)] + [f"l{i}" for i in range(losses)] + ["tie"]
+    cand = {t: t.startswith("w") or t == "tie" for t in tasks}
+    inc = {t: t.startswith("l") or t == "tie" for t in tasks}
+    result = gate.paired_test(cand, inc)
+    assert (result.wins, result.losses) == (wins, losses)
+    assert result.p == pytest.approx(binomtest(wins, wins + losses, 0.5).pvalue)
+
+
+def test_paired_test_no_discordant_pairs_has_p_one():
+    result = gate.paired_test({"a": True}, {"a": True})
+    assert (result.wins, result.losses, result.p) == (0, 0, 1.0)
+
+
+def test_paired_test_5_wins_0_losses_is_below_alpha():
+    cand = {str(i): True for i in range(5)}
+    inc = {str(i): False for i in range(5)}
+    assert gate.paired_test(cand, inc).p < 0.1
+
+
+# --- decision ------------------------------------------------------------------------------
+
+
+def _metrics(pass3_rate: float, hard_fails: int) -> gate.SpecMetrics:
+    return gate.SpecMetrics(
+        candidate_id="x", mean_score=pass3_rate, pass3_rate=pass3_rate, hard_fails=hard_fails,
+        gen_gap=None, pass3={}, n_tasks=10, n_runs=3,
+    )
+
+
+def test_decide_rejects_when_pass3_below_incumbent():
+    ok, reason = gate.decide(_metrics(0.5, 0), _metrics(0.6, 0), p=0.01)
+    assert not ok and reason.startswith("pass3_rate")
+
+
+def test_decide_rejects_when_more_hard_fails():
+    ok, reason = gate.decide(_metrics(0.9, 2), _metrics(0.6, 1), p=0.01)
+    assert not ok and reason.startswith("hard_fails")
+
+
+def test_decide_rejects_when_not_significant():
+    ok, reason = gate.decide(_metrics(0.7, 0), _metrics(0.6, 0), p=0.25)
+    assert not ok and reason.startswith("p")
+
+
+def test_decide_promotes_when_all_conditions_hold():
+    ok, reason = gate.decide(_metrics(0.9, 0), _metrics(0.6, 0), p=0.05)
+    assert ok and reason == "promoted"
+
+
+# --- end to end with injected runner ----------------------------------------------------
+
+
+def _scenario() -> dict[str, list[list[dict]]]:
+    tasks = [f"t{i}" for i in range(8)]
+    inc = _rows({t: [1.0, 1.0, 1.0] if i < 2 else [0.0, 0.0, 0.0] for i, t in enumerate(tasks)},
+                hard={"t7"})
+    cand = _rows({t: [1.0, 1.0, 1.0] for t in tasks})
+    return {"inc": inc, "cand": cand}
+
+
+def test_gate_promote_path_writes_gate_json_and_flips_labels(tmp_path: Path, monkeypatch):
+    runner = FakeRunner(_scenario())
+    flipped: list[str] = []
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: flipped.append(spec.id) or [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=2, runs_dir=tmp_path,
+        search_rows=[_row("s", 1.0)], run=runner,
+    )
+    assert result.promoted and result.reason == "promoted"
+    assert result.wins == 6 and result.losses == 0
+    assert result.p == pytest.approx(binomtest(6, 6, 0.5).pvalue)
+    assert flipped == ["cand"]
+    path = tmp_path / "synthetic" / "2" / "gate.json"
+    data = json.loads(path.read_text())
+    assert data["decision"] == "promote" and data["reason"] == "promoted"
+    assert data["candidate"]["pass3_rate"] == 1.0 and data["incumbent"]["pass3_rate"] == 0.25
+    assert data["incumbent"]["hard_fails"] == 1 and data["candidate"]["hard_fails"] == 0
+    assert data["candidate"]["gen_gap"] == pytest.approx(0.0)
+    assert data["incumbent"]["gen_gap"] is None
+    assert data["p"] == pytest.approx(result.p) and data["iteration"] == 2
+    assert {c[1] for c in runner.calls} == {"holdout"}
+    assert sorted(c[2] for c in runner.calls if c[0] == "cand") == [0, 1, 2]
+
+
+def test_gate_reject_does_not_flip_labels(tmp_path: Path, monkeypatch):
+    scen = _scenario()
+    scen["cand"], scen["inc"] = scen["inc"], scen["cand"]  # candidate is the worse one
+    runner = FakeRunner(scen)
+    flipped: list[str] = []
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: flipped.append(spec.id) or [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=0, runs_dir=tmp_path, run=runner
+    )
+    assert not result.promoted and result.reason.startswith("pass3_rate")
+    assert flipped == []
+    data = json.loads((tmp_path / "synthetic" / "0" / "gate.json").read_text())
+    assert data["decision"] == "reject"
+
+
+def test_incumbent_holdout_rows_cached_per_iteration(tmp_path: Path):
+    runner = FakeRunner(_scenario())
+    gate.gate(_spec("inc"), _spec("cand"), _domain(), iteration=1, runs_dir=tmp_path, run=runner)
+    gate.gate(_spec("inc"), _spec("cand"), _domain(), iteration=1, runs_dir=tmp_path, run=runner)
+    inc_calls = [c for c in runner.calls if c[0] == "inc"]
+    cand_calls = [c for c in runner.calls if c[0] == "cand"]
+    assert len(inc_calls) == 3 and len(cand_calls) == 6
+    gate.gate(_spec("inc"), _spec("cand"), _domain(), iteration=2, runs_dir=tmp_path, run=runner)
+    assert len([c for c in runner.calls if c[0] == "inc"]) == 6
+
+
+def test_promote_prompts_is_noop_without_key():
+    assert gate.promote_prompts(_spec("cand")) == []
