@@ -261,7 +261,9 @@ def test_apply_skips_tried_operators(store: LocalPromptStore) -> None:
 
 
 def test_apply_raises_when_no_operator_left(store: LocalPromptStore) -> None:
-    issue = make_issue("wrong_tool", tried=["rewrite_tool_desc", "add_fewshots"])
+    # wrong_tool also lists switch_topology (implemented in task 2.2), so spend that too.
+    issue = make_issue("wrong_tool", tried=["rewrite_tool_desc", "add_fewshots",
+                                            "switch_topology"])
     with pytest.raises(mutate.NoOperatorAvailable):
         apply(make_spec(), issue, EVIDENCE, make_domain(), client=FakeClient(turns=[]))
 
