@@ -97,6 +97,7 @@ class ToolSpec(BaseModel):
     description: str = Field(min_length=1)
     args: dict[str, Any] = Field(default_factory=dict)
     impl: str
+    mutates: bool = False  # True for write actions (post, book, cancel)
 
     @field_validator("impl")
     @classmethod
