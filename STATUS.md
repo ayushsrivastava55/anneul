@@ -17,10 +17,17 @@ Phase: 1 (core loop, H2–H8) — six workers running; Phase 0 fully merged (49 
 | anneal-11 | 1.1 runtime-single | ao/runtime-single | stalled once, nudged, working |
 | anneal-12 | 1.2 runner | ao/runner | merged to main |
 | anneal-13 | 1.3 architect (+ prompts.py) | ao/architect | merged to main |
-| anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | stalled once, nudged, working |
+| anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | merged to main |
 | anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | stalled once, nudged, working |
 | anneal-15 | 1.6 gate | ao/gate | merged to main |
-| — | 1.7 cli-run | — | held until runtime + runner merge |
+| — | 1.7 cli-run | — | held until runtime merges |
+
+## Parallel track (no dependency on the core loop)
+| Session | Task | Branch | State |
+|---|---|---|---|
+| anneal-17 | 2.4 ao-spawn | ao/ao-spawn | working |
+| anneal-18 | 3.1 domain-invoice | ao/domain-invoice | working |
+| anneal-19 | 3.2 domain-bugfix | ao/domain-bugfix | working |
 | anneal-7 | llm-gateway follow-up: complete() + tests/fakes.py | ao/llm-gateway | merged to main (57 tests) |
 
 Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
@@ -42,7 +49,7 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - Merge order: scaffold first (owns pyproject), then rebase the other four onto it.
 
 ## Latest numbers
-main: 99 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 107 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
