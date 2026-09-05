@@ -14,6 +14,7 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 ## Done
 - [x] orchestrator: git init, kit imported, AO desktop installed, daemon up, project registered
 - [x] orchestrator: tau-bench airline env vendored (MIT) into domains/airline/fixtures/tau_airline
+- [x] 0.4 anneal-8 - anneal/tracing.py: init_tracing (once, no-op without key), wrap_client, node_span/tool_span/llm_span (sync+async, offline pass-through), run-context tags via contextvar, flush/shutdown, current_trace_id; tests/test_tracing.py (15 tests); smoke `uv run python -m anneal.tracing`
 
 ## Blockers
 - keys: `.env` exists but every value is empty (TensorMux, Neatlogs, Dodo, AIGI). `specs/models.yaml` still REPLACE_ME.
