@@ -181,29 +181,36 @@ def test_neatlogs_mcp_calls_tool_with_bearer(monkeypatch: pytest.MonkeyPatch) ->
     sent: list[dict[str, Any]] = []
 
     class FakeResponse:
-        headers = {"content-type": "application/json"}
+        def __init__(self, result: dict[str, Any], session: str | None = None) -> None:
+            self.headers = {"content-type": "application/json"}
+            if session:
+                self.headers["mcp-session-id"] = session
+            self._result = result
 
         def raise_for_status(self) -> None:
             return None
 
         def json(self) -> dict[str, Any]:
-            return {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {"content": [{"type": "text", "text": json.dumps({"spans": [1]})}]},
-            }
+            return {"jsonrpc": "2.0", "id": 1, "result": self._result}
 
     class FakeHttp:
         def post(self, url: str, *, json: Any, headers: dict[str, str]) -> FakeResponse:
-            sent.append({"url": url, "json": json, "headers": headers})
-            return FakeResponse()
+            sent.append({"url": url, "json": json, "headers": dict(headers)})
+            if json["method"] == "initialize":
+                return FakeResponse({"protocolVersion": "2025-03-26"}, session="sess-1")
+            text = __import__("json").dumps({"spans": [1]})
+            return FakeResponse({"content": [{"type": "text", "text": text}]})
 
     src = NeatlogsMCP("secret", http=FakeHttp(), min_interval_s=0.0)
     ctx = src.get_trace_context("abc")
     assert ctx == {"spans": [1]}
+    assert [s["json"]["method"] for s in sent] == ["initialize", "tools/call"]
     assert sent[0]["headers"]["Authorization"] == "Bearer secret"
-    assert sent[0]["json"]["params"]["name"] == "get_trace_context"
-    assert "abc" in json.dumps(sent[0]["json"]["params"]["arguments"])
+    assert sent[1]["headers"]["Mcp-Session-Id"] == "sess-1"
+    assert sent[1]["json"]["params"]["name"] == "get_trace_context"
+    assert "abc" in json.dumps(sent[1]["json"]["params"]["arguments"])
+    src.get_trace_context("def")
+    assert len(sent) == 3  # initialize happens once
 
 
 def test_default_source_is_local_without_key(monkeypatch: pytest.MonkeyPatch) -> None:

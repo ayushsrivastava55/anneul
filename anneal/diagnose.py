@@ -138,6 +138,7 @@ class NeatlogsMCP:
         self._min_interval = min_interval_s
         self._last_call = 0.0
         self._next_id = 0
+        self._initialised = False
 
     def _pace(self) -> None:
         wait = self._min_interval - (time.monotonic() - self._last_call)
@@ -145,22 +146,40 @@ class NeatlogsMCP:
             time.sleep(wait)
         self._last_call = time.monotonic()
 
+    def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """One paced JSON-RPC request; echoes ``Mcp-Session-Id`` once the server issues it."""
+        self._pace()
+        self._next_id += 1
+        body = {"jsonrpc": "2.0", "id": self._next_id, "method": method, "params": params}
+        response = self._http.post(self._url, json=body, headers=self._headers)
+        response.raise_for_status()
+        session = response.headers.get("mcp-session-id")
+        if session:
+            self._headers["Mcp-Session-Id"] = str(session)
+        payload = _decode_mcp_response(response)
+        if "error" in payload:
+            raise RuntimeError(f"neatlogs mcp {method}: {payload['error']}")
+        return payload
+
+    def _initialise(self) -> None:
+        """Streamable-HTTP handshake; a server that rejects it is treated as stateless."""
+        params = {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "anneal.diagnose", "version": "0.1"},
+        }
+        try:
+            self._rpc("initialize", params)
+        except RuntimeError as exc:
+            logger.info("mcp initialize rejected; continuing stateless", extra={"err": str(exc)})
+        self._initialised = True
+
     @tool_span("neatlogs.mcp.call")
     def call(self, tool: str, arguments: dict[str, Any]) -> Any:
         """Invoke one MCP tool and return its decoded content (JSON if possible)."""
-        self._pace()
-        self._next_id += 1
-        body = {
-            "jsonrpc": "2.0",
-            "id": self._next_id,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": arguments},
-        }
-        response = self._http.post(self._url, json=body, headers=self._headers)
-        response.raise_for_status()
-        payload = _decode_mcp_response(response)
-        if "error" in payload:
-            raise RuntimeError(f"neatlogs mcp {tool}: {payload['error']}")
+        if not self._initialised:
+            self._initialise()
+        payload = self._rpc("tools/call", {"name": tool, "arguments": arguments})
         return _mcp_content(payload.get("result", {}))
 
     def search_traces(self, tags: list[str]) -> list[str]:
@@ -172,7 +191,7 @@ class NeatlogsMCP:
     def get_trace_context(self, trace_id: str) -> dict[str, Any] | None:
         try:
             result = self.call("get_trace_context", {"trace_id": trace_id})
-        except (httpx.HTTPError, RuntimeError) as exc:
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
             logger.warning(
                 "trace context unavailable", extra={"trace_id": trace_id, "err": str(exc)}
             )
