@@ -9,7 +9,6 @@ from .list_all_airports import ListAllAirports
 from .search_direct_flight import SearchDirectFlight
 from .search_onestop_flight import SearchOnestopFlight
 from .send_certificate import SendCertificate
-from .think import Think
 from .transfer_to_human_agents import TransferToHumanAgents
 from .update_reservation_baggages import UpdateReservationBaggages
 from .update_reservation_flights import UpdateReservationFlights
@@ -25,7 +24,6 @@ ALL_TOOLS = [
     SearchDirectFlight,
     SearchOnestopFlight,
     SendCertificate,
-    Think,
     TransferToHumanAgents,
     UpdateReservationBaggages,
     UpdateReservationFlights,

@@ -1,15 +1,15 @@
 # STATUS
 
-Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
+Phase: 0 complete (all five tasks merged). Next: Phase 1 core loop (H2–H8). H2 checkpoint (traced call through TensorMux visible in Neatlogs) is blocked on keys.
 
 ## AO sessions (project `anneal`)
 | Session | Task | Branch | State |
 |---|---|---|---|
 | anneal-10 | 0.1 scaffold | ao/scaffold | merged to main (3 tests) |
-| anneal-6 | 0.2 spec-models | ao/spec-models | merged to main (10 tests) |
+| anneal-6 | 0.2 spec-models | ao/spec-models | merged to main (+ mutates follow-up) |
 | anneal-7 | 0.3 llm-gateway | ao/llm-gateway | merged to main (9 pass, live skipped: no key) |
 | anneal-8 | 0.4 tracing | ao/tracing | merged to main (offline tests; Neatlogs UI check pending key) |
-| anneal-9 | 0.5 domain-airline | ao/domain-airline | done (11 tests); rebase + 3 lint fixes requested before merge |
+| anneal-9 | 0.5 domain-airline | ao/domain-airline | merged to main (tau-bench, 40 tasks 20/10/10) |
 
 ## Done
 - [x] anneal-1..5 killed (stalled on permission prompts); project switched to bypass-permissions; respawned as anneal-6..10
@@ -18,7 +18,6 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 - [x] 0.4 anneal-8 - anneal/tracing.py: init_tracing (once, no-op without key), wrap_client, node_span/tool_span/llm_span (sync+async, offline pass-through), run-context tags via contextvar, flush/shutdown, current_trace_id; tests/test_tracing.py (15 tests); smoke `uv run python -m anneal.tracing`
 
 ## Blockers
-- spec-models follow-up: ToolSpec must accept `mutates` (airline tools.yaml uses it); sent to anneal-6.
 - keys: `.env` exists but every value is empty (TensorMux, Neatlogs, Dodo, AIGI). `specs/models.yaml` still REPLACE_ME.
 - GitHub remote: `gh repo create` was blocked in the orchestrator session; `origin` is a local bare repo at ~/.ao/data/anneal-origin.git. Swap to GitHub before submission.
 - Docker daemon down (only needed for the optional TensorMux OSS gateway).

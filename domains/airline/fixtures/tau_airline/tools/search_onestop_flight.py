@@ -2,7 +2,7 @@
 
 import json
 from typing import Any, Dict
-from tau_bench.envs.tool import Tool
+from ..tool import Tool
 
 
 class SearchOnestopFlight(Tool):
