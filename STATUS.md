@@ -21,7 +21,7 @@ Phase: 1 (core loop, H2–H8) — six workers running; Phase 0 fully merged (49 
 | anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | working |
 | anneal-15 | 1.6 gate | ao/gate | working |
 | — | 1.7 cli-run | — | held until runtime + runner merge |
-| anneal-7 | llm-gateway follow-up: complete() + tests/fakes.py | ao/llm-gateway | working |
+| anneal-7 | llm-gateway follow-up: complete() + tests/fakes.py | ao/llm-gateway | merged to main (57 tests) |
 
 Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 
