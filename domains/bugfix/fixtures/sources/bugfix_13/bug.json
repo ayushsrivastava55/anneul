@@ -1,0 +1,7 @@
+{
+  "module": "cart.py",
+  "bug_type": "mutable_default",
+  "old": "def add_item(name, price, cart=None):\n",
+  "new": "def add_item(name, price, cart=[]):\n",
+  "note": "the default cart is shared between calls"
+}

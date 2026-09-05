@@ -1,0 +1,7 @@
+{
+  "module": "unique_ids.py",
+  "bug_type": "wrong_return_type",
+  "old": "    return ordered\n",
+  "new": "    return set(ordered)\n",
+  "note": "a set is returned, losing the first-seen order"
+}

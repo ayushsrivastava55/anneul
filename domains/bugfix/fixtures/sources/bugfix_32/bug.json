@@ -1,0 +1,7 @@
+{
+  "module": "settings_lookup.py",
+  "bug_type": "swapped_args",
+  "old": "    return settings.get(key, default)\n",
+  "new": "    return settings.get(default, key)\n",
+  "note": "the key and the fallback are passed to dict.get the wrong way round"
+}

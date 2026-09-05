@@ -1,0 +1,7 @@
+{
+  "module": "chunk_list.py",
+  "bug_type": "off_by_one",
+  "old": "items[start : start + size]",
+  "new": "items[start : start + size - 1]",
+  "note": "each chunk is one element short"
+}

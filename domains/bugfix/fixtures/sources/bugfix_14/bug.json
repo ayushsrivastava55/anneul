@@ -1,0 +1,7 @@
+{
+  "module": "tags.py",
+  "bug_type": "mutable_default",
+  "old": "def collect_tags(record, seen=None):\n",
+  "new": "def collect_tags(record, seen=set()):\n",
+  "note": "tags leak from one top-level call into the next"
+}

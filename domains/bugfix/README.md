@@ -17,3 +17,31 @@ AO worker to synthesise `run_tests` under `generated_tools/`, after which pass^3
 ## Fallback
 If dataset generation runs over 90 minutes, switch to text-to-SQL on a Spider subset
 (evaluator = result-set equality against SQLite). Keep the same split sizes.
+
+## As built (task 3.2)
+
+40 cases, `bugfix_01` .. `bugfix_40`, seven bug types: off-by-one (6), wrong comparison (6),
+mutable default (5), missing edge case (6), wrong return type (5), swapped args (6), bad regex
+(6). Every pair was verified by actually running pytest twice — it must fail on the buggy
+module and pass on the fixed one — via
+`uv run python -m domains.bugfix.fixtures.make_tasks --verify` (40/40).
+
+```
+fixtures/sources/<id>/          authored once: the CORRECT module, its pytest file, bug.json
+fixtures/cases/<id>/            generated + committed: what the agent sees (buggy module,
+                                tests/, empty conftest.py so the module is importable)
+fixtures/make_tasks.py          injects each bug, deals the split, writes ../tasks.jsonl
+```
+
+`bug.json` records the single defect as an `old` -> `new` string replacement that must match
+exactly once, so every case is a one-line change from a known-good module and the diff is
+auditable. The fixed source never ships inside a task directory; `eval.fixed_source(task)`
+reads it from `sources/` for the tests only.
+
+Split: 20 train / 10 search / 10 holdout, `Random(0)`, stratified — cases are grouped by bug
+type, shuffled within the group and dealt train, train, search, holdout, so all seven types
+appear in all three splits rather than a whole type being stranded in the holdout.
+
+Scoring runs `pytest tests/test_<id>.py` in a subprocess (30 s timeout) inside a throwaway copy
+of the task sandbox, never in the repo tree, and restores the pristine `tests/` and
+`conftest.py` over that copy first — rewriting the test file cannot buy a pass.

@@ -1,0 +1,7 @@
+{
+  "module": "slug.py",
+  "bug_type": "bad_regex",
+  "old": "SLUG_RE = re.compile(r\"^[a-z0-9]+(?:-[a-z0-9]+)*$\")",
+  "new": "SLUG_RE = re.compile(r\"^[a-z0-9]+(?:-[a-z0-9]+)*\")",
+  "note": "without the end anchor any trailing rubbish is accepted"
+}
