@@ -106,25 +106,56 @@ def cost(usage: Usage, path: Path | str | None = None) -> float:
     return usage.tokens_in / 1e6 * price_in + usage.tokens_out / 1e6 * price_out
 
 
-def chat(tier: str, messages: list[dict[str, Any]], **kw: Any) -> tuple[str, Usage]:
-    """One chat completion via the gateway. Returns (text, Usage) inside an ``llm.chat`` span."""
-    model = resolve_model(tier)
-    client = get_client(tier)
-    with span("llm.chat", tier=tier, model=model):
-        start = time.perf_counter()
-        raw = client.chat.completions.with_raw_response.create(
-            model=model, messages=messages, **kw
-        )
-        latency_ms = (time.perf_counter() - start) * 1000
+def _usage_from(raw: Any, model: str, latency_ms: float) -> Usage:
     response = raw.parse()
-    usage = Usage(
+    return Usage(
         tokens_in=response.usage.prompt_tokens if response.usage else 0,
         tokens_out=response.usage.completion_tokens if response.usage else 0,
         backend=raw.headers.get(BACKEND_HEADER),
         model=model,
         latency_ms=round(latency_ms, 1),
     )
-    return response.choices[0].message.content or "", usage
+
+
+def complete(
+    tier: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    *,
+    client: Any | None = None,
+    path: Path | str | None = None,
+    **kw: Any,
+) -> tuple[dict[str, Any], Usage]:
+    """One chat completion via the gateway, keeping tool calls.
+
+    Returns the assistant message as a plain dict (``role``, ``content``, ``tool_calls``)
+    ready to append to ``messages``, plus ``Usage``. ``client`` overrides ``get_client``
+    (tests inject ``tests.fakes.FakeClient``); ``path`` overrides ``specs/models.yaml``.
+    """
+    model = resolve_model(tier, path)
+    client = client if client is not None else get_client(tier, path)
+    if tools is not None:
+        kw["tools"] = tools
+    with span("llm.chat", tier=tier, model=model):
+        start = time.perf_counter()
+        raw = client.chat.completions.with_raw_response.create(model=model, messages=messages, **kw)
+        latency_ms = (time.perf_counter() - start) * 1000
+    message = raw.parse().choices[0].message.model_dump(exclude_none=True)
+    message.setdefault("role", "assistant")
+    return message, _usage_from(raw, model, latency_ms)
+
+
+def chat(
+    tier: str,
+    messages: list[dict[str, Any]],
+    *,
+    client: Any | None = None,
+    path: Path | str | None = None,
+    **kw: Any,
+) -> tuple[str, Usage]:
+    """Text-only convenience over ``complete``. Returns (text, Usage)."""
+    message, usage = complete(tier, messages, client=client, path=path, **kw)
+    return message.get("content") or "", usage
 
 
 def main(argv: list[str] | None = None) -> int:
