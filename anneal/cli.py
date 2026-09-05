@@ -11,7 +11,7 @@ from anneal import __version__
 
 COMMANDS: dict[str, str] = {
     "run": "generate, run, diagnose, mutate and gate candidates for a domain",
-    "gate": "re-run the holdout gate on the incumbent",
+    "gate": "re-run the held-out gate on the incumbent",
     "anneal": "downshift node models along the cost/latency Pareto front",
     "dashboard": "serve the runs/ dashboard on http://localhost:8000",
 }

@@ -14,12 +14,12 @@ Phase: 1 (core loop, H2–H8) — six workers running; Phase 0 fully merged (49 
 ## Phase 1 AO sessions
 | Session | Task | Branch | State |
 |---|---|---|---|
-| anneal-11 | 1.1 runtime-single | ao/runtime-single | working |
-| anneal-12 | 1.2 runner | ao/runner | working |
-| anneal-13 | 1.3 architect (+ prompts.py) | ao/architect | working |
-| anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | working |
-| anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | working |
-| anneal-15 | 1.6 gate | ao/gate | working |
+| anneal-11 | 1.1 runtime-single | ao/runtime-single | stalled once, nudged, working |
+| anneal-12 | 1.2 runner | ao/runner | merged to main |
+| anneal-13 | 1.3 architect (+ prompts.py) | ao/architect | merged to main |
+| anneal-16 | 1.4 diagnose-v1 | ao/diagnose-v1 | stalled once, nudged, working |
+| anneal-14 | 1.5 mutate-v1 | ao/mutate-v1 | stalled once, nudged, working |
+| anneal-15 | 1.6 gate | ao/gate | merged to main |
 | — | 1.7 cli-run | — | held until runtime + runner merge |
 | anneal-7 | llm-gateway follow-up: complete() + tests/fakes.py | ao/llm-gateway | merged to main (57 tests) |
 
@@ -42,5 +42,8 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - Merge order: scaffold first (owns pyproject), then rebase the other four onto it.
 
 ## Latest numbers
+main: 99 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+
+## Old latest numbers
 none
 - [x] 0.1 scaffold - uv project (pyproject, hatchling, uv.lock), anneal/ package with __version__, config.env() via python-dotenv, argparse+rich cli stub (`uv run anneal`), ruff (100 cols, py312, fixtures excluded), pytest (3 tests). `uv run ruff check . && uv run pytest` green.
