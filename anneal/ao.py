@@ -91,6 +91,11 @@ committed anything (``git branch --list ao/probe-shape`` matched seconds after t
 Branch existence is therefore not a completion signal, so :func:`wait_for_branch` accepts a
 branch only once its tip has moved past ``base_ref`` and only re-runs ``accept_cmd`` when the
 tip sha changes.
+
+Verified end to end with ``uv run python -m anneal.ao --selftest``: session ``anneal-27``
+was spawned on ``ao/selftest-f836bf``, wrote and committed a trivial tool plus its test,
+and the commit ``70dfa93`` was accepted by pytest in a detached worktree (``1 passed``);
+the session was then killed and the branch deleted.
 """
 
 from __future__ import annotations
