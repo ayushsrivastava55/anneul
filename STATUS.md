@@ -27,3 +27,4 @@ Phase: 0 (Foundations) — started Sat 5 Sep 2026, workers spawned.
 
 ## Latest numbers
 none
+- [x] 0.3 anneal-7 — anneal/llm.py gateway (get_client/resolve_model/chat/cost via specs/models.yaml + env), tests/test_llm.py (9 offline, 1 live skipped pending TENSORMUX_API_KEY), CLI smoke `uv run python -m anneal.llm --tier mid "hello"`; minimal pyproject.toml pending scaffold merge
