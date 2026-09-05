@@ -2,12 +2,20 @@
 
 For every failed row (``score < THRESHOLD`` or ``hard_fail``):
 
-1. deterministic pre-checks: ``hard_fail`` -> ``unsafe_action``, ``schema_error`` ->
-   ``output_format``, ``hit_step_budget`` -> ``loop_or_timeout``;
+1. deterministic pre-checks, in descending severity: ``hard_fail`` -> ``unsafe_action``,
+   ``schema_error`` -> ``output_format``, ``hit_step_budget`` -> ``loop_or_timeout``, and a
+   truncation error or an over-budget token total -> ``context_overflow``;
 2. otherwise an LLM classifier (tier ``cheap`` via :mod:`anneal.llm`; an injected ``client``
    such as ``tests.fakes.FakeClient`` keeps tests offline)
    constrained to the ``detect: llm`` class ids in ``specs/failure_taxonomy.yaml``, given the
-   row output, the task input and the trace context.
+   row output, the task input, the trace context and the deterministic signals below.
+
+The classifier can only ever return an id listed in the taxonomy. When its reply is
+unparseable, names an id outside that list, or omits the class, we fall back to the
+highest-severity deterministic guess -- a heuristic signal when one fired (``missing_capability``
+for an action no tool provides or an identical failing tool call retried, ``context_overflow``
+for a near-budget token total), else the highest-severity classifier class -- and record
+``"fallback": true`` on the ledger entry so the ledger never hides a guess.
 
 Trace context comes from a :class:`TraceSource`: :class:`NeatlogsMCP` (JSON-RPC over the
 Neatlogs streamable-HTTP MCP endpoint, rate-limited to 60 req/min) when ``NEATLOGS_API_KEY``
@@ -31,7 +39,7 @@ from typing import Any, Protocol
 import httpx
 import yaml
 
-from anneal import llm
+from anneal import config, llm
 from anneal.tracing import llm_span, tool_span
 
 logger = logging.getLogger("anneal.diagnose")
@@ -43,6 +51,21 @@ SEARCH_SPLIT = "search"
 CLASSIFIER_TIER = "cheap"
 MAX_CONTEXT_CHARS = 6000
 
+# Row ``tokens_in``/``tokens_out`` are cumulative over every step of the task, not the peak
+# prompt size, so this default is sized for a whole multi-step run rather than one window.
+CONTEXT_TOKEN_LIMIT_ENV = "ANNEAL_CONTEXT_TOKEN_LIMIT"
+DEFAULT_CONTEXT_TOKEN_LIMIT = 100_000
+# Two identical failing calls to the same tool is already a retry loop, not a one-off blip.
+REPEAT_RETRY_THRESHOLD = 2
+
+TRUNCATION_RE = re.compile(
+    r"context_length_exceeded|maximum context length|context window|"
+    r"prompt is too long|too many tokens|reduce the length of the messages",
+    re.IGNORECASE,
+)
+UNKNOWN_TOOL_RE = re.compile(r"unknown tool|no such tool|not a (?:known|valid) tool", re.IGNORECASE)
+TOOL_ERROR_RE = re.compile(r"^\s*(?:error|exception|traceback|failed)\b", re.IGNORECASE)
+
 Issue = dict[str, Any]
 Row = dict[str, Any]
 
@@ -52,6 +75,9 @@ DETERMINISTIC_CHECKS: tuple[tuple[str, str], ...] = (
     ("schema_error", "output_format"),
     ("hit_step_budget", "loop_or_timeout"),
 )
+# Class ids this module decides without any model call. Kept next to the checks above so
+# tests can assert the union with ``llm_classes`` covers the whole taxonomy.
+DETERMINISTIC_CLASSES: tuple[str, ...] = (*(c for _, c in DETERMINISTIC_CHECKS), "context_overflow")
 
 
 # --- taxonomy -----------------------------------------------------------------------------
@@ -70,6 +96,16 @@ def load_taxonomy(path: Path | str | None = None) -> dict[str, dict[str, Any]]:
 def llm_classes(taxonomy: dict[str, dict[str, Any]]) -> list[str]:
     """Class ids the LLM classifier may choose from (``detect: llm``)."""
     return [cid for cid, spec in taxonomy.items() if spec.get("detect") == "llm"]
+
+
+def deterministic_classes() -> list[str]:
+    """Class ids this module decides from run flags and trace shape alone."""
+    return list(DETERMINISTIC_CLASSES)
+
+
+def severity(taxonomy: dict[str, dict[str, Any]], cls: str) -> float:
+    """Severity weight of ``cls``, or 0 when the taxonomy does not list it."""
+    return float(taxonomy.get(cls, {}).get("severity", 0))
 
 
 # --- trace sources ------------------------------------------------------------------------
@@ -260,12 +296,19 @@ def _next_id(ledger: list[Issue]) -> str:
     return f"L-{highest + 1:04d}"
 
 
-def upsert(ledger: list[Issue], cls: str, node: str, evidence: Iterable[str]) -> Issue:
-    """Increment the ``(class, node)`` issue (creating it if needed) and dedupe evidence."""
+def upsert(
+    ledger: list[Issue], cls: str, node: str, evidence: Iterable[str], *, fallback: bool = False
+) -> Issue:
+    """Increment the ``(class, node)`` issue (creating it if needed) and dedupe evidence.
+
+    ``fallback=True`` marks the issue as holding at least one row whose class came from the
+    deterministic fallback rather than a usable classifier reply. It is sticky once set.
+    """
     for issue in ledger:
         if issue["class"] == cls and issue["node"] == node:
             issue["count"] += 1
             issue["evidence"].extend(e for e in evidence if e not in issue["evidence"])
+            issue["fallback"] = bool(issue.get("fallback")) or fallback
             return issue
     issue: Issue = {
         "id": _next_id(ledger),
@@ -275,6 +318,7 @@ def upsert(ledger: list[Issue], cls: str, node: str, evidence: Iterable[str]) ->
         "evidence": list(dict.fromkeys(evidence)),
         "status": "open",
         "operators_tried": [],
+        "fallback": fallback,
     }
     ledger.append(issue)
     return issue
@@ -299,12 +343,100 @@ def is_failure(row: Row, threshold: float) -> bool:
     return bool(row.get("hard_fail")) or float(row.get("score", 0.0)) < threshold
 
 
-def deterministic_class(row: Row) -> str | None:
-    """Class id from run flags alone, or None when the LLM must decide."""
+def context_token_limit() -> int:
+    """Cumulative-token ceiling above which a failed run counts as ``context_overflow``.
+
+    Read from ``$ANNEAL_CONTEXT_TOKEN_LIMIT`` at call time; a missing or unparseable value
+    falls back to :data:`DEFAULT_CONTEXT_TOKEN_LIMIT`.
+    """
+    raw = config.env(CONTEXT_TOKEN_LIMIT_ENV)
+    try:
+        limit = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_CONTEXT_TOKEN_LIMIT
+    return limit if limit > 0 else DEFAULT_CONTEXT_TOKEN_LIMIT
+
+
+def _as_text(value: Any) -> str:
+    """Best-effort string view of a trace result / output for pattern matching."""
+    return value if isinstance(value, str) else json.dumps(value, default=str)
+
+
+def _trace_steps(row: Row) -> list[dict[str, Any]]:
+    return [step for step in (row.get("trace") or []) if isinstance(step, dict)]
+
+
+def _row_texts(row: Row) -> list[str]:
+    """Every free-text surface of a row an error can show up in."""
+    texts = [_as_text(row.get("output")), _as_text(row.get("error") or "")]
+    texts.extend(_as_text(step.get("result")) for step in _trace_steps(row))
+    return texts
+
+
+def context_overflow(row: Row, *, token_limit: int | None = None) -> bool:
+    """True when the run hit a truncation error or burned more tokens than the ceiling."""
+    if any(TRUNCATION_RE.search(text) for text in _row_texts(row)):
+        return True
+    limit = context_token_limit() if token_limit is None else token_limit
+    total = int(row.get("tokens_in") or 0) + int(row.get("tokens_out") or 0)
+    return total > limit
+
+
+def _spec_tools(spec: Any) -> set[str]:
+    names: set[str] = set()
+    for node in getattr(spec, "nodes", None) or []:
+        names.update(str(t) for t in (getattr(node, "tools", None) or []))
+    return names
+
+
+def missing_capability_signal(row: Row, spec: Any) -> bool:
+    """True when the agent reached for an action no tool provides.
+
+    Either it called a tool the spec does not grant (the runtime answers
+    ``Error: unknown tool ...``), or it retried one identical call that kept erroring.
+    """
+    known = _spec_tools(spec)
+    attempts: dict[tuple[str, str], int] = {}
+    for step in _trace_steps(row):
+        name = str(step.get("tool", ""))
+        result = _as_text(step.get("result"))
+        if UNKNOWN_TOOL_RE.search(result) or (known and name and name not in known):
+            return True
+        if TOOL_ERROR_RE.search(result):
+            key = (name, json.dumps(step.get("args"), sort_keys=True, default=str))
+            attempts[key] = attempts.get(key, 0) + 1
+            if attempts[key] >= REPEAT_RETRY_THRESHOLD:
+                return True
+    return False
+
+
+def deterministic_class(row: Row, *, token_limit: int | None = None) -> str | None:
+    """Class id from run flags and trace shape alone, or None when the LLM must decide."""
     for flag, cls in DETERMINISTIC_CHECKS:
         if row.get(flag):
             return cls
+    if context_overflow(row, token_limit=token_limit):
+        return "context_overflow"
     return None
+
+
+def heuristic_guesses(row: Row, spec: Any, taxonomy: dict[str, dict[str, Any]]) -> list[str]:
+    """Classifier classes the deterministic signals point at, highest severity first."""
+    guesses = [
+        cls
+        for cls, fired in (("missing_capability", missing_capability_signal(row, spec)),)
+        if fired and cls in taxonomy
+    ]
+    return sorted(guesses, key=lambda c: -severity(taxonomy, c))
+
+
+def fallback_class(
+    guesses: list[str], allowed: list[str], taxonomy: dict[str, dict[str, Any]]
+) -> str:
+    """Safe class for an unusable classifier reply: never an id outside the taxonomy."""
+    if guesses:
+        return guesses[0]
+    return max(allowed, key=lambda c: severity(taxonomy, c))
 
 
 def _node_names(spec: Any) -> list[str]:
@@ -337,6 +469,7 @@ def build_prompt(
     context: dict[str, Any] | None,
     classes: dict[str, dict[str, Any]],
     nodes: list[str],
+    guesses: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Chat messages asking the classifier for ``{"class": ..., "node": ...}``."""
     class_lines = "\n".join(
@@ -344,10 +477,18 @@ def build_prompt(
     )
     system = (
         "You classify why an LLM agent failed a task. Reply with a single JSON object "
-        '{"class": <one class id>, "node": <one node name>} and nothing else.\n'
+        '{"class": <one class id>, "node": <one node name>} and nothing else. Use only the '
+        "class ids listed below; never invent one.\n"
         f"Allowed class ids:\n{class_lines}\nAllowed nodes: {', '.join(nodes)}"
     )
+    signals = (
+        f"Deterministic signals suggest: {', '.join(guesses)}. "
+        "Weigh them against the evidence; they are hints, not the answer.\n\n"
+        if guesses
+        else ""
+    )
     user = (
+        f"{signals}"
         f"Task input:\n{_truncate(task_input)}\n\n"
         f"Agent output:\n{_truncate(row.get('output'))}\n\n"
         f"Trace context:\n{_truncate(context or {})}"
@@ -361,10 +502,11 @@ def classify_with_llm(
     allowed: list[str],
     nodes: list[str],
     client: Any | None = None,
-) -> tuple[str, str | None]:
+) -> tuple[str | None, str | None]:
     """Ask the ``cheap`` tier via the gateway; ``client`` overrides it (tests inject a fake).
 
-    The reply is coerced to an allowed class; garbage falls back to the first allowed class.
+    Returns ``(class, node)``. The class is None -- never an invented id -- when the reply is
+    unparseable or names something outside ``allowed``; the caller then picks the fallback.
     """
     reply, _usage = llm.chat(CLASSIFIER_TIER, messages, client=client, temperature=0)
     parsed: dict[str, Any] = {}
@@ -374,10 +516,10 @@ def classify_with_llm(
             parsed = json.loads(match.group(0))
         except ValueError:
             parsed = {}
-    cls = str(parsed.get("class", "")).strip()
+    cls: str | None = str(parsed.get("class", "")).strip()
     if cls not in allowed:
-        logger.warning("classifier returned unknown class", extra={"reply": reply[:200]})
-        cls = allowed[0]
+        logger.warning("classifier returned unusable class", extra={"reply": reply[:200]})
+        cls = None
     node = parsed.get("node")
     return cls, str(node) if node in nodes else None
 
@@ -406,18 +548,23 @@ def _classify_row(
     traces: TraceSource,
     taxonomy: dict[str, dict[str, Any]],
     client: Any | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, bool]:
+    """``(class, node, fell_back)`` for one failed row. Deterministic checks skip the model."""
     cls = deterministic_class(row)
     if cls is not None:
-        return cls, default_node(row, spec)
+        return cls, default_node(row, spec), False
     nodes = _node_names(spec)
     allowed = llm_classes(taxonomy)
+    guesses = heuristic_guesses(row, spec, taxonomy)
     context = traces.get_trace_context(str(row.get("trace_id") or row.get("task_id")))
     classes = {cid: taxonomy[cid] for cid in allowed}
-    cls, node = classify_with_llm(
-        build_prompt(row, task_input, context, classes, nodes), allowed, nodes, client
-    )
-    return cls, node or default_node(row, spec)
+    messages = build_prompt(row, task_input, context, classes, nodes, guesses)
+    cls, node = classify_with_llm(messages, allowed, nodes, client)
+    fell_back = cls is None
+    if cls is None:
+        cls = fallback_class(guesses, allowed, taxonomy)
+        logger.warning("classifier fell back", extra={"class": cls, "guesses": guesses})
+    return cls, node or default_node(row, spec), fell_back
 
 
 def diagnose(
@@ -446,10 +593,13 @@ def diagnose(
         if not is_failure(row, threshold):
             continue
         task_input = inputs.get(task_id) if inputs is not None else None
-        cls, node = _classify_row(row, task_input, spec, source, taxonomy, client)
+        cls, node, fell_back = _classify_row(row, task_input, spec, source, taxonomy, client)
         evidence = [str(row.get("trace_id") or task_id)]
-        issue = upsert(ledger, cls, node, evidence)
+        issue = upsert(ledger, cls, node, evidence, fallback=fell_back)
         touched[issue["id"]] = issue
-        logger.info("diagnosed", extra={"task_id": task_id, "class": cls, "node": node})
+        logger.info(
+            "diagnosed",
+            extra={"task_id": task_id, "class": cls, "node": node, "fallback": fell_back},
+        )
     save_ledger(ledger_path, ledger)
     return list(touched.values())
