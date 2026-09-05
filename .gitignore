@@ -1,13 +1,38 @@
+# Secrets — never commit
 .env
+.env.*
+!.env.example
+
+# Python
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Anneal artifacts: runs are regenerated; only the final reported set is tracked
 runs/*
 !runs/final/
 !runs/.gitkeep
 prompts/cache/
+
+# Tools synthesised by AO workers, tracked only once promoted
 domains/*/generated_tools/*
 !domains/*/generated_tools/.gitkeep
-.pytest_cache/
-.ruff_cache/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Media and logs
 *.mp4
+*.log
