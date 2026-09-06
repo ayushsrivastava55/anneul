@@ -101,9 +101,30 @@ Unit tests passed on every module; these only appeared when the modules ran toge
 5. Row `iteration` disagreed with span `iteration`, breaking any join from runs to traces.
    Fixed; the loop counter is authoritative.
 
+## Measured noise floor (bugfix, live, Claude tiers)
+The single most important measured result so far, and it is a negative one. `cand-01` is one
+unchanged spec. The gate ran it 3x on the same 10 reserved tasks at iteration 0 and again at
+iteration 1:
+
+    iteration 0   mean 0.333
+    iteration 1   mean 0.133
+
+Same spec, same tasks, same tier. The 0.20 swing is pure run-to-run variance. Consequences:
+- Both bugfix mutations were rejected at p = 1.000. That is the gate working, not a bug: at this
+  variance nothing an operator can do to 10 tasks is distinguishable from noise.
+- The downshift then "beat" the peak (mid 0.300, cheap 0.233 vs peak 0.133). That is the same
+  noise band, not evidence that Sonnet beats Opus at repairing code. It must not be reported as
+  a win.
+- This is the detectable-effect floor the docs said we had to state out loud. On bugfix, with
+  10 tasks x 3 runs, we can only detect effects far larger than 0.20. We report bugfix as
+  not-measurable at this sample size rather than dressing noise as improvement.
+
+Do not fix this by raising k until it looks good. Report the floor.
+
 ## Latest numbers
-main: 372 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
-These are all offline. There are still no measured numbers from a real model.
+main: 373 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+Live so far: invoices (downshift held score, cost -69%), bugfix (both mutations rejected; see the
+noise floor above), airline still running.
 
 ## Old latest numbers
 none
