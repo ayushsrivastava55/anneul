@@ -127,7 +127,7 @@ def test_run_writes_contract_rows(tmp_path: Path, tasks: list[FakeTask]) -> None
     assert calls["spec_ids"] == ["cand-1"] * 3
     assert [r["task_id"] for r in rows] == ["t1", "t2", "t3"]
 
-    path = tmp_path / "fake" / "2" / "cand-1.jsonl"
+    path = tmp_path / "fake" / "2" / "cand-1.search.s7.jsonl"
     assert path.exists()
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     assert lines == rows
@@ -158,7 +158,7 @@ def test_run_concurrency_defaults_from_env(monkeypatch, tmp_path: Path, tasks) -
         SPEC, make_domain(tasks, calls), SPLIT, run_task=make_run_task(calls), runs_dir=tmp_path
     )
     assert len(rows) == 3
-    assert (tmp_path / "fake" / "0" / "cand-1.jsonl").exists()
+    assert (tmp_path / "fake" / "0" / "cand-1.search.s0.jsonl").exists()
 
 
 def test_run_records_task_exception_as_failure(tmp_path: Path, tasks) -> None:
@@ -259,3 +259,55 @@ def test_summarize_empty() -> None:
         "cost_per_task": 0.0,
         "cost_by_node": {},
     }
+
+
+def test_summarize_tolerates_malformed_models_yaml(tmp_path: Path) -> None:
+    bad = tmp_path / "models.yaml"
+    bad.write_text("tiers: [unclosed\n")
+    summary = runner.summarize([_row(1.0, False, 1.0)], 1.0, models_path=bad)
+    assert summary["cost_usd"] == 0.0
+
+
+def test_run_uses_requested_number_of_threads(tmp_path: Path, tasks) -> None:
+    import threading
+    import time
+
+    seen: set[str] = set()
+    started = threading.Barrier(3, timeout=5)
+
+    def slow(spec, task, domain, *, seed=0):
+        seen.add(threading.current_thread().name)
+        started.wait()  # all three tasks must be in flight together
+        time.sleep(0.01)
+        return FakeResult(output="ok", per_node=_per_node(1, 1))
+
+    rows = runner.run(
+        SPEC, make_domain(tasks, {}), SPLIT, concurrency=3, run_task=slow, runs_dir=tmp_path
+    )
+    assert len(rows) == 3 and len(seen) == 3
+    assert all(name.startswith("anneal") for name in seen)
+
+
+def test_run_path_round_trips_and_globs(tmp_path: Path) -> None:
+    path = runner.run_path(tmp_path, "d", 3, "cand-1-anneal-2", "search", 5)
+    assert path == tmp_path / "d" / "3" / "cand-1-anneal-2.search.s5.jsonl"
+    assert runner.parse_run_name(path) == ("cand-1-anneal-2", "search", 5)
+    with pytest.raises(ValueError):
+        runner.parse_run_name(tmp_path / "cand-1.jsonl")
+    for split, seed in (("search", 0), ("other", 0), ("other", 1)):
+        runner.write_rows([], runner.run_path(tmp_path, "d", 3, "cand-1", split, seed))
+    assert len(runner.find_runs(tmp_path, "d", 3, "cand-1")) == 3
+    assert len(runner.find_runs(tmp_path, "d", 3, split="other")) == 2
+    assert runner.find_runs(tmp_path, "d", 3, "cand-1", "search", 0) == [
+        tmp_path / "d" / "3" / "cand-1.search.s0.jsonl"
+    ]
+
+
+def test_runs_on_different_splits_and_seeds_do_not_overwrite(tmp_path: Path, tasks) -> None:
+    calls: dict[str, Any] = {}
+    domain = make_domain(tasks, calls)
+    run_task = make_run_task(calls)
+    runner.run(SPEC, domain, SPLIT, seed=0, run_task=run_task, runs_dir=tmp_path)
+    runner.run(SPEC, domain, SPLIT, seed=1, run_task=run_task, runs_dir=tmp_path)
+    names = sorted(p.name for p in (tmp_path / "fake" / "0").glob("*.jsonl"))
+    assert names == ["cand-1.search.s0.jsonl", "cand-1.search.s1.jsonl"]

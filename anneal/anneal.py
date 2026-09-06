@@ -112,9 +112,7 @@ def node_order(spec: HarnessSpec, prior_rows: Rows) -> list[str]:
     return sorted(names, key=lambda name: (-share.get(name, 0.0), names.index(name)))
 
 
-def _relabel(
-    base: HarnessSpec, config_id: str, node_name: str = "", tier: str = ""
-) -> HarnessSpec:
+def _relabel(base: HarnessSpec, config_id: str, node_name: str = "", tier: str = "") -> HarnessSpec:
     """Copy ``base`` under a new id/lineage, optionally moving one node to ``tier``."""
     candidate = base.model_copy(deep=True)
     for node in candidate.nodes:
@@ -149,9 +147,7 @@ def _dominates(a: ParetoPoint, b: ParetoPoint) -> bool:
 
 def pareto_front(points: list[ParetoPoint]) -> list[ParetoPoint]:
     """The non-dominated points: maximise score, minimise $/task and p95 latency."""
-    return [
-        p for p in points if not any(_dominates(q, p) for q in points if q is not p)
-    ]
+    return [p for p in points if not any(_dominates(q, p) for q in points if q is not p)]
 
 
 # --- evaluation -------------------------------------------------------------------------
@@ -187,11 +183,13 @@ def _evaluate(
 
 
 def _load_prior_rows(runs_dir: Path | str, domain: Any, iteration: int, spec_id: str) -> Rows:
-    """Read the incumbent's rows for this iteration, if the runner already wrote them."""
-    path = Path(runs_dir) / domain.name / str(iteration) / f"{spec_id}.jsonl"
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    """Read every row the runner wrote for ``spec_id`` at this iteration (any split/seed)."""
+    rows: Rows = []
+    for path in runner.find_runs(runs_dir, domain.name, iteration, spec_id):
+        rows.extend(
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line
+        )
+    return rows
 
 
 def _write(
@@ -240,8 +238,12 @@ def downshift(
     if prior_rows is None:
         prior_rows = _load_prior_rows(runs_dir, domain, iteration, spec.id)
     ev = functools.partial(
-        _evaluate, domain=domain, iteration=iteration, run=run,
-        n_runs=n_runs, models_path=models_path,
+        _evaluate,
+        domain=domain,
+        iteration=iteration,
+        run=run,
+        n_runs=n_runs,
+        models_path=models_path,
     )
 
     winner = _relabel(spec, f"{spec.id}-anneal-0")
