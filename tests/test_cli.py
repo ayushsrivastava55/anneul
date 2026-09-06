@@ -513,6 +513,42 @@ def test_dashboard_serves_instead_of_stubbing(monkeypatch, tmp_path):
     assert served["app"].state.anneal.runs_dir == tmp_path
 
 
+@pytest.mark.parametrize("command", ["run", "gate", "anneal", "report"])
+def test_run_path_initialises_and_shuts_down_tracing(monkeypatch, tmp_path, command):
+    """Regression: nothing on the run path called init_tracing, so a configured tracing
+    project received zero spans and Diagnose queried the MCP for traces never sent.
+
+    report is included to pin the other half: it does no model work, so it must not pay
+    the tracing handshake.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr("anneal.tracing.init_tracing", lambda *a, **k: calls.append("init"))
+    monkeypatch.setattr("anneal.tracing.shutdown", lambda *a, **k: calls.append("shutdown"))
+    for name in ("cmd_run", "cmd_gate", "cmd_anneal", "cmd_report"):
+        monkeypatch.setattr(cli, name, lambda args, console: 0)
+    root = tmp_path / "runs"
+    root.mkdir()
+    assert cli.main([command, str(root)]) == 0
+    expected = ["init", "shutdown"] if command != "report" else []
+    assert calls == expected
+
+
+def test_tracing_is_shut_down_even_when_the_command_raises(monkeypatch, tmp_path):
+    """Spans are batched, so a crash without shutdown loses the evidence for the failure
+    that is most worth looking at."""
+    calls: list[str] = []
+    monkeypatch.setattr("anneal.tracing.init_tracing", lambda *a, **k: calls.append("init"))
+    monkeypatch.setattr("anneal.tracing.shutdown", lambda *a, **k: calls.append("shutdown"))
+
+    def boom(args, console):
+        raise RuntimeError("domain blew up")
+
+    monkeypatch.setattr(cli, "cmd_run", boom)
+    with pytest.raises(RuntimeError, match="domain blew up"):
+        cli.main(["run", str(tmp_path)])
+    assert calls == ["init", "shutdown"]
+
+
 def test_anneal_domain_filter_skips_other_domains(monkeypatch, tmp_path, capsys):
     """--domain scopes the downshift, so a finished domain is not re-annealed."""
     root = tmp_path / "runs"
