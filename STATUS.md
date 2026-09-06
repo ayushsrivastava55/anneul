@@ -6,6 +6,35 @@ AO worker spawn/accept verified end to end (session anneal-1, branch ao/selftest
 Runs in flight: airline (iterating), bugfix (rerun with cause-first diagnosis).
 Invoices is done: saturated at 1.000, annealed down to nano. Dodo still keyless.
 
+## Found and fixed on 6 Sep (night)
+1. **Bugfix's entire failure story was a concurrency bug, not the model.** The "current
+   sandbox" was a module global while the runner executes tasks in a thread pool, so every
+   in-flight task read whichever sandbox `setup()` touched last: `read_file` returned "No
+   such file or directory" for files that existed, agents looped hunting their own module,
+   and 6/10 tasks died on the step budget. ContextVar now (airline's DB already did this).
+   With the fix, all three topologies score 1.000 on bugfix at mid tier for $1.96 - which
+   also means the earlier "measured noise floor" section below was measuring the race, not
+   run-to-run variance. Treat those numbers as an artifact.
+2. **ANNEAL_TIER_CAP starts the loop on a weak tier.** A mid executor saturates bugfix and
+   invoices at 1.000 on iteration 0 - nothing to learn, nothing to show. The cap (e.g.
+   `cheap`, `flash`) is where the learning loop starts; anneal still owns cost from there.
+3. **TensorMux 60 RPM poisoned gate runs.** A gate burst (3 seeds x 10 concurrent tasks)
+   blew the per-minute cap, whole holdout batches errored 429, and a mutation scored
+   pass^3 0.1 on nothing but rate limiting. llm now retries 429s with 4s..64s backoff.
+4. **The gate escalates instead of rejecting on thin data.** Every non-regression rejection
+   across airline/bugfix was "p >= alpha" with 1-3 discordant tasks - below the arithmetic
+   floor of 4 where no verdict is reachable. When the candidate is strictly ahead and p is
+   the only objection, the gate now buys a second block of seeds for both specs and
+   re-decides on all 2n runs (two-stage group-sequential; disclosed per-gate as
+   `escalated` in gate.json; ANNEAL_GATE_ESCALATION=0 disables).
+5. **The flagship synthesize_tool arc ran end to end** (in the 429-poisoned run, archived):
+   diagnose classed the failures missing_capability -> AO session anneal-3 wrote
+   generated_tools/run_pytest.py + its acceptance test -> gate ran the candidate 3x. It
+   was rejected 0.8 vs 0.9 under rate-limit noise; the arc itself is real and demoable.
+   Root-cause chain that made it possible: rows now carry a bounded tool-call trace, and a
+   step-budget death is treated as a symptom (ungranted-tool call -> missing_capability;
+   else the model picks the cause with loop_or_timeout still on the menu).
+
 ## Found and fixed on 6 Sep (evening)
 1. **Headline result — invoices Pareto is in.** The anneal stage walked the executor down
    every tier and every downgrade held: mid $0.0425/task -> cheap $0.0137 -> flash
