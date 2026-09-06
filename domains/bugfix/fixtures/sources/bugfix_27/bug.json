@@ -1,0 +1,7 @@
+{
+  "module": "parse_flags.py",
+  "bug_type": "wrong_return_type",
+  "old": "    return (flags, positionals)\n",
+  "new": "    return [flags, positionals]\n",
+  "note": "a list is returned where a tuple is expected"
+}

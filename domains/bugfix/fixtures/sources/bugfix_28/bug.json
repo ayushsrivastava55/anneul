@@ -1,0 +1,7 @@
+{
+  "module": "vat.py",
+  "bug_type": "wrong_return_type",
+  "old": "    return round(net * RATE, 2)\n",
+  "new": "    return int(net * RATE)\n",
+  "note": "the VAT is truncated to a whole-unit int, losing the cents"
+}

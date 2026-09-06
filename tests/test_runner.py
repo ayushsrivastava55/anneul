@@ -226,6 +226,11 @@ def test_summarize_math(tmp_path: Path) -> None:
         "tokens_out": 4_000_000,
         "p95_latency_ms": 100.0,
         "cost_usd": pytest.approx(4 * (1.0 * 1.0 + 1.0 * 2.0)),
+        "cost_per_task": pytest.approx(1.0 * 1.0 + 1.0 * 2.0),
+        "cost_by_node": {
+            "a": pytest.approx(4 * (1.0 * 1.0 + 0.5 * 2.0)),
+            "b": pytest.approx(4 * 0.5 * 2.0),
+        },
     }
 
 
@@ -251,6 +256,8 @@ def test_summarize_empty() -> None:
         "tokens_out": 0,
         "p95_latency_ms": 0.0,
         "cost_usd": 0.0,
+        "cost_per_task": 0.0,
+        "cost_by_node": {},
     }
 
 

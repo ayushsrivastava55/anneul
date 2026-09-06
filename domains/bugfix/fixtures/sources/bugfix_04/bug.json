@@ -1,0 +1,7 @@
+{
+  "module": "fizz_range.py",
+  "bug_type": "off_by_one",
+  "old": "range(1, n + 1)",
+  "new": "range(1, n)",
+  "note": "n itself is left out of the list"
+}

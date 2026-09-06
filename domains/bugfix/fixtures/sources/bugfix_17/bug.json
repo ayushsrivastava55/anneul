@@ -1,0 +1,7 @@
+{
+  "module": "graph.py",
+  "bug_type": "mutable_default",
+  "old": "def add_edge(first, second, adjacency=None):\n",
+  "new": "def add_edge(first, second, adjacency={}):\n",
+  "note": "every graph shares one adjacency dict"
+}

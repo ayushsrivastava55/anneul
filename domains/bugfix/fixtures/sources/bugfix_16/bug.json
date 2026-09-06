@@ -1,0 +1,7 @@
+{
+  "module": "config_merge.py",
+  "bug_type": "mutable_default",
+  "old": "def with_defaults(overrides, base=None):\n",
+  "new": "def with_defaults(overrides, base=DEFAULTS):\n",
+  "note": "the shared DEFAULTS dict is used as the default base"
+}

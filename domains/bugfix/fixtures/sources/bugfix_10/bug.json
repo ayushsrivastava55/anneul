@@ -1,0 +1,7 @@
+{
+  "module": "overlap.py",
+  "bug_type": "wrong_comparison",
+  "old": "return first_start < second_end and second_start < first_end",
+  "new": "return first_start <= second_end and second_start <= first_end",
+  "note": "intervals that merely touch are reported as overlapping"
+}

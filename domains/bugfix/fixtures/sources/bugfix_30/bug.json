@@ -1,0 +1,7 @@
+{
+  "module": "redact.py",
+  "bug_type": "swapped_args",
+  "old": "    return line.replace(secret, MASK)\n",
+  "new": "    return line.replace(MASK, secret)\n",
+  "note": "the mask and the secret are swapped, so nothing is redacted"
+}

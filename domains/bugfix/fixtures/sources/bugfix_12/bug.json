@@ -1,0 +1,7 @@
+{
+  "module": "leap_year.py",
+  "bug_type": "wrong_comparison",
+  "old": "return year % 400 == 0",
+  "new": "return year % 400 != 0",
+  "note": "century leap years are inverted: 2000 common, 1900 leap"
+}

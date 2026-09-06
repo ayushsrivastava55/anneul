@@ -1,0 +1,7 @@
+{
+  "module": "clamp_report.py",
+  "bug_type": "swapped_args",
+  "old": "    return clamp(reading, low, high)\n",
+  "new": "    return clamp(low, reading, high)\n",
+  "note": "the reading and the lower bound are passed in the wrong order"
+}

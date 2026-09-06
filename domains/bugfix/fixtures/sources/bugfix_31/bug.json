@@ -1,0 +1,7 @@
+{
+  "module": "date_span.py",
+  "bug_type": "swapped_args",
+  "old": "    return (end - start).days\n",
+  "new": "    return (start - end).days\n",
+  "note": "the span comes back with the wrong sign"
+}

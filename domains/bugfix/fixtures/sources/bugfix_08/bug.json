@@ -1,0 +1,7 @@
+{
+  "module": "inventory.py",
+  "bug_type": "wrong_comparison",
+  "old": "return quantity <= threshold",
+  "new": "return quantity < threshold",
+  "note": "stock sitting exactly on the threshold is not reordered"
+}
