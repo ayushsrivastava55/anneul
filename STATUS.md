@@ -101,6 +101,39 @@ Unit tests passed on every module; these only appeared when the modules ran toge
 5. Row `iteration` disagreed with span `iteration`, breaking any join from runs to traces.
    Fixed; the loop counter is authoritative.
 
+## The optimiser could not promote anything, and it was three bugs stacked
+Every mutation in every domain was rejected at exactly p=1.000. That uniformity was the
+tell: the cause was arithmetic, not evidence. Three independent faults, each of which alone
+was enough to freeze the loop.
+
+1. **The paired test was two-sided.** The exact binomial floor is 2*0.5^n for n discordant
+   pairs, so p<0.1 was unreachable below 5 discordant tasks out of a 10-task reserved
+   split. An airline candidate won 1 task, lost 0, took pass^3 from 0.700 to 0.800, and was
+   rejected at p=1.000 -- a single pair cannot score below 0.5 however clean the win. Now
+   one-sided, which is the right test once `decide` has already refused anything worse on
+   pass^3 or hard fails.
+2. **The tested statistic was blind.** pass^3 is true only on a clean sweep, so a task
+   moving 0/3 -> 2/3 counted as no change. On bugfix both specs sat at pass^3 = 0.1, the
+   test saw zero pairs twice, and p=1.000 was indistinguishable from having no data. The
+   paired unit is now the per-task count of passing runs.
+3. **Plateau counted rejections it should not have.** PLATEAU is 2. Both domains stopped at
+   iteration 1 on two rejections that no sample size could have decided, so the loop
+   concluded "nothing helps" with no evidence. Underpowered rejections no longer count.
+
+Fault 3 is the expensive one. airline's top issue is unsafe_action, whose operators are
+listed `add_escalation_node, add_validator_node, rewrite_tool_desc`. Iterations 0 and 1
+spent the first two, then the loop quit -- so **rewrite_tool_desc, the tool-description
+learning operator and the single thing this track cares most about, was never attempted in
+any run.** It was one iteration away throughout.
+
+Replayed against the archived rows, the first two fixes recover signal and promote nothing
+new, which is the point: bugfix/0 goes from 0 pairs to 2 wins 2 losses (p=0.69, a real
+wash) and bugfix/1 from 0 pairs to 3 wins 1 loss (p=0.31). So those two mutations moved
+four tasks between them, and the old statistic would have published that as "no effect".
+
+Every gate now records `min_discordant_to_promote` and `underpowered`, so a rejection from
+thin data is never mistaken for a rejection on merit.
+
 ## Measured noise floor (bugfix, live, Claude tiers)
 The single most important measured result so far, and it is a negative one. `cand-01` is one
 unchanged spec. The gate ran it 3x on the same 10 reserved tasks at iteration 0 and again at
@@ -121,10 +154,26 @@ Same spec, same tasks, same tier. The 0.20 swing is pure run-to-run variance. Co
 
 Do not fix this by raising k until it looks good. Report the floor.
 
+## Sponsors wired (6 Sep)
+- Inference: five tiers. Opus/Sonnet/Haiku via Anthropic, then two sponsor-backed floor
+  tiers reached only by the downshift: `flash` = glm-4-7-flash on TensorMux (50M free
+  tokens) and `nano` = gpt-5-nano on the AI Grants India key. Both verified end to end
+  through `anneal.llm`, tool calling included. Architect still only assigns the top three,
+  so heat explores on strong models and cool walks into the cheap ones.
+- glm-4-7-flash is free to us. It carries the third-party market rate ($0.06/$0.40) anyway,
+  because at $0 it trivially dominates every Pareto front. Reported $/task is what the
+  config would cost anyone, not what we were charged. Say this in the README.
+- Tracing: was never initialised on the run path (only mutate.py did, for the prompt
+  registry), so a fully configured project received nothing and Diagnose would have queried
+  the MCP for spans never sent. Wired into cli.main now; verified, zero export failures.
+- Unused on purpose: smallest.ai voice (no voice domain) and Dodo (no key yet).
+
 ## Latest numbers
-main: 373 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
-Live so far: invoices (downshift held score, cost -69%), bugfix (both mutations rejected; see the
-noise floor above), airline still running.
+main: 387 passed, 1 deselected. The deselected one is the live gateway call, now behind
+`-m live`; the default suite is offline by contract and `tests/conftest.py` strips sponsor
+keys so no test can drift onto a live API.
+Live results are being regenerated: the numbers from the first pass all came from the
+frozen gate above, so airline, bugfix and invoices are all re-running.
 
 ## Old latest numbers
 none
