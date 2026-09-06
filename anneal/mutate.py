@@ -164,13 +164,10 @@ def _sync_to_neatlogs(name: str, text: str, label: str, version: int) -> None:
         from anneal.tracing import init_tracing
 
         init_tracing()  # idempotent; the SDK's prompt client reads the key set by init
-        commit = f"anneal mutate: local v{version}"
-        try:
-            neatlogs.save_as_version(prompt_name=name, content=text, labels=[label],
-                                     commit_message=commit)
-        except neatlogs.PromptNotFoundError:
-            neatlogs.create_prompt(name=name, prompt=text, type="text", labels=[label],
-                                   commit_message=commit)
+        # create_prompt versions an existing name; save_as_version 401s under an SDK key
+        # (same finding as anneal/prompts.py, verified live 2026-09-06).
+        neatlogs.create_prompt(name=name, prompt=text, type="text", labels=[label],
+                               commit_message=f"anneal mutate: local v{version}")
     except Exception as exc:  # noqa: BLE001 - registry sync must never break a mutation
         logger.warning("neatlogs prompt sync failed for %s v%s: %s", name, version, exc)
 
