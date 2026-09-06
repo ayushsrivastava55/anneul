@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -639,3 +640,58 @@ def test_anneal_subcommand_downshifts_the_winner(loop, monkeypatch, tmp_path):
 def test_no_args_prints_usage(capsys):
     assert cli.main([]) == 0
     assert "usage" in capsys.readouterr().out
+
+
+def test_a_failed_operator_does_not_kill_the_run(tmp_path, monkeypatch):
+    """A repair that cannot be produced is an outcome, not a crash.
+
+    A live run on a tool-less domain died outright: diagnose classified a failure as
+    missing_capability, synthesize_tool asked a small model for a tool spec, got an empty
+    name and raised. The loop must record the attempt and move on, exactly as it does for a
+    mutation the gate rejects.
+    """
+    issue = {"id": "L-0001", "class": "missing_capability", "node": "executor",
+             "count": 2, "status": "open", "operators_tried": [], "evidence": []}
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(json.dumps([issue]), encoding="utf-8")
+
+    monkeypatch.setattr(cli.diagnose, "diagnose", lambda *a, **k: None)
+    monkeypatch.setattr(cli.diagnose, "load_ledger", lambda _p: [dict(issue)])
+    monkeypatch.setattr(cli.diagnose, "rank", lambda entries: entries)
+    monkeypatch.setattr(cli.diagnose, "actionable", lambda _i: True)
+    monkeypatch.setattr(cli.diagnose, "confidence_known", lambda _i: True)
+    monkeypatch.setattr(cli.mutate, "select_operator", lambda _i: "synthesize_tool")
+
+    def _boom(*_a, **_k):
+        raise cli.mutate.OperatorFailed("synthesize_tool: '' is not a snake_case tool name")
+
+    monkeypatch.setattr(cli.mutate, "apply", _boom)
+    loop = cli.Loop(domain=SimpleNamespace(name="triage", eval=SimpleNamespace(THRESHOLD=1.0)),
+                    runs_dir=tmp_path / "runs", ledger=ledger, budget=1.0,
+                    concurrency=1, seed=0)
+    assert cli._propose_mutation(loop, SimpleNamespace(id="cand-01"), []) is None
+    assert "synthesize_tool" in json.loads(ledger.read_text())[0]["operators_tried"]
+
+
+def test_a_real_bug_in_an_operator_still_propagates(tmp_path, monkeypatch):
+    """Only OperatorFailed is swallowed; a genuine error must not be hidden by the loop."""
+    issue = {"id": "L-0001", "class": "wrong_tool", "node": "executor", "count": 1,
+             "status": "open", "operators_tried": [], "evidence": []}
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(json.dumps([issue]), encoding="utf-8")
+    monkeypatch.setattr(cli.diagnose, "diagnose", lambda *a, **k: None)
+    monkeypatch.setattr(cli.diagnose, "load_ledger", lambda _p: [dict(issue)])
+    monkeypatch.setattr(cli.diagnose, "rank", lambda entries: entries)
+    monkeypatch.setattr(cli.diagnose, "actionable", lambda _i: True)
+    monkeypatch.setattr(cli.diagnose, "confidence_known", lambda _i: True)
+    monkeypatch.setattr(cli.mutate, "select_operator", lambda _i: "rewrite_tool_desc")
+
+    def _bug(*_a, **_k):
+        raise AttributeError("typo in the operator")
+
+    monkeypatch.setattr(cli.mutate, "apply", _bug)
+    loop = cli.Loop(domain=SimpleNamespace(name="triage", eval=SimpleNamespace(THRESHOLD=1.0)),
+                    runs_dir=tmp_path / "runs", ledger=ledger, budget=1.0,
+                    concurrency=1, seed=0)
+    with pytest.raises(AttributeError):
+        cli._propose_mutation(loop, SimpleNamespace(id="cand-01"), [])
