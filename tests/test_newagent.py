@@ -85,7 +85,7 @@ def test_the_picker_never_offers_this_repository_s_own_fixtures(tmp_path: Path) 
     (fixtures / "tools.py").write_text("def get_user_details(x):\n    return x\n", encoding="utf-8")
     (tmp_path / "usercode").mkdir()
     (tmp_path / "usercode" / "mine.py").write_text("def send(x):\n    return x\n", encoding="utf-8")
-    assert newagent.python_modules(tmp_path) == [("usercode.mine", "send")]
+    assert [m.dotted for m in newagent.python_modules(tmp_path)] == ["usercode.mine"]
 
 
 def test_an_empty_usercode_folder_says_what_to_put_in_it(tmp_path: Path, monkeypatch) -> None:
@@ -105,7 +105,8 @@ def test_the_python_picker_lists_modules_that_are_actually_here(tmp_path: Path) 
     )
     (tmp_path / "usercode" / "_skip.py").write_text("def a():\n    pass\n", encoding="utf-8")
     found = newagent.python_modules(tmp_path)
-    assert found == [("usercode.mine", "send")]
+    assert [m.dotted for m in found] == ["usercode.mine"]
+    assert found[0].functions == ["send"]
 
 
 def test_the_form_offers_choices_instead_of_asking_for_a_command() -> None:
@@ -284,3 +285,45 @@ def test_no_em_dash_reaches_a_reader() -> None:
     for text in strings:
         assert "\u2014" not in text and "\u2013" not in text, text[:80]
         assert "&mdash;" not in text and "&ndash;" not in text, text[:80]
+
+
+def test_a_module_is_named_by_what_it_says_it_is_for(tmp_path: Path) -> None:
+    """A dotted import path tells nobody what the code does. The file's own first line does."""
+    (tmp_path / "usercode").mkdir()
+    (tmp_path / "usercode" / "roomdesk_tools.py").write_text(
+        '"""Meeting-room desk: the calls a booking assistant may make."""\n'
+        "def book_room(room):\n    return room\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "usercode" / "bare.py").write_text("def go():\n    return 1\n", encoding="utf-8")
+    by_name = {m.dotted: m for m in newagent.python_modules(tmp_path)}
+    assert by_name["usercode.roomdesk_tools"].title == (
+        "Meeting-room desk: the calls a booking assistant may make."
+    )
+    assert by_name["usercode.roomdesk_tools"].summary() == "1 function: book_room"
+    # a file with no docstring falls back to its own name turned into words
+    assert by_name["usercode.bare"].title == "Bare"
+
+
+def test_the_page_says_which_agent_already_uses_a_module(tmp_path: Path) -> None:
+    """"What is the relation" is a fair question, and the answer is recorded in tools.yaml."""
+    (tmp_path / "usercode").mkdir()
+    (tmp_path / "usercode" / "desk.py").write_text(
+        '"""Desk tools."""\ndef book(x):\n    return x\n', encoding="utf-8"
+    )
+    agent = tmp_path / "domains" / "roomdesk"
+    agent.mkdir(parents=True)
+    (agent / "goal.md").write_text("# Goal: Book a meeting room\n", encoding="utf-8")
+    (agent / "tools.yaml").write_text(
+        "tools:\n- name: book\n  description: d\n  impl: python:usercode.desk.book\n",
+        encoding="utf-8",
+    )
+    found = newagent.python_modules(tmp_path)
+    assert found[0].used_by == ["Book a meeting room"]
+
+
+def test_the_form_never_says_importable(tmp_path: Path, monkeypatch) -> None:
+    """Jargon a person cannot act on is not help text."""
+    body = newagent.form_body()
+    for jargon in ("importable", "import path", "dotted"):
+        assert jargon not in body.lower(), jargon

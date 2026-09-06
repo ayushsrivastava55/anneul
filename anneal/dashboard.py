@@ -1637,6 +1637,7 @@ circle.hollow { fill:var(--panel); stroke:var(--ash); stroke-width:1; }
 .choice.pick b { display:block; font-weight:500; font-size:14px; }
 .choice.pick em { display:block; font-style:normal; font-size:12px; color:var(--graphite);
   margin-top:3px; }
+.usedby { color:var(--ash) !important; }
 .sub-field { margin-top:16px; padding-left:14px; border-left:2px solid var(--rule); }
 .sub-field .flabel { font-size:13px; color:var(--graphite); }
 .reveal[hidden] { display:none; }

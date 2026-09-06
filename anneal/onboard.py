@@ -154,7 +154,7 @@ SCRIPT: list[Question] = [
         kind="choice",
         choices=(
             ("mcp", "An MCP server"),
-            ("python", "Python functions in a module"),
+            ("python", "Functions you have written yourself"),
             ("none", "Nothing yet. It works from the task text alone"),
         ),
     ),

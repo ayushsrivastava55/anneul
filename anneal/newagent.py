@@ -16,12 +16,14 @@ wrong.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import escape
 from pathlib import Path
 from typing import Any
 
-from anneal import onboard
+import yaml
+
+from anneal import onboard, vocab
 
 # How many example pairs the form offers. The interview needs three and accepts fifty; six rows
 # is enough to start honestly and few enough that the page is not a wall of boxes.
@@ -81,24 +83,88 @@ def catalogue_command(choice: str, path: str = "") -> str:
 USERCODE_DIR = "usercode"
 
 
-def python_modules(root: Path | None = None) -> list[tuple[str, str]]:
-    """``(dotted path, what is in it)`` for each tool module in ``usercode/``.
+@dataclass(frozen=True)
+class ToolModule:
+    """One file of the person's own functions, described the way the file describes itself."""
+
+    dotted: str
+    """How the loop imports it. Machinery, shown only under the technical switch."""
+
+    title: str
+    """What it is for, taken from the file's own first docstring line."""
+
+    functions: list[str]
+
+    used_by: list[str] = field(default_factory=list)
+    """Agents already calling these functions. Answers "why is this in my list"."""
+
+    def summary(self) -> str:
+        count = f"{len(self.functions)} function" + ("" if len(self.functions) == 1 else "s")
+        shown = ", ".join(self.functions[:4])
+        return f"{count}: {shown}" + (", and more" if len(self.functions) > 4 else "")
+
+
+def python_modules(root: Path | None = None) -> list[ToolModule]:
+    """Each tool module in ``usercode/``, named by what it says it is for.
 
     The list is scanned, never written down, so a file dropped into that folder appears here
-    with no further step. It used to also sweep ``*/*/fixtures/tools.py``, which meant a person
-    creating an agent was shown ``domains.airline.fixtures.tools`` and three others like it:
-    the plumbing of our benchmark domains, which is neither theirs nor usable by them.
+    with no further step. Two things it got wrong before. It swept ``*/*/fixtures/tools.py``
+    too, which showed a person the plumbing of our own benchmark agents. And it identified each
+    module by its dotted import path, which says nothing to anyone about what the code does;
+    a module's first docstring line does, and every module worth offering has one.
     """
     root = root or ROOT
-    found: list[tuple[str, str]] = []
+    users = _module_users(root)
+    found: list[ToolModule] = []
     for path in sorted((root / USERCODE_DIR).glob("*.py")):
         if path.name.startswith("_"):
             continue
-        dotted = f"{USERCODE_DIR}.{path.stem}"
         names = _public_functions(path)
         if names:
-            found.append((dotted, ", ".join(names[:4]) + (" and more" if len(names) > 4 else "")))
+            dotted = f"{USERCODE_DIR}.{path.stem}"
+            found.append(ToolModule(
+                dotted=dotted,
+                title=_module_title(path),
+                functions=names,
+                used_by=users.get(dotted, []),
+            ))
     return found
+
+
+def _module_users(root: Path) -> dict[str, list[str]]:
+    """``{dotted module: agents calling it}``, read from each agent's own tools.yaml.
+
+    A file sitting in a folder with no stated connection to anything is the thing that made
+    this list read as arbitrary. The connection exists and is recorded: an agent's tools.yaml
+    names the module every one of its Python tools comes from.
+    """
+    users: dict[str, list[str]] = {}
+    for manifest in sorted((root / "domains").glob("*/tools.yaml")):
+        try:
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        title = vocab.title_from_goal(manifest.parent / "goal.md") or manifest.parent.name
+        for tool in data.get("tools") or []:
+            impl = str((tool or {}).get("impl") or "")
+            if not impl.startswith("python:"):
+                continue
+            module = impl[len("python:"):].rsplit(".", 1)[0]
+            if title not in users.setdefault(module, []):
+                users[module].append(title)
+    return users
+
+
+def _module_title(path: Path) -> str:
+    """The file's own first docstring line, or its name turned back into words."""
+    import ast
+
+    try:
+        doc = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or ""
+    except (OSError, SyntaxError):
+        doc = ""
+    first = doc.strip().splitlines()[0].strip() if doc.strip() else ""
+    return first or path.stem.replace("_", " ").strip().capitalize()
 
 
 def _public_functions(path: Path) -> list[str]:
@@ -287,6 +353,14 @@ def _mcp_picker() -> str:
     )
 
 
+def _used_by(module: ToolModule) -> str:
+    """Which agents already call this file, so its presence in the list is explained."""
+    if not module.used_by:
+        return ""
+    names = ", ".join(module.used_by)
+    return f'<em class="usedby">Already used by {escape(names)}</em>'
+
+
 def _python_picker() -> str:
     """The tool modules in ``usercode/``, as a list. Revealed only if Python was chosen."""
     modules = python_modules()
@@ -300,7 +374,7 @@ def _python_picker() -> str:
             "Each function's first docstring line becomes the description the agent reads."
             "</p>"
             '<div class="sub-field"><label class="flabel" for="python_other">'
-            "Or name one yourself</label>"
+            "Name the file you added</label>"
             '<input class="finput" id="python_other" name="python_other" '
             'placeholder="usercode.my_tools">'
             '<input type="hidden" name="python_choice" value="other">'
@@ -308,9 +382,12 @@ def _python_picker() -> str:
         )
     rows = "".join(
         f'<label class="choice pick"><input type="radio" name="python_choice" '
-        f'value="{escape(dotted)}"{" checked" if index == 0 else ""}>'
-        f'<span><b class="mono">{escape(dotted)}</b><em>{escape(contains)}</em></span></label>'
-        for index, (dotted, contains) in enumerate(modules)
+        f'value="{escape(module.dotted)}"{" checked" if index == 0 else ""}>'
+        f"<span><b>{escape(module.title)}</b>"
+        f'<em>{escape(module.summary())}</em>'
+        f"{_used_by(module)}"
+        f'<span class="dslug mono">{escape(module.dotted)}</span></span></label>'
+        for index, module in enumerate(modules)
     )
     return (
         '<div class="field reveal" data-when="python">'
@@ -318,13 +395,14 @@ def _python_picker() -> str:
         f'<div class="choices">{rows}'
         '<label class="choice pick"><input type="radio" name="python_choice" value="other"'
         f'{"" if modules else " checked"}>'
-        "<span><b>Another module</b><em>Something importable from this project"
+        "<span><b>A different file</b><em>One you have just added to that folder"
         ".</em></span></label></div>"
         '<div class="sub-field reveal" data-pick="python_choice:other">'
-        '<label class="flabel" for="python_other">Its import path</label>'
+        '<label class="flabel" for="python_other">Which file?</label>'
         '<input class="finput" id="python_other" name="python_other" '
         'placeholder="usercode.my_tools">'
-        '<p class="fhelp">Anything importable from this project.</p></div></div>'
+        '<p class="fhelp">Its file name without the .py, written as '
+        f'<span class="mono">{USERCODE_DIR}.your_file</span></p></div></div>'
     )
 
 
