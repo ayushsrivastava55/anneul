@@ -679,21 +679,32 @@ def _classify_row(
 ) -> tuple[str, str, bool, float | None]:
     """``(class, node, fell_back, confidence)`` for one failed row, confidence None if unreported.
 
-    Deterministic checks skip the model and are certain by construction.
+    Deterministic checks skip the model and are certain by construction -- except a step-budget
+    death. Hitting the budget is a *symptom*: an agent that reaches for a tool the spec does not
+    grant (no way to run tests, no way to fetch a receipt) loops until the budget kills it, and
+    repairing the loop (more steps, another topology) leaves the real gap in place. So when the
+    missing-capability signal fires the row is classed as ``missing_capability``, and when it
+    does not, the model is asked for the cause with ``loop_or_timeout`` still on the menu.
     """
     cls = deterministic_class(row)
-    if cls is not None:
+    budget_death = cls == "loop_or_timeout"
+    if cls is not None and not budget_death:
         return cls, default_node(row, spec), False, CERTAIN_CONFIDENCE
+    if budget_death and missing_capability_signal(row, spec):
+        return "missing_capability", default_node(row, spec), False, CERTAIN_CONFIDENCE
     nodes = _node_names(spec)
     allowed = llm_classes(taxonomy)
     guesses = heuristic_guesses(row, spec, taxonomy)
+    if budget_death:
+        allowed = [*allowed, "loop_or_timeout"]
+        guesses = [*guesses, "loop_or_timeout"]
     context = traces.get_trace_context(str(row.get("trace_id") or row.get("task_id")))
     classes = {cid: taxonomy[cid] for cid in allowed}
     messages = build_prompt(row, task_input, context, classes, nodes, guesses)
     cls, node, confidence = classify_with_llm(messages, allowed, nodes, client)
     fell_back = cls is None
     if cls is None:
-        cls = fallback_class(guesses, allowed, taxonomy)
+        cls = "loop_or_timeout" if budget_death else fallback_class(guesses, allowed, taxonomy)
         confidence = FALLBACK_CONFIDENCE
         logger.warning("classifier fell back", extra={"class": cls, "guesses": guesses})
     return cls, node or default_node(row, spec), fell_back, confidence

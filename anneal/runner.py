@@ -47,6 +47,7 @@ ROW_KEYS: tuple[str, ...] = (
     "per_node",
     "latency_ms",
     "trace_id",
+    "trace",
     "output",
 )
 NODE_KEYS: tuple[str, ...] = ("tokens_in", "tokens_out", "backend", "ms")
@@ -78,6 +79,31 @@ def _node_row(node: dict[str, Any]) -> dict[str, Any]:
     return {key: node.get(key) for key in NODE_KEYS}
 
 
+# Rows must carry the tool-call evidence diagnose reads (missing_capability_signal walks
+# row["trace"]), but a runaway tool result must not bloat the JSONL, so both the step count
+# and each step's text are capped.
+TRACE_MAX_STEPS = 60
+TRACE_MAX_CHARS = 1500
+
+
+def _clip(value: Any) -> Any:
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    if len(text) <= TRACE_MAX_CHARS:
+        return value
+    return text[:TRACE_MAX_CHARS] + "...<truncated>"
+
+
+def _bounded_trace(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept = [
+        {**step, "args": _clip(step.get("args")), "result": _clip(step.get("result"))}
+        for step in steps[:TRACE_MAX_STEPS]
+        if isinstance(step, dict)
+    ]
+    if len(steps) > TRACE_MAX_STEPS:
+        kept.append({"tool": "...", "result": f"[{len(steps) - TRACE_MAX_STEPS} more steps]"})
+    return kept
+
+
 def _row_from_result(task: Any, spec: Any, iteration: int, domain: Any, result: Any) -> dict:
     per_node = {name: _node_row(node) for name, node in dict(result.per_node).items()}
     return {
@@ -93,6 +119,7 @@ def _row_from_result(task: Any, spec: Any, iteration: int, domain: Any, result: 
         "per_node": per_node,
         "latency_ms": float(result.latency_ms),
         "trace_id": result.trace_id,
+        "trace": _bounded_trace(list(result.trace or [])),
         "output": result.output,
     }
 
@@ -112,6 +139,7 @@ def _row_from_error(task: Any, spec: Any, iteration: int, exc: BaseException) ->
         "per_node": {},
         "latency_ms": 0.0,
         "trace_id": None,
+        "trace": [],
         "output": f"error: {exc!r}",
     }
 
