@@ -48,8 +48,10 @@ def test_a_tool_answer_carries_exactly_one_follow_up() -> None:
     """tools_target and tools_module are gated on the tools answer; only one is ever asked."""
     mcp_form = {**FORM, "tools": "mcp", "mcp_choice": "other", "mcp_other": "x"}
     assert newagent.parse(mcp_form).queue()[:4] == ["expense checks", FORM["job"], "mcp", "x"]
-    py_form = {**FORM, "tools": "python", "python_choice": "other", "python_other": "x"}
-    assert newagent.parse(py_form).queue()[:4] == ["expense checks", FORM["job"], "python", "x"]
+    py_form = {**FORM, "tools": "python", "python_choice": "usercode.mine"}
+    assert newagent.parse(py_form).queue()[:4] == [
+        "expense checks", FORM["job"], "python", "usercode.mine",
+    ]
     # nothing chosen means the follow-up is never asked, so the queue moves on to the scorer
     assert newagent.parse({**FORM, "tools": "none"}).queue()[3] == "label"
 
@@ -92,9 +94,51 @@ def test_an_empty_usercode_folder_says_what_to_put_in_it(tmp_path: Path, monkeyp
     """An empty list is not an answer to "which functions". Say where they go."""
     monkeypatch.setattr(newagent, "ROOT", tmp_path)
     body = newagent.form_body()
-    assert "no tool modules yet" in body
+    assert "There are none yet" in body
     assert "usercode/" in body
     assert "docstring" in body  # and how to write one
+    assert "on this machine" in body  # which machine matters, and it is this one
+
+
+def test_a_file_name_cannot_be_typed_at_all(tmp_path: Path, monkeypatch) -> None:
+    """A typed name is a promise about a file on this machine that nothing can check yet.
+
+    Someone naming a file from a different computer, or misspelling one, used to find out only
+    after an agent had been created with nothing to call. Offering exactly what is present
+    makes that mistake unmakeable rather than reportable.
+    """
+    body = newagent.form_body()
+    assert "python_other" not in body
+    assert "A different file" not in body
+    # and a posted value for one is ignored rather than trusted
+    smuggled = newagent.parse({**FORM, "tools": "python", "python_other": "usercode.nope"})
+    assert smuggled.tools_target == ""
+
+
+def test_an_agent_is_not_created_with_nothing_to_call(tmp_path: Path, monkeypatch) -> None:
+    """Discovery failing is the reason to stop, not a footnote beside a success."""
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", tmp_path / "domains")
+    (tmp_path / "domains").mkdir()
+    client = TestClient(dashboard.create_app(tmp_path / "runs", tmp_path / "l.json"))
+    named_elsewhere = {
+        **FORM, "tools": "python", "python_choice": "usercode.a_file_on_another_computer",
+    }
+    page = client.post("/new", data=named_elsewhere)
+    assert page.status_code == 400
+    assert "No functions were found" in page.text
+    assert "on this machine" in page.text
+    assert not (tmp_path / "domains" / "expense_checks").exists()  # nothing was written
+
+
+def test_a_server_that_will_not_start_stops_the_form(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", tmp_path / "domains")
+    (tmp_path / "domains").mkdir()
+    client = TestClient(dashboard.create_app(tmp_path / "runs", tmp_path / "l.json"))
+    unreachable = {**FORM, "tools": "mcp", "mcp_choice": "other",
+                   "mcp_other": "http://127.0.0.1:9/nothing-here"}
+    page = client.post("/new", data=unreachable)
+    assert page.status_code == 400
+    assert "gave Anneal no tools" in page.text
 
 
 def test_the_python_picker_lists_modules_that_are_actually_here(tmp_path: Path) -> None:
@@ -327,3 +371,35 @@ def test_the_form_never_says_importable(tmp_path: Path, monkeypatch) -> None:
     body = newagent.form_body()
     for jargon in ("importable", "import path", "dotted"):
         assert jargon not in body.lower(), jargon
+
+
+def test_an_answer_of_b_is_an_answer_not_a_back_button(tmp_path: Path, monkeypatch) -> None:
+    """The terminal has Back. A form posted in one shot does not.
+
+    "b" and "back" are navigation at a prompt and ordinary answers in a form: a label, an
+    expected reply, a name. Reading one as navigation swallowed it and pushed every later
+    answer a question out of step, so the person was told a value they never typed there was
+    not a valid choice.
+    """
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", tmp_path / "domains")
+    (tmp_path / "domains").mkdir()
+    client = TestClient(dashboard.create_app(tmp_path / "runs", tmp_path / "l.json"))
+    literal = {
+        "name": "grader", "job": "Grade an answer as a or b.", "tools": "none",
+        "success": "label",
+        "given_0": "First one", "expected_0": "b",
+        "given_1": "Second one", "expected_1": "back",
+        "given_2": "Third one", "expected_2": "a",
+    }
+    page = client.post("/new", data=literal)
+    assert page.status_code == 200, page.text[:400]
+    tasks = (tmp_path / "domains" / "grader" / "tasks.jsonl").read_text(encoding="utf-8")
+    assert '"b"' in tasks and '"back"' in tasks  # both survived as answers
+
+
+def test_the_terminal_keeps_its_back(tmp_path: Path) -> None:
+    """Turning it off for the form must not turn it off everywhere."""
+    from anneal import onboard as ob
+
+    assert ob.ScriptedTransport(["b"]).ask(ob.SCRIPT[0]) == ob.BACK
+    assert ob.ScriptedTransport(["b"], allow_back=False).ask(ob.SCRIPT[0]) == "b"

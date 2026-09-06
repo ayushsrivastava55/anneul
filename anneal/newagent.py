@@ -258,10 +258,8 @@ def _target(tools: str, form: dict[str, Any]) -> str:
             return catalogue_command(pick, str(form.get("files_path") or ""))
         return str(form.get("mcp_other") or "").strip()
     if tools == "python":
-        pick = str(form.get("python_choice") or "").strip()
-        if pick and pick != "other":
-            return pick
-        return str(form.get("python_other") or "").strip()
+        # only a file the picker actually offered; there is no free-text path to accept
+        return str(form.get("python_choice") or "").strip()
     return ""
 
 
@@ -272,10 +270,38 @@ def create(submission: Submission, domains_dir: Path) -> tuple[Path, list[str]]:
     server that would not start rather than announcing an agent with nothing to call.
     """
     submission.prepare()
-    transport = onboard.ScriptedTransport(submission.queue())
+    # the form is posted in one shot and has no Back, so an answer of "b" is an answer
+    transport = onboard.ScriptedTransport(submission.queue(), allow_back=False)
     interview = onboard.run_interview(transport, domains_dir=domains_dir)
+    _refuse_a_toolless_agent(submission, interview)
     path = onboard.generate_domain(interview, domains_dir=domains_dir)
     return path, list(interview.notes)
+
+
+def _refuse_a_toolless_agent(submission: Submission, interview: Any) -> None:
+    """Stop when tools were asked for and none were found.
+
+    Discovery failing is not a footnote. Naming a file that is not here, or a server that will
+    not start, produced an agent with nothing to call and a page that said it was ready: the
+    person then has an agent that cannot do the job they described, and no reason to think
+    anything went wrong. The interview already knows why it failed, so that reason is what
+    stops the form rather than what is printed beside a success.
+    """
+    if submission.tools == "none" or interview.tools:
+        return
+    why = next(
+        (note for note in interview.notes if "would not" in note),
+        "nothing was found there",
+    )
+    if submission.tools == "python":
+        raise onboard.OnboardError(
+            f"No functions were found. {why} Check the file is in the "
+            f"{USERCODE_DIR}/ folder of this project, on this machine."
+        )
+    raise onboard.OnboardError(
+        f"The server gave Anneal no tools. {why} Check the command or address, and that the "
+        "server runs on this machine."
+    )
 
 
 # --- the form ------------------------------------------------------------------------------
@@ -362,29 +388,29 @@ def _used_by(module: ToolModule) -> str:
 
 
 def _python_picker() -> str:
-    """The tool modules in ``usercode/``, as a list. Revealed only if Python was chosen."""
+    """The files in ``usercode/``, and only those. Revealed only if this choice was made.
+
+    There is deliberately no box to type a name into. A typed name is a promise about a file on
+    the machine running Anneal, and someone naming a file from a different computer, or
+    misspelling one, learned about it only after an agent had been created with nothing to
+    call. Offering exactly what is there makes that mistake unmakeable rather than reportable.
+    """
     modules = python_modules()
     if not modules:
         return (
             '<div class="field reveal" data-when="python">'
             '<label class="flabel">Which functions?</label>'
-            '<p class="fhelp">There are no tool modules yet. Put a Python file in the '
-            f'<span class="mono">{USERCODE_DIR}/</span> folder of this project, with one '
-            "function per thing the agent should be able to do, and it will be listed here. "
-            "Each function's first docstring line becomes the description the agent reads."
-            "</p>"
-            '<div class="sub-field"><label class="flabel" for="python_other">'
-            "Name the file you added</label>"
-            '<input class="finput" id="python_other" name="python_other" '
-            'placeholder="usercode.my_tools">'
-            '<input type="hidden" name="python_choice" value="other">'
-            "</div></div>"
+            '<p class="fhelp">There are none yet. Put a Python file in the '
+            f'<span class="mono">{USERCODE_DIR}/</span> folder of this project, on this '
+            "machine, with one function per thing the agent should be able to do. Each "
+            "function's first docstring line becomes the description the agent reads. "
+            "Then reload this page and it will be listed here.</p></div>"
         )
     rows = "".join(
         f'<label class="choice pick"><input type="radio" name="python_choice" '
         f'value="{escape(module.dotted)}"{" checked" if index == 0 else ""}>'
         f"<span><b>{escape(module.title)}</b>"
-        f'<em>{escape(module.summary())}</em>'
+        f"<em>{escape(module.summary())}</em>"
         f"{_used_by(module)}"
         f'<span class="dslug mono">{escape(module.dotted)}</span></span></label>'
         for index, module in enumerate(modules)
@@ -392,17 +418,9 @@ def _python_picker() -> str:
     return (
         '<div class="field reveal" data-when="python">'
         '<label class="flabel">Which functions?</label>'
-        f'<div class="choices">{rows}'
-        '<label class="choice pick"><input type="radio" name="python_choice" value="other"'
-        f'{"" if modules else " checked"}>'
-        "<span><b>A different file</b><em>One you have just added to that folder"
-        ".</em></span></label></div>"
-        '<div class="sub-field reveal" data-pick="python_choice:other">'
-        '<label class="flabel" for="python_other">Which file?</label>'
-        '<input class="finput" id="python_other" name="python_other" '
-        'placeholder="usercode.my_tools">'
-        '<p class="fhelp">Its file name without the .py, written as '
-        f'<span class="mono">{USERCODE_DIR}.your_file</span></p></div></div>'
+        f'<p class="fhelp">Everything in the <span class="mono">{USERCODE_DIR}/</span> folder '
+        "of this project. Added a file just now? Reload this page and it appears here.</p>"
+        f'<div class="choices">{rows}</div></div>'
     )
 
 

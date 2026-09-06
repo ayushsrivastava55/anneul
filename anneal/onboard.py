@@ -213,10 +213,18 @@ class Transport(Protocol):
 
 
 class ScriptedTransport:
-    """Replays a flat queue of answers. Used by tests and by piped, non-interactive runs."""
+    """Replays a flat queue of answers. Used by tests and by piped, non-interactive runs.
 
-    def __init__(self, answers: list[str]) -> None:
+    ``allow_back`` exists because Back is a property of the surface, not of the interview. A
+    terminal has one, so "b" typed at a prompt means go back. A form posted in one shot does
+    not, so "b" there is somebody's answer: a label, an expected reply, a name. Reading it as
+    navigation silently swallowed the answer and pushed every later one a question out of step,
+    which surfaced as a complaint about a value the person never typed there.
+    """
+
+    def __init__(self, answers: list[str], *, allow_back: bool = True) -> None:
         self._answers = list(answers)
+        self._allow_back = allow_back
         self.asked: list[str] = []
 
     def ask(self, question: Question) -> str:
@@ -224,7 +232,9 @@ class ScriptedTransport:
         if not self._answers:
             raise OnboardError(f"scripted answers exhausted at question {question.id!r}")
         answer = self._answers.pop(0)
-        return BACK if answer.strip().lower() in BACK_WORDS else answer
+        if self._allow_back and answer.strip().lower() in BACK_WORDS:
+            return BACK
+        return answer
 
 
 class RichTransport:
