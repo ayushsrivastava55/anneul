@@ -20,6 +20,13 @@ from __future__ import annotations
 
 import pytest
 
+# Force config's one-time .env load NOW, before any test runs. config._load() copies .env
+# into os.environ on first import; if that first import happens *inside* a test (e.g.
+# init_tracing does ``from anneal import config``), it re-adds the very keys the fixture
+# below just deleted, and the test goes live after all. Ran-alone test_tracing.py caught
+# this; full-suite runs masked it because test_cli.py imports config first.
+import anneal.config  # noqa: E402,F401  (import order is load-bearing here)
+
 # Credentials that flip a module from its local/offline path to a live sponsor API.
 LIVE_KEYS = (
     "NEATLOGS_API_KEY",

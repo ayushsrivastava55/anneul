@@ -1,0 +1,128 @@
+{
+  "budget_usd": 100.0,
+  "candidate": {
+    "candidate_id": "cand-01-switch_topology-i1",
+    "gen_gap": 0.2,
+    "hard_fails": 0,
+    "mean_score": 0.2,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 0.1
+  },
+  "candidate_id": "cand-01-switch_topology-i1",
+  "cost_usd": 1.361751,
+  "decision": "reject",
+  "domain": "bugfix",
+  "domain_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/domains/bugfix",
+  "gate_path": "runs/bugfix/1/gate.json",
+  "gen_gap": 0.2,
+  "hard_fails": 0,
+  "incumbent": {
+    "candidate_id": "cand-01",
+    "gen_gap": null,
+    "hard_fails": 0,
+    "mean_score": 0.13333333333333333,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 0.1
+  },
+  "incumbent_id": "cand-01",
+  "issue": {
+    "class": "loop_or_timeout",
+    "id": "L-0001",
+    "node": "executor"
+  },
+  "iteration": 1,
+  "mean_score": 0.2,
+  "operator": "switch_topology",
+  "p95_latency_ms": 329575.1,
+  "p_value": 1.0,
+  "pass3_rate": 0.1,
+  "reason": "p 1.000 >= alpha 0.1",
+  "search": {
+    "cand-01": {
+      "cost_by_node": {
+        "executor": 0.898698
+      },
+      "cost_per_task": 0.08987,
+      "cost_usd": 0.898698,
+      "hard_fails": 0,
+      "mean_score": 0.4,
+      "n_tasks": 10,
+      "p95_latency_ms": 37908.2,
+      "pass_rate": 0.4,
+      "tokens_in": 235291,
+      "tokens_out": 12855
+    },
+    "cand-01-add_step_budget_and_critic-i1": {
+      "cost_by_node": {
+        "critic": 0.087282,
+        "executor": 1.243443
+      },
+      "cost_per_task": 0.133073,
+      "cost_usd": 1.330725,
+      "hard_fails": 0,
+      "mean_score": 0.4,
+      "n_tasks": 10,
+      "p95_latency_ms": 63378.7,
+      "pass_rate": 0.4,
+      "tokens_in": 334260,
+      "tokens_out": 21863
+    },
+    "cand-01-switch_topology-i1": {
+      "cost_by_node": {
+        "executor": 1.212537,
+        "planner": 0.149214
+      },
+      "cost_per_task": 0.136175,
+      "cost_usd": 1.361751,
+      "hard_fails": 0,
+      "mean_score": 0.4,
+      "n_tasks": 10,
+      "p95_latency_ms": 329575.1,
+      "pass_rate": 0.4,
+      "tokens_in": 347032,
+      "tokens_out": 21377
+    },
+    "cand-02": {
+      "cost_by_node": {
+        "executor": 1.095714,
+        "planner": 0.46545
+      },
+      "cost_per_task": 0.156116,
+      "cost_usd": 1.561164,
+      "hard_fails": 0,
+      "mean_score": 0.2,
+      "n_tasks": 10,
+      "p95_latency_ms": 57866.7,
+      "pass_rate": 0.2,
+      "tokens_in": 325903,
+      "tokens_out": 26485
+    },
+    "cand-03": {
+      "cost_by_node": {
+        "critic": 0.02196,
+        "executor": 0.716703
+      },
+      "cost_per_task": 0.073866,
+      "cost_usd": 0.738663,
+      "hard_fails": 0,
+      "mean_score": 0.2,
+      "n_tasks": 10,
+      "p95_latency_ms": 45737.8,
+      "pass_rate": 0.2,
+      "tokens_in": 196821,
+      "tokens_out": 12808
+    }
+  },
+  "specs": {
+    "cand-01": "runs/bugfix/1/cand-01.yaml",
+    "cand-01-add_step_budget_and_critic-i1": "runs/bugfix/0/cand-01-add_step_budget_and_critic-i1.yaml",
+    "cand-01-switch_topology-i1": "runs/bugfix/1/cand-01-switch_topology-i1.yaml",
+    "cand-02": "runs/bugfix/0/cand-02.yaml",
+    "cand-03": "runs/bugfix/0/cand-03.yaml"
+  },
+  "spend_usd": 17.866224,
+  "stop_reason": "plateau",
+  "winner_id": "cand-01"
+}

@@ -23,6 +23,16 @@ Divergences from docs/SPONSORS.md, verified against the installed SDK (neatlogs 
   through OpenTelemetry and returns ``None`` outside a recording span.
 - Neatlogs always runs in *isolated* mode: its active span is not the OpenTelemetry
   current span. Run-context attributes are attached via ``active_neatlogs_context``.
+- ``neatlogs.decorators._base._serialize_obj`` (1.4.21) recurses into ``__dict__`` of
+  arbitrary objects with no depth limit, no cycle detection and no memoisation. Any
+  decorated function whose arguments reach a module object (a domain, a client, a spec
+  holding callables) sends it walking the interpreter's import graph -- observed as 99%
+  CPU for 16+ minutes before the first LLM call, with the faulthandler stack looping
+  through ``_serialize_obj`` -> ``importlib._module_repr_from_spec``. ``init_tracing``
+  therefore replaces it with :func:`_bounded_serialize` (same output shape, but depth-,
+  size- and cycle-bounded) before ``neatlogs.init``. Every neatlogs call site funnels
+  through ``_base._safe_json_dumps``, which resolves ``_serialize_obj`` at call time,
+  so patching that one module-level name covers them all.
 """
 
 from __future__ import annotations
@@ -111,6 +121,107 @@ def run_context(**fields: Any) -> Iterator[RunContext]:
         _run_context.reset(token)
 
 
+# --- neatlogs serializer guard -----------------------------------------------------------
+
+# Bounds for span-attribute serialization. Deep nesting past _MAX_DEPTH, containers past
+# _MAX_ITEMS and strings past _MAX_STR are truncated: span attributes are evidence, not
+# a pickle of the process.
+_MAX_DEPTH = 4
+_MAX_ITEMS = 25
+_MAX_STR = 2_000
+
+
+def _short(obj: Any) -> str:
+    """A truncated ``str()`` of ``obj`` that can never raise or explode."""
+    try:
+        text = str(obj)
+    except Exception:  # noqa: BLE001 - reprs of arbitrary objects can do anything
+        text = f"<unprintable {type(obj).__name__}>"
+    return text if len(text) <= _MAX_STR else text[:_MAX_STR] + "...[truncated]"
+
+
+def _bounded_serialize(obj: Any, _depth: int = 0, _seen: set[int] | None = None) -> Any:
+    """Drop-in replacement for neatlogs' ``_serialize_obj`` with hard bounds.
+
+    Same shape on the happy paths (primitives, containers, ``model_dump``-style protocols,
+    ``__dict__``), but with a depth limit, per-container item caps, string truncation,
+    cycle/sharing detection, and a refusal to introspect modules, classes and callables.
+    """
+    import types
+
+    if obj is None or isinstance(obj, (int, float, bool)):
+        return obj
+    if isinstance(obj, str):
+        return obj if len(obj) <= _MAX_STR else obj[:_MAX_STR] + "...[truncated]"
+    if isinstance(obj, (types.ModuleType, type)) or callable(obj):
+        return _short(obj)
+    if _depth >= _MAX_DEPTH:
+        return _short(obj)
+    seen = _seen if _seen is not None else set()
+    if id(obj) in seen:
+        return "<cycle>"
+    seen.add(id(obj))
+
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        items = list(obj)[:_MAX_ITEMS]
+        out: Any = [_bounded_serialize(v, _depth + 1, seen) for v in items]
+        if len(obj) > _MAX_ITEMS:
+            out.append(f"...[{len(obj) - _MAX_ITEMS} more]")
+        return out
+    if isinstance(obj, dict):
+        pairs = list(obj.items())[:_MAX_ITEMS]
+        mapped = {_short(k): _bounded_serialize(v, _depth + 1, seen) for k, v in pairs}
+        if len(obj) > _MAX_ITEMS:
+            mapped["..."] = f"[{len(obj) - _MAX_ITEMS} more]"
+        return mapped
+
+    # Pydantic / dataclass-style protocols, as in the original serializer.
+    import json as _json
+
+    for method in ("model_dump", "dict", "to_dict", "to_json", "as_dict"):
+        candidate = getattr(obj, method, None)
+        if callable(candidate):
+            try:
+                result = candidate()
+                if method == "to_json" and isinstance(result, str):
+                    result = _json.loads(result)
+                return _bounded_serialize(result, _depth + 1, seen)
+            except Exception:  # noqa: BLE001 - mirror the original: try the next protocol
+                continue
+
+    attrs = getattr(obj, "__dict__", None)
+    if isinstance(attrs, dict):
+        try:
+            picked = {
+                k: _bounded_serialize(v, _depth + 1, seen)
+                for k, v in list(attrs.items())[:_MAX_ITEMS]
+                if isinstance(k, str) and not k.startswith("_") and not callable(v)
+            }
+            if picked:
+                return picked
+        except Exception:  # noqa: BLE001
+            pass
+    return _short(obj)
+
+
+def _patch_neatlogs_serializer() -> bool:
+    """Install :func:`_bounded_serialize` over neatlogs' unbounded ``_serialize_obj``.
+
+    Returns False (with a warning) if the SDK layout changed and the seam is gone; in
+    that case tracing still works but heavy arguments may make spans slow again.
+    """
+    try:
+        from neatlogs.decorators import _base as nl_base
+    except Exception:  # noqa: BLE001 - private module: absence must not kill tracing
+        logger.warning(
+            "could not patch neatlogs._serialize_obj (SDK layout changed?); "
+            "span serialization is unbounded again -- watch for CPU spins"
+        )
+        return False
+    nl_base._serialize_obj = _bounded_serialize
+    return True
+
+
 # --- lifecycle -------------------------------------------------------------------------
 
 
@@ -143,6 +254,7 @@ def init_tracing(
         return False
     import neatlogs
 
+    _patch_neatlogs_serializer()
     workflow = (config.env("NEATLOGS_WORKFLOW") or "").strip() or "anneal"
     neatlogs.init(
         api_key=api_key,

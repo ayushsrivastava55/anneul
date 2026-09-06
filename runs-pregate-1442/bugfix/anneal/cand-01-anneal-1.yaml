@@ -1,0 +1,23 @@
+id: cand-01-anneal-1
+topology: single
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: cheap
+  system_prompt_ref: anneal/bugfix/executor@v1
+  tools:
+  - read_file
+  - write_file
+  max_steps: 12
+  schema_ref: null
+lineage:
+  parent: cand-01-anneal-0
+  iteration: 1
+  operator: downshift
+  ledger_issue: null
+tool_overrides: {}

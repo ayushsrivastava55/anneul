@@ -1,0 +1,41 @@
+id: cand-02
+topology: planner_executor
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: planner
+  role: planner
+  model_tier: frontier
+  system_prompt_ref: anneal/airline/planner@v1
+  tools: []
+  max_steps: 2
+  schema_ref: null
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/airline/executor@v2
+  tools:
+  - calculate
+  - get_reservation_details
+  - get_user_details
+  - list_all_airports
+  - search_direct_flight
+  - search_onestop_flight
+  - transfer_to_human_agents
+  - book_reservation
+  - cancel_reservation
+  - send_certificate
+  - update_reservation_baggages
+  - update_reservation_flights
+  - update_reservation_passengers
+  max_steps: 10
+  schema_ref: null
+lineage:
+  parent: cand-02
+  iteration: 0
+  operator: architect
+  ledger_issue: null
+tool_overrides: {}

@@ -1,0 +1,128 @@
+{
+  "budget_usd": 100.0,
+  "candidate": {
+    "candidate_id": "cand-02-add_validator_node-i1",
+    "gen_gap": -0.20000000000000007,
+    "hard_fails": 3,
+    "mean_score": 0.8,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 0.8
+  },
+  "candidate_id": "cand-02-add_validator_node-i1",
+  "cost_usd": 3.211318,
+  "decision": "reject",
+  "domain": "airline",
+  "domain_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/domains/airline",
+  "gate_path": "runs/airline/1/gate.json",
+  "gen_gap": -0.20000000000000007,
+  "hard_fails": 3,
+  "incumbent": {
+    "candidate_id": "cand-02",
+    "gen_gap": null,
+    "hard_fails": 1,
+    "mean_score": 0.7666666666666667,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 0.7
+  },
+  "incumbent_id": "cand-02",
+  "issue": {
+    "class": "unsafe_action",
+    "id": "L-0003",
+    "node": "executor"
+  },
+  "iteration": 1,
+  "mean_score": 0.8,
+  "operator": "add_validator_node",
+  "p95_latency_ms": 262369.8,
+  "p_value": 1.0,
+  "pass3_rate": 0.8,
+  "reason": "hard_fails 3 > incumbent 1",
+  "search": {
+    "cand-01": {
+      "cost_by_node": {
+        "executor": 2.512878
+      },
+      "cost_per_task": 0.251288,
+      "cost_usd": 2.512878,
+      "hard_fails": 0,
+      "mean_score": 0.6,
+      "n_tasks": 10,
+      "p95_latency_ms": 384583.7,
+      "pass_rate": 0.6,
+      "tokens_in": 505366,
+      "tokens_out": 66452
+    },
+    "cand-02": {
+      "cost_by_node": {
+        "executor": 2.814669,
+        "planner": 0.812495
+      },
+      "cost_per_task": 0.362716,
+      "cost_usd": 3.627164,
+      "hard_fails": 2,
+      "mean_score": 0.7,
+      "n_tasks": 10,
+      "p95_latency_ms": 421748.8,
+      "pass_rate": 0.7,
+      "tokens_in": 683462,
+      "tokens_out": 83452
+    },
+    "cand-02-add_escalation_node-i1": {
+      "cost_by_node": {
+        "executor": 2.314716,
+        "planner": 0.924745
+      },
+      "cost_per_task": 0.323946,
+      "cost_usd": 3.239461,
+      "hard_fails": 2,
+      "mean_score": 0.6,
+      "n_tasks": 10,
+      "p95_latency_ms": 479547.0,
+      "pass_rate": 0.6,
+      "tokens_in": 674471,
+      "tokens_out": 56410
+    },
+    "cand-02-add_validator_node-i1": {
+      "cost_by_node": {
+        "executor": 2.301528,
+        "planner": 0.90979
+      },
+      "cost_per_task": 0.321132,
+      "cost_usd": 3.211318,
+      "hard_fails": 2,
+      "mean_score": 0.6,
+      "n_tasks": 10,
+      "p95_latency_ms": 262369.8,
+      "pass_rate": 0.6,
+      "tokens_in": 628219,
+      "tokens_out": 64183
+    },
+    "cand-03": {
+      "cost_by_node": {
+        "critic": 0.104448,
+        "executor": 3.490554
+      },
+      "cost_per_task": 0.3595,
+      "cost_usd": 3.595002,
+      "hard_fails": 2,
+      "mean_score": 0.7,
+      "n_tasks": 10,
+      "p95_latency_ms": 268932.4,
+      "pass_rate": 0.7,
+      "tokens_in": 837291,
+      "tokens_out": 86135
+    }
+  },
+  "specs": {
+    "cand-01": "runs/airline/0/cand-01.yaml",
+    "cand-02": "runs/airline/1/cand-02.yaml",
+    "cand-02-add_escalation_node-i1": "runs/airline/0/cand-02-add_escalation_node-i1.yaml",
+    "cand-02-add_validator_node-i1": "runs/airline/1/cand-02-add_validator_node-i1.yaml",
+    "cand-03": "runs/airline/0/cand-03.yaml"
+  },
+  "spend_usd": 45.436158,
+  "stop_reason": "plateau",
+  "winner_id": "cand-02"
+}

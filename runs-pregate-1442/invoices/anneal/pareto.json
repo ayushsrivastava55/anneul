@@ -1,0 +1,38 @@
+{
+  "domain": "invoices",
+  "front": [
+    "cand-01-anneal-1"
+  ],
+  "iteration": 0,
+  "node_tiers": {
+    "executor": "cheap"
+  },
+  "points": [
+    {
+      "config_id": "cand-01-anneal-0",
+      "cost_per_task": 0.035558,
+      "hard_fails": 0,
+      "kept": true,
+      "node_tiers": {
+        "executor": "mid"
+      },
+      "p95_latency_ms": 8513.9,
+      "pass3": 1,
+      "score": 1.0
+    },
+    {
+      "config_id": "cand-01-anneal-1",
+      "cost_per_task": 0.011067,
+      "hard_fails": 0,
+      "kept": true,
+      "node_tiers": {
+        "executor": "cheap"
+      },
+      "p95_latency_ms": 6400.9,
+      "pass3": 1,
+      "score": 1.0
+    }
+  ],
+  "winner": "cand-01-anneal-1",
+  "winning_spec": "runs/invoices/anneal/cand-01-anneal-1.yaml"
+}
