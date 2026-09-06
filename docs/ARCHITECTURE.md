@@ -119,3 +119,56 @@ The setter clears the path-keyed caches; nothing else may mutate `MODELS_PATH`.
 | `ANNEAL_CONCURRENCY`, `ANNEAL_HOLDOUT_RUNS` | `runner`, `gate` | run defaults |
 | `NEATLOGS_API_KEY`, `NEATLOGS_WORKFLOW` | `tracing`, `diagnose` | tracing on/off, MCP trace source |
 | `DODO_API_KEY`, `DODO_ENV`, `DODO_CUSTOMER_ID` | `billing` | live billing vs local ledger |
+
+## Onboarding (`anneal init` — the interview → generation contract)
+
+Everything above assumes `domains/<name>/{goal.md,tools.yaml,eval.py,tasks.jsonl}` already
+exists. `anneal/onboard.py` is how it comes to exist without anyone writing Python: five
+questions in, a runnable domain directory out. The three input files are Anneal's *output*,
+not the user's homework.
+
+**The interview is data.** A `Question` (id, prompt, kind `choice|text|examples`, choices,
+help, an optional `when` gate on an earlier answer, and the rail `step` it belongs to) is a
+value; `SCRIPT` is the ordered list of them; `Interview` holds the answers plus whatever tool
+discovery found. A `Transport` is one method, `ask(Question) -> str`, which may return the
+`BACK` sentinel instead of an answer. `RichTransport` and `ScriptedTransport` (tests) ship
+here; a voice or web frontend is a third implementation of that one method, not a rewrite of
+the interview.
+
+`RichTransport` is the interview surface `.stitch/DESIGN.md` governs, so it renders to that
+system rather than to terminal habit: one question on screen at a time, a five-step progress
+rail derived from `SCRIPT` itself (completed dots Ash, the active dot the one orange accent,
+future dots Rule), the step name as a mono uppercase Ash label above the control, and choice
+questions as stacked rows inside 1px Rule borders — not numbered radio dots. Selection is by
+typing a row number or an unambiguous label prefix, which is the one input path that serves a
+keyboard and a pipe identically. Back is always available and never destructive: the interview
+steps to the previous question that was actually asked, offers the answer given last time, and
+forgets whatever that answer had discovered. A transport may also offer `pin(renderable)`, an
+optional hook the interview uses to keep the discovered-tools panel on screen through the
+later questions; the protocol stays one method.
+
+The five questions: **name** (slugified to a Python-package-safe directory name, refused if it
+already exists), **job**, **tools**, **success**, **examples** (≥3 input/expected pairs).
+Choosing an MCP server asks for its launch command or URL and then *connects*: `anneal.mcp`
+starts it, runs `tools/list`, and the tools it publishes are shown to the user. A user is
+never asked to describe a tool the server already describes; a server that will not start is
+reported and the interview continues with no tools. Choosing Python functions imports the
+module and introspects its public callables the same way.
+
+**Generation.** `goal.md` uses the same floor-plus-elaboration contract as `architect.py`: a
+deterministic template built from the job, the success criterion and the discovered tool names
+is always written, and a frontier call may only *add* validated rules to it — no key, no
+network or an unusable reply leaves the template standing, and `PROVENANCE.md` records which
+path was taken. `tools.yaml` carries the `servers:` block plus the server's own schemas (or
+`python:` impls) and is validated by `ToolsManifest` before the write and by `spec.load_tools`
+after it. `eval.py` is rendered from one of four templates — one per success kind — and is
+**deterministic string comparison only; no LLM-as-judge, ever**, which is the whole reason an
+Anneal number means something. `tasks.jsonl` is the examples under a seeded 50/25/25 split
+with at least one task in every split; too few examples for an honest split is said plainly in
+the console, in `PROVENANCE.md` and in the generated evaluator's own docstring.
+
+**What generation cannot know, it says rather than fakes.** `FORBIDDEN_TOOLS` is emitted empty
+with a comment (the interview cannot know which action is unforgivable), and the `state`
+template's `read_state()` is a labelled stub that believes the agent's own report until someone
+replaces it with a real probe. The core still never imports from `domains/`: `onboard.py`
+writes files and stops.

@@ -35,6 +35,7 @@ from anneal.spec import HarnessSpec
 logger = logging.getLogger("anneal.cli")
 
 COMMANDS: dict[str, str] = {
+    "init": "interview the user and generate a runnable domains/<name>/",
     "run": "generate, run, diagnose, mutate and gate candidates for a domain",
     "gate": "re-run the held-out gate on the incumbent",
     "report": "render the README results block from runs/<domain>/<iter>/summary.json",
@@ -448,6 +449,60 @@ def _progress(console: Console, rows: list[dict[str, Any]]) -> None:
             f"{r['spend_usd']:.4f}", str(r["decision"]),
         )
     console.print(table)
+
+
+def cmd_init(args: argparse.Namespace, console: Console) -> int:
+    """`anneal init`: five questions in, a runnable domain directory out.
+
+    All the work belongs to ``anneal.onboard``; this only picks the terminal transport (which
+    reads piped stdin just as happily as a keyboard) and draws the closing screen.
+    """
+    from anneal import onboard
+
+    domains_dir = Path(args.domains_dir)
+    domains_dir.mkdir(parents=True, exist_ok=True)
+    transport = onboard.RichTransport(console)
+    try:
+        interview = onboard.run_interview(transport, domains_dir=domains_dir, console=console)
+        path = onboard.generate_domain(interview, domains_dir=domains_dir)
+    except onboard.OnboardError as exc:
+        console.print(f"[{onboard.GRAPHITE}]{exc}[/{onboard.GRAPHITE}]")
+        return 1
+    _init_summary(console, onboard, interview, path)
+    return 0
+
+
+def _init_summary(console: Console, onboard: Any, interview: Any, path: Path) -> None:
+    """The closing screen: definition rows for what was written, then the next command."""
+    from rich.table import Table
+
+    if getattr(console, "is_terminal", False):
+        console.clear()
+    rows = Table.grid(padding=(0, 3))
+    rows.add_column(style=onboard.ASH)
+    rows.add_column(style=onboard.INK)
+    tools = ", ".join(interview.tool_names[:4]) or "none"
+    if len(interview.tool_names) > 4:
+        tools += f", and {len(interview.tool_names) - 4} more"
+    for label, value in (
+        ("DOMAIN", str(path)),
+        ("GOAL", interview.job),
+        ("TOOLS", tools),
+        ("SCORER", interview.success),
+        ("TASKS", f"{len(interview.examples)} examples, split train / search / reserved"),
+    ):
+        rows.add_row(label, value)
+    console.print()
+    console.print(rows)
+    console.print()
+    for name in sorted(p.name for p in path.iterdir()):
+        console.print(f"[{onboard.ASH}]{name}[/{onboard.ASH}]")
+    for note in interview.notes:
+        console.print()
+        console.print(f"[{onboard.GRAPHITE}]{note}[/{onboard.GRAPHITE}]")
+    console.print()
+    console.print(f"[{onboard.ASH}]{onboard._spaced('NEXT')}[/{onboard.ASH}]")
+    console.print(f"[{onboard.INK}]uv run anneal run {path}[/{onboard.INK}]")
 
 
 def cmd_run(args: argparse.Namespace, console: Console) -> int:
@@ -951,6 +1006,11 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in COMMANDS.items():
         sub.add_parser(name, help=help_text)
 
+    init = sub.choices["init"]
+    init.add_argument("--domains-dir", default="domains",
+                      help="where to write the generated domain (default domains/)")
+    init.add_argument("--models", default=None, help="price table (default specs/models.yaml)")
+
     run = sub.choices["run"]
     run.add_argument("domain_dir", help="path to domains/<name>")
     run.add_argument("--iterations", type=int, default=4)
@@ -1008,7 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
         # runner does (docs/ARCHITECTURE.md, "Configuration").
         llm.set_default_models_path(args.models)
     handler = {
-        "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
+        "init": cmd_init, "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
         "anneal": cmd_anneal, "dashboard": cmd_dashboard,
     }[args.command]
     # Nothing on the run path used to call this -- only mutate.py did, for the prompt
