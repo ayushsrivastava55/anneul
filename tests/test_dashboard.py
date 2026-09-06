@@ -119,8 +119,10 @@ def test_empty_runs_directory_renders_friendly_empty_state(tmp_path: Path) -> No
     response = client.get("/")
     assert response.status_code == 200
     assert "No runs yet" in response.text
-    assert "Ledger is empty" in response.text
-    assert "No pareto.json yet" in response.text
+    # the console opens one step at a time, so the ledger and pareto empty states live on
+    # their own fragments rather than all on the page at once
+    assert "Ledger is empty" in client.get("/fragments/ledger").text
+    assert "No pareto.json yet" in client.get("/fragments/pareto").text
 
 
 def test_missing_runs_directory_does_not_traceback(tmp_path: Path) -> None:
@@ -140,8 +142,8 @@ def test_malformed_json_is_skipped_not_fatal(tmp_path: Path) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "0.734" in response.text
-    assert "Ledger is empty" in response.text
-    assert "No pareto.json yet" in response.text
+    assert "Ledger is empty" in client.get("/fragments/ledger").text
+    assert "No pareto.json yet" in client.get("/fragments/pareto").text
     assert len(dashboard.load_summaries(runs)["airline"]) == len(SUMMARIES)
 
 
@@ -280,11 +282,11 @@ def test_landing_page_is_served_and_names_the_product(client: TestClient) -> Non
     assert "the agent that engineers agents" in response.text.lower()
 
 
-# --- console regions -------------------------------------------------------------------
+# --- the step timeline ------------------------------------------------------------------
 #
-# The console renders six regions from the artefacts of the latest iteration. These tests
-# pin the two rules that matter: stage state is derived from which artefacts exist, and a
-# value that is not on disk renders as an em-dash rather than a zero.
+# The console is a flow: six steps, exactly one expanded, its artefact beside it. These tests
+# pin the three rules that matter — step state is derived from which artefacts exist on disk,
+# only the open step's detail is in the document, and an absent value renders as an em-dash.
 
 DASH = "—"
 
@@ -296,6 +298,7 @@ CONSOLE_SUMMARY = {
     "winner_id": "cand-01",
     "decision": "reject",
     "operator": "add_validator_node",
+    "issue": {"id": "L-0001", "class": "unsafe_action", "node": "executor"},
     "spend_usd": 7.3615,
     "budget_usd": 50.0,
     "mean_score": 0.667,
@@ -324,9 +327,20 @@ CONSOLE_GATE = {
                   "hard_fails": 2, "gen_gap": None},
 }
 
-CONSOLE_SPEC = """
+PARENT_SPEC = """
+id: cand-01
+topology: single
+step_budget: 12
+nodes:
+- name: executor
+  role: executor
+  model_tier: cheap
+"""
+
+CHILD_SPEC = """
 id: cand-01-add_validator_node-i1
 topology: single
+step_budget: 13
 nodes:
 - name: executor
   role: executor
@@ -334,11 +348,15 @@ nodes:
 - name: validator
   role: validator
   model_tier: mid
+lineage:
+  parent: cand-01
+  operator: add_validator_node
+  ledger_issue: L-0001
 """
 
 LIVE_ROWS = [
     {"task_id": "airline-10", "score": 0.0, "hard_fail": True, "latency_ms": 20851.0,
-     "trace_id": "7430a268", "output": "x" * 50, "trace": [{"tool": "get_user_details"}]},
+     "trace_id": "7430a268", "output": "x" * 50, "trace": [{"tool": "trace_payload_marker"}]},
     {"task_id": "airline-13", "score": 1.0, "hard_fail": False, "hit_step_budget": True,
      "latency_ms": 9100.0},
     # no score and no latency at all: the row must show em-dashes, not zeros
@@ -362,14 +380,14 @@ def write_console_fixture(
     spec: bool = True,
     live: bool = True,
 ) -> Path:
-    """A realistic iteration directory; each artefact can be withheld to test stage state."""
+    """A realistic iteration directory; each artefact can be withheld to test step state."""
     runs = tmp_path / "runs"
     out = runs / domain / "1"
     out.mkdir(parents=True)
     (out / "summary.json").write_text(json.dumps(CONSOLE_SUMMARY), encoding="utf-8")
     if spec:
-        (out / "cand-01.yaml").write_text(CONSOLE_SPEC, encoding="utf-8")
-        (out / "cand-01-add_validator_node-i1.yaml").write_text(CONSOLE_SPEC, encoding="utf-8")
+        (out / "cand-01.yaml").write_text(PARENT_SPEC, encoding="utf-8")
+        (out / "cand-01-add_validator_node-i1.yaml").write_text(CHILD_SPEC, encoding="utf-8")
     if gate:
         (out / "gate.json").write_text(json.dumps(CONSOLE_GATE), encoding="utf-8")
     if live:
@@ -384,19 +402,23 @@ def console(tmp_path: Path, **kwargs) -> TestClient:
     return TestClient(dashboard.create_app(runs, tmp_path / "no-explicit-ledger.json"))
 
 
-def stage_states(body: str) -> dict[str, str]:
-    """{stage name: data-state} parsed out of the rendered rail."""
+def step_states(body: str) -> dict[str, str]:
+    """{step name: data-state} parsed out of the rendered timeline."""
     states = {}
-    for chunk in body.split('class="stage" data-state="')[1:]:
+    for chunk in body.split('<li class="step" data-state="')[1:]:
         state = chunk.split('"')[0]
-        name = chunk.split('class="sname">')[1].split("<")[0]
+        name = chunk.split('class="sname mono">')[1].split("<")[0]
         states[name] = state
     return states
 
 
-def test_rail_marks_stages_done_from_the_artefacts_on_disk(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/fragments/rail?domain=airline").text
-    assert stage_states(body) == {
+def open_step(body: str) -> str:
+    return body.split('class="detail" data-step="')[1].split('"')[0]
+
+
+def test_timeline_marks_steps_done_from_the_artefacts_on_disk(tmp_path: Path) -> None:
+    body = console(tmp_path).get("/fragments/timeline?domain=airline").text
+    assert step_states(body) == {
         "Architect": "done",   # cand-*.yaml exist
         "Run": "done",         # summary["search"] has candidates
         "Diagnose": "done",    # runs/airline/ledger.json has issues
@@ -406,94 +428,166 @@ def test_rail_marks_stages_done_from_the_artefacts_on_disk(tmp_path: Path) -> No
     }
 
 
-def test_rail_stops_at_the_first_missing_artefact(tmp_path: Path) -> None:
-    """Withhold gate.json and the rail must show Gate as the active stage, Anneal as future."""
-    body = console(tmp_path, gate=False).get("/fragments/rail?domain=airline").text
-    states = stage_states(body)
+def test_timeline_stops_at_the_first_missing_artefact(tmp_path: Path) -> None:
+    """Withhold gate.json and Gate becomes the active step, Anneal a future one."""
+    body = console(tmp_path, gate=False).get("/fragments/timeline?domain=airline").text
+    states = step_states(body)
     assert states["Mutate"] == "done"
     assert states["Gate"] == "active"
     assert states["Anneal"] == "todo"
 
 
-def test_rail_on_a_bare_runs_dir_makes_architect_the_active_stage(tmp_path: Path) -> None:
+def test_timeline_on_a_bare_runs_dir_makes_architect_the_active_step(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     runs.mkdir()
     client = TestClient(dashboard.create_app(runs, tmp_path / "ledger.json"))
-    states = stage_states(client.get("/fragments/rail").text)
+    states = step_states(client.get("/").text)
     assert states["Architect"] == "active"
     assert set(states.values()) == {"active", "todo"}
+
+
+def test_timeline_never_borrows_another_domains_ledger(tmp_path: Path) -> None:
+    """bugfix has no ledger of its own, so its Diagnose step is not done."""
+    runs = write_console_fixture(tmp_path)
+    bare = runs / "bugfix" / "0"
+    bare.mkdir(parents=True)
+    (bare / "summary.json").write_text(
+        json.dumps({"iteration": 0, "search": {"cand-01": {"mean_score": 0.4}}}), encoding="utf-8"
+    )
+    (bare / "cand-01.yaml").write_text(PARENT_SPEC, encoding="utf-8")
+    client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
+    assert step_states(client.get("/?domain=airline").text)["Diagnose"] == "done"
+    bugfix = step_states(client.get("/?domain=bugfix").text)
+    assert bugfix["Run"] == "done"
+    assert bugfix["Diagnose"] == "active"
+    assert bugfix["Gate"] == "todo"
+
+
+# one marker that only appears in that step's artefact, and nowhere else
+STEP_MARKERS = {
+    "architect": ">steps<",
+    "run": "airline-10",
+    "diagnose": "not_a_real_class",
+    "mutate": "NODES ADDED",
+    "gate": "REJECT",
+    "anneal": "No pareto.json yet",
+}
+
+
+def test_only_the_open_steps_detail_is_in_the_document(tmp_path: Path) -> None:
+    client = console(tmp_path)
+    for step, marker in STEP_MARKERS.items():
+        body = client.get(f"/?domain=airline&step={step}").text
+        assert body.count('class="detail"') == 1, step
+        assert open_step(body) == step
+        assert marker in body, step
+        for other, other_marker in STEP_MARKERS.items():
+            if other != step:
+                assert other_marker not in body, f"{other_marker} leaked into {step}"
+
+
+def test_the_open_step_defaults_to_the_step_the_loop_is_on(tmp_path: Path) -> None:
+    """No ?step: the console opens the active step, and an unknown step falls back to it."""
+    client = console(tmp_path)
+    assert open_step(client.get("/?domain=airline").text) == "anneal"
+    assert open_step(client.get("/?domain=airline&step=nonsense").text) == "anneal"
+    body = console(tmp_path / "b", gate=False).get("/?domain=airline").text
+    assert open_step(body) == "gate"
+
+
+def test_every_step_is_a_plain_link_not_a_script(tmp_path: Path) -> None:
+    body = console(tmp_path).get("/?domain=airline").text
+    for step in STEP_MARKERS:
+        assert f'href="?step={step}&amp;domain=airline"' in body, step
 
 
 def test_absent_values_render_an_em_dash_not_a_zero(tmp_path: Path) -> None:
     """The challenger has no cost or p95, one task row has no score, one issue has no severity."""
     client = console(tmp_path)
-    candidates = client.get("/fragments/candidates?domain=airline").text
+    run = client.get("/?domain=airline&step=run").text
     # the incumbent's real numbers are there ...
-    assert "$0.0430" in candidates
-    assert "20779ms" in candidates
+    assert "$0.0430" in run
+    assert "20779ms" in run
     # ... and the challenger's missing ones are em-dashes, never 0.0000
-    assert candidates.count(f'<td class="mono num">{DASH}</td>') == 2
-    assert "$0.0000" not in candidates
-    assert ">0ms<" not in candidates
+    assert run.count(f'<td class="mono num">{DASH}</td>') == 4  # challenger cost/p95, task 18
+    assert "$0.0000" not in run
+    assert ">0ms<" not in run
+    assert "airline-18" in run
 
-    live = client.get("/fragments/live?domain=airline").text
-    assert "airline-18" in live
-    assert live.count(f'<td class="mono num">{DASH}</td>') == 2  # airline-18 score and latency
-    assert ">0ms<" not in live
-
-    ledger = client.get("/fragments/ledger?domain=airline").text
+    ledger = client.get("/?domain=airline&step=diagnose").text
     assert "not_a_real_class" in ledger
     assert f'<td class="mono num">{DASH}</td>' in ledger  # unknown severity
     assert f"&rarr; {DASH}" in ledger                     # no operator ladder to draw from
-    # a known class with an untried operator points at it; an exhausted ladder says so
-    assert "&rarr; add_validator_node" in ledger
+    assert "&rarr; add_validator_node" in ledger          # a known class points at its next op
 
 
-def test_gate_panel_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/fragments/gate?domain=airline").text
+def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
+    body = console(tmp_path).get("/?domain=airline&step=gate").text
     assert "REJECT" in body
     assert "pass3_rate 0.600 &lt; incumbent 0.700" in body
     for text in ("0.667", "0.700", "1.000", "0.10", "underpowered"):
         assert text in body, text
 
 
-def test_gate_panel_without_gate_json_says_so_and_invents_nothing(tmp_path: Path) -> None:
-    body = console(tmp_path, gate=False).get("/fragments/gate?domain=airline").text
+def test_gate_step_without_gate_json_says_so_and_invents_nothing(tmp_path: Path) -> None:
+    body = console(tmp_path, gate=False).get("/?domain=airline&step=gate").text
     assert "No gate.json" in body
     assert "REJECT" not in body
     assert "0.000" not in body
 
 
-def test_candidates_show_topology_node_pills_and_tier_badges(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/fragments/candidates?domain=airline").text
+def test_architect_step_shows_the_specs_with_node_pills_and_tiers(tmp_path: Path) -> None:
+    body = console(tmp_path).get("/?domain=airline&step=architect").text
     assert "cand-01-add_validator_node-i1" in body
     for text in ("single", "executor", "validator", "cheap", "mid", "challenger", "reject"):
         assert text in body, text
     assert 'class="link"' in body  # the pills are connected
 
 
-def test_candidates_without_a_spec_yaml_still_render(tmp_path: Path) -> None:
-    body = console(tmp_path, spec=False).get("/fragments/candidates?domain=airline").text
+def test_architect_step_without_a_spec_yaml_still_lists_the_candidates(tmp_path: Path) -> None:
+    body = console(tmp_path, spec=False).get("/?domain=airline&step=architect").text
     assert "cand-01" in body
     assert DASH in body
 
 
-def test_live_run_reads_the_search_jsonl_and_flags_hard_fails(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/fragments/live?domain=airline").text
+def test_mutate_step_shows_the_operator_the_issue_and_the_node_change(tmp_path: Path) -> None:
+    body = console(tmp_path).get("/?domain=airline&step=mutate").text
+    for text in ("add_validator_node", "unsafe_action", "L-0001", "cand-01", "validator",
+                 "12", "13", "PROMPTS"):
+        assert text in body, text
+
+
+def test_run_step_reads_the_search_jsonl_and_flags_hard_fails(tmp_path: Path) -> None:
+    body = console(tmp_path).get("/?domain=airline&step=run").text
     for text in ("airline-10", "airline-13", "hard fail", "step budget", "20851ms"):
         assert text in body, text
     assert 'class="lrow bad"' in body       # the hard-fail row is flagged
-    assert "get_user_details" not in body   # traces are dropped, not rendered
+    assert "trace_payload_marker" not in body  # traces are dropped on the way in
+    assert "xxxxx" not in body                 # so is the model output
 
 
-def test_live_run_never_opens_the_reserved_split(tmp_path: Path) -> None:
+def test_run_step_never_opens_the_reserved_split(tmp_path: Path) -> None:
     """Only *.search.s*.jsonl is read here; the gate owns the other split."""
     runs = write_console_fixture(tmp_path)
     reserved = runs / "airline" / "1" / "cand-01-add_validator_node-i1.holdout.s0.jsonl"
     reserved.write_text(json.dumps({"task_id": "reserved-task", "score": 1.0}), encoding="utf-8")
-    body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/").text
-    assert "reserved-task" not in body
+    client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
+    assert "reserved-task" not in client.get("/?domain=airline&step=run").text
     assert "holdout" not in Path(dashboard.__file__).read_text(encoding="utf-8")
+
+
+def test_the_contract_rows_are_always_visible_and_read_the_domain_files(tmp_path: Path) -> None:
+    """GOAL / TOOLS / SCORER come from domains/<name>/; a domain we do not have em-dashes."""
+    client = console(tmp_path)
+    for step in STEP_MARKERS:
+        body = client.get(f"/?domain=airline&step={step}").text
+        for label in ("GOAL", "TOOLS", "SCORER"):
+            assert f">{label}</span>" in body, (step, label)
+    contract = dashboard.load_contract(tmp_path / "runs", "airline", CONSOLE_SUMMARY)
+    assert "tools" in contract and "goal" in contract  # domains/airline is in this repo
+    assert dashboard.load_contract(tmp_path / "runs", "no-such-domain", {}) == {}
+    body = dashboard.render_contract({}, "no-such-domain")
+    assert body.count(f'class="dv mono">{DASH}</span>') == 3
 
 
 def test_topbar_lists_the_domains_present_in_runs_and_shows_the_budget(tmp_path: Path) -> None:
@@ -505,36 +599,31 @@ def test_topbar_lists_the_domains_present_in_runs_and_shows_the_budget(tmp_path:
     assert "$7.36 / $50.00" in body
 
 
+def test_unmeasured_iterations_are_hollow_on_a_dotted_line(tmp_path: Path) -> None:
+    """An iteration directory with no readable summary is never drawn as a measurement."""
+    runs, _ = write_fixture(tmp_path)
+    started = runs / "airline" / "3"
+    started.mkdir()
+    assert dashboard.pending_iterations(runs, "airline") == ("3",)
+    body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/").text
+    assert 'class="pending"' in body
+    assert body.count('class="hollow"') == len(dashboard.METRICS)
+    assert "not measured yet" in body
+
+
 def test_malformed_spec_yaml_and_jsonl_lines_are_tolerated(tmp_path: Path) -> None:
     runs = write_console_fixture(tmp_path)
     (runs / "airline" / "1" / "cand-01.yaml").write_text("id: [unclosed\n", encoding="utf-8")
     client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
-    response = client.get("/?domain=airline")
+    response = client.get("/?domain=airline&step=architect")
     assert response.status_code == 200
     assert "cand-01" in response.text
     # the broken jsonl line is skipped, the three good rows survive
     assert len(dashboard.load_iteration(runs, "airline").live) == len(LIVE_ROWS)
 
 
-def test_page_renders_every_region_and_no_cdn_script(tmp_path: Path) -> None:
+def test_page_has_the_standing_regions_and_no_cdn_script(tmp_path: Path) -> None:
     body = console(tmp_path).get("/?domain=airline").text
-    for region in ("topbar", "rail", "candidates", "live", "ledger", "gate", "pareto", "curves"):
+    for region in ("topbar", "contract", "curves", "timeline"):
         assert f'id="{region}"' in body, region
     assert "http://" not in body and "https://" not in body
-
-
-def test_rail_never_borrows_another_domains_ledger(tmp_path: Path) -> None:
-    """bugfix has no ledger of its own, so its Diagnose stage is not done."""
-    runs = write_console_fixture(tmp_path)
-    bare = runs / "bugfix" / "0"
-    bare.mkdir(parents=True)
-    (bare / "summary.json").write_text(
-        json.dumps({"iteration": 0, "search": {"cand-01": {"mean_score": 0.4}}}), encoding="utf-8"
-    )
-    (bare / "cand-01.yaml").write_text(CONSOLE_SPEC, encoding="utf-8")
-    client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
-    assert stage_states(client.get("/fragments/rail?domain=airline").text)["Diagnose"] == "done"
-    bugfix = stage_states(client.get("/fragments/rail?domain=bugfix").text)
-    assert bugfix["Run"] == "done"
-    assert bugfix["Diagnose"] == "active"
-    assert bugfix["Gate"] == "todo"
