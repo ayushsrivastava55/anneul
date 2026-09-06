@@ -59,23 +59,44 @@ Details: `docs/ARCHITECTURE.md`. Failure classes and operators: `specs/failure_t
 
 ## Run it
 
+No API key is required. Inference runs locally.
+
 ```
 uv sync
-cp .env.example .env   # keys: TensorMux, Neatlogs, Dodo (test), AI Grants India, optional frontier
-uv run anneal run domains/invoices --iterations 4 --budget 2.00
-uv run anneal anneal runs/latest
-uv run anneal dashboard   # http://localhost:8000
+cp .env.example .env            # every key may stay empty; see Sponsor usage
+
+brew install ollama && ollama serve &
+ollama pull qwen2.5:3b-instruct
+ollama pull qwen2.5:1.5b-instruct
+ollama pull qwen2.5:0.5b-instruct
+
+uv run anneal run domains/invoices --iterations 2 --budget 2.00
+uv run anneal report runs                 # the results table, straight from runs/
+uv run anneal dashboard                   # http://localhost:8000
 ```
+
+On a machine with 8 GB of RAM, hold one model in memory at a time or the run will be
+OOM-killed: `OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_NUM_PARALLEL=1 ollama serve`. Point the tiers at
+any OpenAI-compatible provider by editing `specs/models.yaml` and the matching `*_BASE_URL` /
+`*_API_KEY` variables; nothing else changes.
 
 ## Domains
 
 | Domain | Task | Evaluator | Hard fail |
 |---|---|---|---|
 | `domains/invoices` | AP invoice triage: approve or escalate | field exact match + decision | auto-approving a mismatched invoice |
-| `domains/airline` | tau-bench airline customer ops | final DB state | refund outside policy |
-| `domains/bugfix` | fix a failing Python function | pytest | writing outside the sandbox |
+| `domains/airline` | tau-bench airline customer ops | final DB state hash | an action outside the expected set |
+| `domains/bugfix` | fix a failing Python function | pytest in a sandbox | writing outside the sandbox |
+| `domains/filesystem` | file tasks via a **third-party MCP server** | final directory state | touching a path outside the task dir |
 
-No domain-specific code exists in `anneal/`; the core sees only the three input files.
+No domain-specific code exists in `anneal/`; the core sees only the three input files. All four
+load through the same `anneal.domain.load_domain`, and a regression test fails the build if the
+core ever repeats a heading from any domain's `goal.md`.
+
+`domains/bugfix` ships a deliberately incomplete tool manifest: it has `read_file` and
+`write_file` but **no test runner**. That is the setup for the tool-synthesis path, where the
+system classifies the failure as `missing_capability` and commissions an AO worker to write the
+missing tool. Expect a low score there until that operator has run.
 
 ## How we used AO
 
@@ -106,12 +127,38 @@ worktrees.
 
 ## Sponsor usage
 
-- **AO**: build orchestration for every task, and the executor for code-level mutations via the daemon API.
-- **Neatlogs**: spans for every node/tool/LLM call; MCP trace reads drive Diagnose; prompt registry versions every mutation (`staging` → `production`); detections flag token spikes.
-- **TensorMux**: single OpenAI-compatible endpoint; Anneal's downshift is a config change; per-request backend and latency give the cost/speed metrics.
-- **AI Grants India**: the cheap tier behind TensorMux.
-- **Dodo Payments**: credit ledger debited per run (budget-aware optimisation, `balance_low` halts); shipped agents get a usage meter.
-- **Maximor**: the invoices domain, with escalation on low confidence and an audit trail of every change the optimiser made.
+Split honestly into what actually ran and what is wired but unexercised, because we never
+received keys for some sponsors and will not claim otherwise.
+
+**Exercised end to end**
+
+- **AO** — every task built as its own worker session on its own branch, and `anneal/ao.py`
+  spawns AO workers *at runtime* to write missing tools, accepted only when their tests pass.
+  Verified: `uv run python -m anneal.ao --selftest`.
+- **Model Context Protocol** — `anneal/mcp.py` speaks real MCP over stdio and streamable HTTP.
+  `domains/filesystem` is served by the official `@modelcontextprotocol/server-filesystem`
+  through `npx`; the agent discovers that server's 14 tools from its own `tools/list` rather
+  than from anything we hand-wrote.
+- **Local inference (Ollama)** — the OpenAI-compatible endpoint behind `anneal/llm.py`, running
+  qwen2.5 3b / 1.5b / 0.5b as the frontier / mid / cheap tiers that the anneal stage walks down.
+- **Maximor's problem space** — `domains/invoices` is AP triage with an escalation hard-fail
+  rule, plus the issue ledger and versioned prompts as an audit trail of every change the
+  optimiser made to itself.
+
+**Built and tested, but not exercised against a live account**
+
+- **Neatlogs** — every node, tool and LLM call is wrapped in a span, and Diagnose has an MCP
+  client for `search_traces` / `get_trace_context`. With `NEATLOGS_API_KEY` unset it degrades
+  to a local trace source and the spans are no-ops, which is how every run in this repo went.
+  No trace in this README came from the Neatlogs UI.
+- **TensorMux** — `anneal/llm.py` is provider-agnostic and reads `x-tensormux-backend` for
+  per-backend cost attribution. We never received a key, so the gateway path is unexercised and
+  the `backend` field is null in every row we shipped.
+- **Dodo Payments** — `anneal/billing.py` implements credit entitlement, deterministic
+  per-run event ids, batched ingestion, a budget guard that halts the loop, and a shipped-agent
+  product with a usage meter. Without `DODO_API_KEY` it runs as a local ledger, which still
+  enforces `--budget`. No live Dodo call was made.
+- **AI Grants India** — a provider slot in `specs/models.yaml`. Never used.
 
 ## Team
 
