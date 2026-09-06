@@ -1,0 +1,7 @@
+{
+  "module": "median.py",
+  "bug_type": "missing_edge_case",
+  "old": "    if len(ordered) % 2 == 0:\n        return (ordered[middle - 1] + ordered[middle]) / 2\n",
+  "new": "",
+  "note": "an even-length list returns the upper middle value instead of the mean of the pair"
+}

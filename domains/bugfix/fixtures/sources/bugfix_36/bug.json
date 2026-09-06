@@ -1,0 +1,7 @@
+{
+  "module": "phone.py",
+  "bug_type": "bad_regex",
+  "old": "PHONE_RE = re.compile(r\"^\\(\\d{3}\\) \\d{3}-\\d{4}$\")",
+  "new": "PHONE_RE = re.compile(r\"^\\(\\d{3}\\) \\d{3}-\\d{4}\")",
+  "note": "the missing end anchor lets trailing junk through"
+}

@@ -1,0 +1,7 @@
+{
+  "module": "paths.py",
+  "bug_type": "swapped_args",
+  "old": "    return posixpath.join(base.rstrip(\"/\"), name)\n",
+  "new": "    return posixpath.join(name, base.rstrip(\"/\"))\n",
+  "note": "the file name and the directory are joined in the wrong order"
+}

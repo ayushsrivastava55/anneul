@@ -1,0 +1,7 @@
+{
+  "module": "binary_search.py",
+  "bug_type": "off_by_one",
+  "old": "high = len(values) - 1",
+  "new": "high = len(values) - 2",
+  "note": "the last element is never searched"
+}

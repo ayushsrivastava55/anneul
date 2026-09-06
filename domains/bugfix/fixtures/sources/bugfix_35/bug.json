@@ -1,0 +1,7 @@
+{
+  "module": "find_versions.py",
+  "bug_type": "bad_regex",
+  "old": "VERSION_RE = re.compile(r\"v(\\d+)\\.(\\d+)\\.(\\d+)\")",
+  "new": "VERSION_RE = re.compile(r\"v(\\d+)\\.(\\d+)\\.(\\d)\")",
+  "note": "a multi-digit patch number is cut to its first digit"
+}

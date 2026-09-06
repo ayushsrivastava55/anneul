@@ -1,0 +1,7 @@
+{
+  "module": "mean.py",
+  "bug_type": "missing_edge_case",
+  "old": "    if not values:\n        return 0.0\n",
+  "new": "",
+  "note": "an empty series raises ZeroDivisionError instead of returning 0.0"
+}

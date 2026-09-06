@@ -1,0 +1,7 @@
+{
+  "module": "strip_prefix.py",
+  "bug_type": "missing_edge_case",
+  "old": "    if not name.startswith(prefix):\n        return name\n",
+  "new": "",
+  "note": "names that lack the prefix get their first characters chopped off anyway"
+}

@@ -1,0 +1,7 @@
+{
+  "module": "peak.py",
+  "bug_type": "wrong_comparison",
+  "old": "if reading > best:",
+  "new": "if reading < best:",
+  "note": "the smallest reading is returned instead of the largest"
+}

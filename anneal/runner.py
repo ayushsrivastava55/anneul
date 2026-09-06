@@ -199,14 +199,22 @@ def _p95(values: list[float]) -> float:
     return float(ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)])
 
 
-def _node_cost(node: dict[str, Any], models_path: Path | str | None) -> float:
-    """USD for one node's usage; unpriced backends (e.g. offline ``None``) cost 0 and warn."""
+def _node_cost(
+    node: dict[str, Any], models_path: Path | str | None, requested_model: str = ""
+) -> float:
+    """USD for one node's usage.
+
+    Priced by the backend that actually served the call (``x-tensormux-backend``, recorded
+    per node by the runtime) when that backend is in ``models.yaml``, else by the model the
+    node requested (``requested_model``, from the node's tier). Anything still unpriced --
+    offline runs record ``backend=None`` -- costs 0 and logs a warning.
+    """
     backend = node.get("backend")
     usage = llm.Usage(
         tokens_in=int(node.get("tokens_in") or 0),
         tokens_out=int(node.get("tokens_out") or 0),
         backend=backend,
-        model=str(backend or ""),
+        model=str(requested_model or backend or ""),
     )
     try:
         return llm.cost(usage, models_path)
@@ -217,19 +225,43 @@ def _node_cost(node: dict[str, Any], models_path: Path | str | None) -> float:
         return 0.0
 
 
+def cost_by_node(
+    rows: list[dict],
+    *,
+    models_path: Path | str | None = None,
+    node_models: dict[str, str] | None = None,
+) -> dict[str, float]:
+    """Total USD per node name across ``rows``.
+
+    ``node_models`` maps node name -> the model id the node requested (callers get it from
+    ``llm.resolve_model(node.model_tier)``); it is only consulted when the recorded backend
+    has no price of its own.
+    """
+    totals: dict[str, float] = {}
+    for row in rows:
+        for name, node in row["per_node"].items():
+            requested = (node_models or {}).get(name, "")
+            totals[name] = totals.get(name, 0.0) + _node_cost(node, models_path, requested)
+    return {name: round(usd, 6) for name, usd in sorted(totals.items())}
+
+
 def summarize(
-    rows: list[dict], threshold: float, *, models_path: Path | str | None = None
+    rows: list[dict],
+    threshold: float,
+    *,
+    models_path: Path | str | None = None,
+    node_models: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate contract rows: scores, pass rate (``score >= threshold``), tokens, p95, cost.
 
-    Cost is priced per node via ``llm.cost`` keyed on the node's backend. Nodes whose backend
-    has no price in ``models.yaml`` contribute 0 and log a warning, so ``cost_usd`` is a lower
-    bound when backends are unknown.
+    Cost is attributed per node by ``cost_by_node`` (backend header first, requested model
+    second) and reported both as the total ``cost_usd`` and as ``cost_per_task``; the split
+    itself is under ``cost_by_node``. Nodes that stay unpriced contribute 0 and log a warning,
+    so the cost figures are a lower bound when backends are unknown.
     """
     n = len(rows)
-    cost_usd = sum(
-        _node_cost(node, models_path) for row in rows for node in row["per_node"].values()
-    )
+    by_node = cost_by_node(rows, models_path=models_path, node_models=node_models)
+    cost_usd = sum(by_node.values())
     return {
         "mean_score": sum(r["score"] for r in rows) / n if n else 0.0,
         "pass_rate": sum(1 for r in rows if r["score"] >= threshold) / n if n else 0.0,
@@ -238,4 +270,6 @@ def summarize(
         "tokens_out": sum(int(r["tokens_out"]) for r in rows),
         "p95_latency_ms": _p95([float(r["latency_ms"]) for r in rows]),
         "cost_usd": round(cost_usd, 6),
+        "cost_per_task": round(cost_usd / n, 6) if n else 0.0,
+        "cost_by_node": by_node,
     }

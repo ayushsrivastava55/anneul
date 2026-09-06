@@ -1,0 +1,7 @@
+{
+  "module": "logbook.py",
+  "bug_type": "mutable_default",
+  "old": "def append_entry(message, at, entries=None):\n",
+  "new": "def append_entry(message, at, entries=[]):\n",
+  "note": "every new log inherits the entries of the previous one"
+}

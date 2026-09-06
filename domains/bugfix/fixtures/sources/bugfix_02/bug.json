@@ -1,0 +1,7 @@
+{
+  "module": "moving_average.py",
+  "bug_type": "off_by_one",
+  "old": "range(len(values) - window + 1)",
+  "new": "range(len(values) - window)",
+  "note": "the final window is never averaged"
+}

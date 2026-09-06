@@ -1,0 +1,7 @@
+{
+  "module": "safe_divide.py",
+  "bug_type": "missing_edge_case",
+  "old": "    if denominator == 0:\n        return None\n",
+  "new": "",
+  "note": "a zero denominator raises ZeroDivisionError instead of returning None"
+}

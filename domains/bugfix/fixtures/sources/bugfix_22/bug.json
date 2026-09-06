@@ -1,0 +1,7 @@
+{
+  "module": "title_case.py",
+  "bug_type": "missing_edge_case",
+  "old": "        if not word:\n            out.append(word)\n            continue\n",
+  "new": "",
+  "note": "an empty word from a double space raises IndexError"
+}

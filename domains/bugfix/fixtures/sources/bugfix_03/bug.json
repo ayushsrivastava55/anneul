@@ -1,0 +1,7 @@
+{
+  "module": "paginate.py",
+  "bug_type": "off_by_one",
+  "old": "start = (page - 1) * per_page",
+  "new": "start = page * per_page",
+  "note": "every page is shifted forward by one page"
+}

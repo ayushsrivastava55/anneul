@@ -1,0 +1,7 @@
+{
+  "module": "password_strength.py",
+  "bug_type": "wrong_comparison",
+  "old": "return long_enough and has_upper and has_digit",
+  "new": "return long_enough or has_upper or has_digit",
+  "note": "any single rule is enough, so weak passwords pass"
+}
