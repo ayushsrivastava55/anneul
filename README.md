@@ -18,6 +18,8 @@ domains, four numbers.
 | airline | iteration 0 | 0.733 | 0.700 | — | 5 | 0.367 | 298172 | — |
 | airline | final | 0.767 | 0.700 | — | 4 | 0.367 | 298172 | — |
 | airline | annealed | 0.733 | 0.700 | — | 3 | 0.266 | 190888 | — |
+| bugfix | iteration 0 | 1.000 | 1.000 | — | 0 | 0.001 | 93682 | — |
+| bugfix | final | 0.800 | 0.700 | — | 0 | 0.001 | 93682 | — |
 | invoices | iteration 0 | — | — | — | — | 0.039 | 12324 | — |
 | invoices | final | — | — | — | — | 0.039 | 12324 | — |
 | invoices | annealed | 1.000 | 1.000 | — | 0 | 0.001 | 23882 | — |

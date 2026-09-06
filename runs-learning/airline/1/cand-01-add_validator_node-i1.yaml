@@ -1,0 +1,41 @@
+id: cand-01-add_validator_node-i1
+topology: single
+step_budget: 13
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: cheap
+  system_prompt_ref: anneal/airline/executor@v12
+  tools:
+  - calculate
+  - get_reservation_details
+  - get_user_details
+  - list_all_airports
+  - search_direct_flight
+  - search_onestop_flight
+  - transfer_to_human_agents
+  - book_reservation
+  - cancel_reservation
+  - send_certificate
+  - update_reservation_baggages
+  - update_reservation_flights
+  - update_reservation_passengers
+  max_steps: 12
+  schema_ref: null
+- name: validator
+  role: validator
+  model_tier: cheap
+  system_prompt_ref: anneal/airline/validator@v5
+  tools: []
+  max_steps: 1
+  schema_ref: output_schema
+lineage:
+  parent: cand-01
+  iteration: 1
+  operator: add_validator_node
+  ledger_issue: L-0001
+tool_overrides: {}

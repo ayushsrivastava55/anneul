@@ -21,12 +21,18 @@ gated holdout, then "anneals" the winner down the model-price ladder. Three doma
   $/task −28%, p95 −36%) and invoices (annealed to nano: 0.989→1.000 at ~29× cheaper,
   $0.0014/task). `README.md` results table is generated from these by
   `scripts/update_readme_results.py` (AO-built).
-- **In flight (may still be running when you pick this up)**: a cheap-baseline airline
-  learning loop in `runs-learning/` (`ANNEAL_TIER_CAP=cheap`, budget $50) — the first run
-  with the new *escalating gate* (gate buys a second block of seeds when a candidate is
-  ahead but underpowered; see `anneal/gate.py::_should_escalate`). Goal: an honest
-  **promotion** to show "output getting better over time". Check
-  `runs-learning/airline/*/summary.json` and `gate.json` (`"decision"`, `"escalated"`).
+- **Escalating gate proven in the field**: the cheap-baseline airline loop
+  (`runs-learning/airline/`) ran with it — iteration 3 looked promising at 2-0, the gate
+  bought a second block of seeds, and the effect dissolved to 3-2 (p=0.5): a false
+  promotion avoided, recorded as `"escalated": true` in `3/gate.json`. All five operators
+  were honestly rejected; cheap-Haiku noise on airline is larger than their effects.
+- **In flight (may still be running when you pick this up)**: a flash-tier bugfix loop in
+  `runs-learning/bugfix/` (`ANNEAL_TIER_CAP=flash`, budget $50) — the best shot at an
+  honest **promotion**: the previous clean bugfix run's last iteration was one discordant
+  pair short (p=0.125), and this run has escalation. Check
+  `runs-learning/bugfix/*/gate.json` for `"decision": "promote"`.
+- **Demo assets ready**: `DEMO.md` has the full 3-minute shot list, a pre-recording
+  checklist, and the Devpost field texts (one-liner, AO usage paragraph, sponsor tech).
 - **Flagship arc already proven once** (archived in `runs-archive/bugfix-flash-429s/`):
   diagnose found `missing_capability` → AO worker session `anneal-3` wrote
   `run_pytest` tool + acceptance test → gate evaluated it. Rejected under 429 noise
