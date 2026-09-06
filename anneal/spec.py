@@ -42,6 +42,9 @@ class Node(BaseModel):
     tools: list[str] = Field(default_factory=list)
     max_steps: int = Field(default=1, ge=1)
     schema_ref: str | None = None
+    # How this node's prompt was produced by the architect: "template" (deterministic only),
+    # "elaborated" or "elaborated_retry". Provenance for the report; nothing reads it at runtime.
+    prompt_source: str | None = None
 
 
 class Lineage(BaseModel):
