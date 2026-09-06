@@ -1,0 +1,55 @@
+{
+  "domain": "ticketdesk",
+  "front": [
+    "cand-02-anneal-0",
+    "cand-02-anneal-1"
+  ],
+  "iteration": 0,
+  "node_tiers": {
+    "executor": "mid",
+    "planner": "frontier"
+  },
+  "points": [
+    {
+      "config_id": "cand-02-anneal-0",
+      "cost_per_task": 0.000474,
+      "hard_fails": 0,
+      "kept": true,
+      "node_tiers": {
+        "executor": "mid",
+        "planner": "frontier"
+      },
+      "p95_latency_ms": 47335.9,
+      "pass3": 1,
+      "score": 1.0
+    },
+    {
+      "config_id": "cand-02-anneal-1",
+      "cost_per_task": 0.000283,
+      "hard_fails": 0,
+      "kept": false,
+      "node_tiers": {
+        "executor": "mid",
+        "planner": "mid"
+      },
+      "p95_latency_ms": 12886.6,
+      "pass3": 0.3333333333333333,
+      "score": 0.5555555555555556
+    },
+    {
+      "config_id": "cand-02-anneal-2",
+      "cost_per_task": 0.00042,
+      "hard_fails": 0,
+      "kept": false,
+      "node_tiers": {
+        "executor": "cheap",
+        "planner": "frontier"
+      },
+      "p95_latency_ms": 46395.7,
+      "pass3": 0,
+      "score": 0.1111111111111111
+    }
+  ],
+  "winner": "cand-02-anneal-0",
+  "winning_spec": "runs/unseen/ticketdesk/anneal/cand-02-anneal-0.yaml"
+}

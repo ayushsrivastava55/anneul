@@ -1,0 +1,58 @@
+{
+  "alpha": 0.1,
+  "candidate": {
+    "candidate_id": "cand-01-add_fewshots-i1",
+    "gen_gap": 0.0,
+    "hard_fails": 0,
+    "mean_score": 0.0,
+    "n_runs": 3,
+    "n_tasks": 2,
+    "pass3": {
+      "roomdesk-01": false,
+      "roomdesk-08": false
+    },
+    "pass3_rate": 0,
+    "passes": {
+      "roomdesk-01": 0,
+      "roomdesk-08": 0
+    }
+  },
+  "decision": "reject",
+  "domain": "roomdesk",
+  "escalated": false,
+  "incumbent": {
+    "candidate_id": "cand-01",
+    "gen_gap": null,
+    "hard_fails": 0,
+    "mean_score": 0.0,
+    "n_runs": 3,
+    "n_tasks": 2,
+    "pass3": {
+      "roomdesk-01": false,
+      "roomdesk-08": false
+    },
+    "pass3_rate": 0,
+    "passes": {
+      "roomdesk-01": 0,
+      "roomdesk-08": 0
+    }
+  },
+  "iteration": 1,
+  "losses": 0,
+  "min_discordant_to_promote": 4,
+  "p": 1.0,
+  "path": "runs/roomdesk-serial/roomdesk/1/gate.json",
+  "promoted": false,
+  "reason": "p 1.000 >= alpha 0.1",
+  "reason_parts": {
+    "against": 0.1,
+    "against_fmt": "{:g}",
+    "against_label": "alpha",
+    "comparator": ">=",
+    "fmt": "{:.3f}",
+    "metric": "p",
+    "value": 1.0
+  },
+  "underpowered": true,
+  "wins": 0
+}

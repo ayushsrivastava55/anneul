@@ -20,6 +20,9 @@ htmlcov/
 # Anneal artifacts: runs are regenerated; only the final reported set is tracked
 runs/*
 !runs/final/
+# the unseen-domain evidence: two domains this repo had never seen, created through
+# `anneal init` and run end to end. Tracked because it is the claim, not a scratch run.
+!runs/unseen/
 !runs/.gitkeep
 prompts/cache/
 

@@ -1,0 +1,32 @@
+id: cand-02-anneal-0
+topology: planner_executor
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: planner
+  role: planner
+  model_tier: frontier
+  system_prompt_ref: anneal/ticketdesk/planner@v1
+  tools: []
+  max_steps: 2
+  schema_ref: null
+  prompt_source: elaborated
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/ticketdesk/executor@v1
+  tools:
+  - list_teams
+  - lookup_team
+  max_steps: 10
+  schema_ref: OUTPUT_SCHEMA
+  prompt_source: elaborated
+lineage:
+  parent: cand-02
+  iteration: 0
+  operator: downshift
+  ledger_issue: null
+tool_overrides: {}

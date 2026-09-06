@@ -1,0 +1,20 @@
+[
+  {
+    "id": "L-0001",
+    "class": "wrong_tool",
+    "node": "executor",
+    "count": 4,
+    "evidence": [
+      "roomdesk-00",
+      "roomdesk-09"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "rewrite_tool_desc",
+      "add_fewshots"
+    ],
+    "fallback": false,
+    "confidence": 0.95,
+    "confidence_n": 4
+  }
+]

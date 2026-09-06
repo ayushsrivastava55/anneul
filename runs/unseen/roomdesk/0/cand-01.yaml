@@ -1,0 +1,27 @@
+id: cand-01
+topology: single
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/roomdesk/executor@v2
+  tools:
+  - reset
+  - list_rooms
+  - check_availability
+  - book_room
+  - confirmed
+  max_steps: 12
+  schema_ref: null
+  prompt_source: elaborated
+lineage:
+  parent: cand-01
+  iteration: 0
+  operator: architect
+  ledger_issue: null
+tool_overrides: {}

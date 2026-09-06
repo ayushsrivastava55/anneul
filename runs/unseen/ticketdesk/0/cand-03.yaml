@@ -1,0 +1,32 @@
+id: cand-03
+topology: critic_loop
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/ticketdesk/executor@v1
+  tools:
+  - list_teams
+  - lookup_team
+  max_steps: 8
+  schema_ref: OUTPUT_SCHEMA
+  prompt_source: elaborated
+- name: critic
+  role: critic
+  model_tier: cheap
+  system_prompt_ref: anneal/ticketdesk/critic@v1
+  tools: []
+  max_steps: 4
+  schema_ref: null
+  prompt_source: elaborated
+lineage:
+  parent: cand-03
+  iteration: 0
+  operator: architect
+  ledger_issue: null
+tool_overrides: {}
