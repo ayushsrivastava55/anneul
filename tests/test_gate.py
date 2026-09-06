@@ -89,13 +89,37 @@ def test_gen_gap_is_none_without_search_rows():
 
 
 @pytest.mark.parametrize("wins,losses", [(5, 0), (4, 1), (3, 3), (0, 2), (7, 1)])
-def test_paired_test_matches_scipy_exact_two_sided(wins: int, losses: int):
+def test_paired_test_matches_scipy_exact_one_sided(wins: int, losses: int):
+    """One-sided by design: the gate only ever asks whether the candidate is better."""
     tasks = [f"w{i}" for i in range(wins)] + [f"l{i}" for i in range(losses)] + ["tie"]
     cand = {t: t.startswith("w") or t == "tie" for t in tasks}
     inc = {t: t.startswith("l") or t == "tie" for t in tasks}
     result = gate.paired_test(cand, inc)
     assert (result.wins, result.losses) == (wins, losses)
-    assert result.p == pytest.approx(binomtest(wins, wins + losses, 0.5).pvalue)
+    expected = binomtest(wins, wins + losses, 0.5, alternative="greater").pvalue
+    assert result.p == pytest.approx(expected)
+
+
+def test_a_lone_clean_win_is_reported_as_underpowered_not_as_no_effect():
+    """The airline regression: 1 win, 0 losses, rejected. The rejection is arithmetic.
+
+    No candidate can clear alpha on a single discordant pair, so this must be legible as
+    "too little data to tell" rather than "the change did not help".
+    """
+    result = gate.paired_test({"a": True, "b": True}, {"a": False, "b": True})
+    assert (result.wins, result.losses) == (1, 0)
+    assert result.p >= gate.ALPHA
+    assert gate.underpowered(result)
+    # Enough same-direction pairs and the very same test does clear alpha.
+    many = gate.paired_test({f"w{i}": True for i in range(4)}, {f"w{i}": False for i in range(4)})
+    assert (many.wins, many.losses) == (4, 0)
+    assert many.p < gate.ALPHA
+    assert not gate.underpowered(many)
+
+
+def test_min_discordant_to_promote_matches_the_exact_binomial_floor():
+    floor = gate._min_discordant_to_promote()
+    assert 0.5**floor < gate.ALPHA <= 0.5 ** (floor - 1)
 
 
 def test_paired_test_no_discordant_pairs_has_p_one():
@@ -160,7 +184,7 @@ def test_gate_promote_path_writes_gate_json_and_flips_labels(tmp_path: Path, mon
     )
     assert result.promoted and result.reason == "promoted"
     assert result.wins == 6 and result.losses == 0
-    assert result.p == pytest.approx(binomtest(6, 6, 0.5).pvalue)
+    assert result.p == pytest.approx(binomtest(6, 6, 0.5, alternative="greater").pvalue)
     assert flipped == ["cand"]
     path = tmp_path / "synthetic" / "2" / "gate.json"
     data = json.loads(path.read_text())

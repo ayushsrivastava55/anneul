@@ -50,11 +50,19 @@ class SpecMetrics:
 
 @dataclass(frozen=True)
 class PairedResult:
-    """Discordant-pair counts and exact binomial p-value."""
+    """Discordant-pair counts, exact binomial p-value, and the test's own power limit."""
 
     wins: int
     losses: int
     p: float
+    min_discordant_to_promote: int = 0
+    """Discordant pairs needed, all won, before any p < ALPHA is even arithmetically possible.
+
+    The exact binomial floor is 0.5**n one-sided, so this is the smallest n with
+    0.5**n < ALPHA. Reported because it is the gate's real detectable-effect floor and it
+    bit us: a candidate that won 1 holdout task and lost 0 was rejected at p=1.000 under a
+    two-sided test, which cannot go below 0.5 at n=1 no matter how clean the win.
+    """
 
 
 @dataclass(frozen=True)
@@ -77,6 +85,12 @@ class GateResult:
         data["path"] = str(self.path)
         data["decision"] = "promote" if self.promoted else "reject"
         data["alpha"] = ALPHA
+        # Recorded on every gate so a reader can tell an evidence-based rejection from one
+        # the sample size made inevitable. Without these two fields every rejection looks
+        # like "the change did not help", which is exactly the wrong conclusion to publish.
+        floor = _min_discordant_to_promote()
+        data["min_discordant_to_promote"] = floor
+        data["underpowered"] = self.wins + self.losses < floor
         return data
 
 
@@ -114,15 +128,38 @@ def spec_metrics(
     )
 
 
+def _min_discordant_to_promote(alpha: float = 0.0) -> int:
+    """Smallest number of all-won discordant pairs whose one-sided exact p is below alpha."""
+    alpha = alpha or ALPHA
+    n = 1
+    while 0.5**n >= alpha and n < 64:
+        n += 1
+    return n
+
+
 def paired_test(candidate: dict[str, bool], incumbent: dict[str, bool]) -> PairedResult:
-    """Exact two-sided binomial test on discordant per-task pass3 pairs (McNemar exact)."""
+    """Exact ONE-sided binomial test on discordant per-task pass3 pairs (McNemar exact).
+
+    One-sided is the correct test for a promotion gate: the question is only ever "is the
+    candidate better", and ``decide`` has already refused anything with a worse pass3 rate
+    or more hard fails, so half of a two-sided test's alpha is spent on an alternative we
+    have excluded by construction. Two-sided needed 5 discordant wins before p < 0.1 was
+    arithmetically reachable; one-sided needs 4. That is a real gain in power and not a
+    loosening of the standard -- but it does double the per-test false-promotion rate to
+    alpha, which is why we report that rate rather than bury it.
+
+    This is still a blunt instrument, and the honest reason is in the statistic, not the
+    test: collapsing 3 runs to a per-task pass^3 boolean throws away partial movement, so a
+    task going 0/3 -> 2/3 registers as no change and contributes no discordant pair at all.
+    """
     tasks = set(candidate) | set(incumbent)
     wins = sum(1 for t in tasks if candidate.get(t, False) and not incumbent.get(t, False))
     losses = sum(1 for t in tasks if incumbent.get(t, False) and not candidate.get(t, False))
+    floor = _min_discordant_to_promote()
     if wins + losses == 0:
-        return PairedResult(wins, losses, 1.0)
-    p = float(binomtest(wins, wins + losses, 0.5, alternative="two-sided").pvalue)
-    return PairedResult(wins, losses, p)
+        return PairedResult(wins, losses, 1.0, floor)
+    p = float(binomtest(wins, wins + losses, 0.5, alternative="greater").pvalue)
+    return PairedResult(wins, losses, p, floor)
 
 
 def decide(candidate: SpecMetrics, incumbent: SpecMetrics, p: float) -> tuple[bool, str]:
@@ -139,6 +176,16 @@ def decide(candidate: SpecMetrics, incumbent: SpecMetrics, p: float) -> tuple[bo
     if not p < ALPHA:
         return False, f"p {p:.3f} >= alpha {ALPHA}"
     return True, "promoted"
+
+
+def underpowered(result: PairedResult) -> bool:
+    """True when the rejection was arithmetic, not evidence.
+
+    With fewer discordant pairs than ``min_discordant_to_promote`` no outcome could have
+    cleared alpha, however one-sided the win. Such a rejection says nothing about the
+    candidate and must not be read as "the change did not help".
+    """
+    return result.wins + result.losses < result.min_discordant_to_promote
 
 
 # --- running ----------------------------------------------------------------------------
