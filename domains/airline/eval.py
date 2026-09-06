@@ -67,7 +67,11 @@ def load_tasks(split: str | None = None) -> list[Task]:
 
 
 def setup(task: Task) -> None:
-    """Reset the shared airline database so `task` starts from the pristine snapshot."""
+    """Give this task a private, pristine airline database (see fixtures/tools.py).
+
+    Must be called in the same thread/context that will run the task's tools and `score`;
+    the runner guarantees this by doing all three inside one `asyncio.to_thread` call.
+    """
     _tools.reset()
 
 

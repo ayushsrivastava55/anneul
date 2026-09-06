@@ -1,52 +1,67 @@
-"""Module-level airline database plus the `python:` tool impls referenced by tools.yaml.
+"""Per-task airline database plus the `python:` tool impls referenced by tools.yaml.
 
-State lives in `_DB`. `eval.setup(task)` calls `reset()` before every run so each task starts
-from the pristine tau-bench snapshot. Every wrapper returns a string, tau-bench style
-(JSON on success, "Error: ..." on failure), so the runtime never sees an exception.
+State lives in a `contextvars.ContextVar`, not a module global, so concurrent tasks never
+see each other's writes. The runner executes setup, the agent's tool calls and scoring for
+one task inside a single `asyncio.to_thread` call, which runs in its own copy of the
+context; `eval.setup(task)` calls `reset()` there, giving that task a private, pristine
+tau-bench snapshot. Plain threads and the main thread work the same way: whoever calls
+`reset()` owns the store from then on within their context.
+
+Every wrapper returns a string, tau-bench style (JSON on success, "Error: ..." on
+failure), so the runtime never sees an exception.
 """
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any
 
 from .tau_airline.env import data_hash, invoke, load_data
 
-_DB: dict[str, Any] = load_data()
+_STORE: ContextVar[dict[str, Any] | None] = ContextVar("airline_db", default=None)
+
+
+def _db() -> dict[str, Any]:
+    """The current context's database, loading a pristine copy if setup() never ran."""
+    db = _STORE.get()
+    if db is None:
+        db = load_data()
+        _STORE.set(db)
+    return db
 
 
 def reset() -> None:
-    """Reload the pristine snapshot from data/. Called by eval.setup()."""
-    _DB.clear()
-    _DB.update(load_data())
+    """Give the current context a pristine snapshot from data/. Called by eval.setup()."""
+    _STORE.set(load_data())
 
 
 def db_hash() -> str:
-    """tau-bench consistent_hash of the live database."""
-    return data_hash(_DB)
+    """tau-bench consistent_hash of the current context's database."""
+    return data_hash(_db())
 
 
 def get_user_details(user_id: str) -> str:
-    return invoke(_DB, "get_user_details", {"user_id": user_id})
+    return invoke(_db(), "get_user_details", {"user_id": user_id})
 
 
 def get_reservation_details(reservation_id: str) -> str:
-    return invoke(_DB, "get_reservation_details", {"reservation_id": reservation_id})
+    return invoke(_db(), "get_reservation_details", {"reservation_id": reservation_id})
 
 
 def search_direct_flight(origin: str, destination: str, date: str) -> str:
     return invoke(
-        _DB, "search_direct_flight", {"origin": origin, "destination": destination, "date": date}
+        _db(), "search_direct_flight", {"origin": origin, "destination": destination, "date": date}
     )
 
 
 def search_onestop_flight(origin: str, destination: str, date: str) -> str:
     return invoke(
-        _DB, "search_onestop_flight", {"origin": origin, "destination": destination, "date": date}
+        _db(), "search_onestop_flight", {"origin": origin, "destination": destination, "date": date}
     )
 
 
 def list_all_airports() -> str:
-    return invoke(_DB, "list_all_airports", {})
+    return invoke(_db(), "list_all_airports", {})
 
 
 def book_reservation(
@@ -63,7 +78,7 @@ def book_reservation(
     insurance: str,
 ) -> str:
     return invoke(
-        _DB,
+        _db(),
         "book_reservation",
         {
             "user_id": user_id,
@@ -85,7 +100,7 @@ def update_reservation_flights(
     reservation_id: str, cabin: str, flights: list[dict[str, Any]], payment_id: str
 ) -> str:
     return invoke(
-        _DB,
+        _db(),
         "update_reservation_flights",
         {
             "reservation_id": reservation_id,
@@ -100,7 +115,7 @@ def update_reservation_baggages(
     reservation_id: str, total_baggages: int, nonfree_baggages: int, payment_id: str
 ) -> str:
     return invoke(
-        _DB,
+        _db(),
         "update_reservation_baggages",
         {
             "reservation_id": reservation_id,
@@ -113,23 +128,23 @@ def update_reservation_baggages(
 
 def update_reservation_passengers(reservation_id: str, passengers: list[dict[str, Any]]) -> str:
     return invoke(
-        _DB,
+        _db(),
         "update_reservation_passengers",
         {"reservation_id": reservation_id, "passengers": passengers},
     )
 
 
 def cancel_reservation(reservation_id: str) -> str:
-    return invoke(_DB, "cancel_reservation", {"reservation_id": reservation_id})
+    return invoke(_db(), "cancel_reservation", {"reservation_id": reservation_id})
 
 
 def send_certificate(user_id: str, amount: int) -> str:
-    return invoke(_DB, "send_certificate", {"user_id": user_id, "amount": amount})
+    return invoke(_db(), "send_certificate", {"user_id": user_id, "amount": amount})
 
 
 def calculate(expression: str) -> str:
-    return invoke(_DB, "calculate", {"expression": expression})
+    return invoke(_db(), "calculate", {"expression": expression})
 
 
 def transfer_to_human_agents(summary: str) -> str:
-    return invoke(_DB, "transfer_to_human_agents", {"summary": summary})
+    return invoke(_db(), "transfer_to_human_agents", {"summary": summary})
