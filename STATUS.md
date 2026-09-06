@@ -65,6 +65,12 @@ endpoint. Tiers: qwen2.5 7b / 3b / 1.5b (a genuine size ladder for the downshift
 Tokens and latency are MEASURED. USD uses a documented reference rate; specs/models.yaml
 records price_source per tier (published vs scaled) so no cost figure is unattributable.
 
+## Machine constraints (drive every remaining decision)
+8.6 GB RAM total. An earlier run was OOM-killed with three qwen models resident plus pytest.
+Ollama now runs with OLLAMA_MAX_LOADED_MODELS=1, NUM_PARALLEL=1, KEEP_ALIVE=30s, and idle AO
+sessions are killed before any run. Runs are sequential, never parallel across domains.
+p95 latency ~148 s/task on the 3b, so a 2-iteration run on the largest domain is ~1 hour.
+
 ## Blockers
 - Generated tools are carried on a spec but not yet loadable at runtime (load_domain reads only tools.yaml). Fix sent to anneal-11; gates the end-to-end tool-synthesis demo.
 - Clock: machine time was 6:50 PM IST when Phase 1 spawned; docs say the window opens 9:30 PM IST. User to confirm which is right.
