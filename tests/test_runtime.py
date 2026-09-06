@@ -201,13 +201,14 @@ def test_invalid_tool_args_return_error_without_calling_impl(domain: Domain) -> 
     assert tool_msgs and tool_msgs[0]["content"].startswith("Error")
 
 
-def test_mcp_tools_are_not_implemented() -> None:
+def test_mcp_tool_without_a_pool_is_a_tool_error() -> None:
+    """``mcp:`` dispatch lives in anneal.mcp now (tests/test_mcp.py); with no pool wired in
+    the call must still degrade to a readable tool error rather than raising."""
     from anneal import runtime
     from anneal.spec import ToolSpec
 
     tool = ToolSpec(name="remote", description="x", impl="mcp:server/tool")
-    with pytest.raises(NotImplementedError):
-        runtime.invoke_tool(tool, {})
+    assert runtime.invoke_tool(tool, {}).startswith("Error:")
 
 
 # --- planner_executor --------------------------------------------------------------------
