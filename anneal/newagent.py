@@ -74,18 +74,27 @@ def catalogue_command(choice: str, path: str = "") -> str:
     return ""
 
 
-def python_modules(root: Path | None = None) -> list[tuple[str, str]]:
-    """``(dotted path, what is in it)`` for every tool module already in this project.
+# The one folder a person's own tool modules live in. Everything else in this repository is
+# ours: the benchmark domains under domains/ carry fixtures that exist to make our own test
+# agents work, and offering those to somebody building their own agent is offering them our
+# internals. This picker looks here and nowhere else.
+USERCODE_DIR = "usercode"
 
-    A person who wrote their own functions should be able to point at them from a list rather
-    than type a dotted path from memory and find out it was wrong after the form is submitted.
+
+def python_modules(root: Path | None = None) -> list[tuple[str, str]]:
+    """``(dotted path, what is in it)`` for each tool module in ``usercode/``.
+
+    The list is scanned, never written down, so a file dropped into that folder appears here
+    with no further step. It used to also sweep ``*/*/fixtures/tools.py``, which meant a person
+    creating an agent was shown ``domains.airline.fixtures.tools`` and three others like it:
+    the plumbing of our benchmark domains, which is neither theirs nor usable by them.
     """
     root = root or ROOT
     found: list[tuple[str, str]] = []
-    for path in sorted(root.glob("usercode/*.py")) + sorted(root.glob("*/*/fixtures/tools.py")):
+    for path in sorted((root / USERCODE_DIR).glob("*.py")):
         if path.name.startswith("_"):
             continue
-        dotted = ".".join(path.relative_to(root).with_suffix("").parts)
+        dotted = f"{USERCODE_DIR}.{path.stem}"
         names = _public_functions(path)
         if names:
             found.append((dotted, ", ".join(names[:4]) + (" and more" if len(names) > 4 else "")))
@@ -279,8 +288,24 @@ def _mcp_picker() -> str:
 
 
 def _python_picker() -> str:
-    """The tool modules already in this project, as a list. Revealed only if Python was chosen."""
+    """The tool modules in ``usercode/``, as a list. Revealed only if Python was chosen."""
     modules = python_modules()
+    if not modules:
+        return (
+            '<div class="field reveal" data-when="python">'
+            '<label class="flabel">Which functions?</label>'
+            '<p class="fhelp">There are no tool modules yet. Put a Python file in the '
+            f'<span class="mono">{USERCODE_DIR}/</span> folder of this project, with one '
+            "function per thing the agent should be able to do, and it will be listed here. "
+            "Each function's first docstring line becomes the description the agent reads."
+            "</p>"
+            '<div class="sub-field"><label class="flabel" for="python_other">'
+            "Or name one yourself</label>"
+            '<input class="finput" id="python_other" name="python_other" '
+            'placeholder="usercode.my_tools">'
+            '<input type="hidden" name="python_choice" value="other">'
+            "</div></div>"
+        )
     rows = "".join(
         f'<label class="choice pick"><input type="radio" name="python_choice" '
         f'value="{escape(dotted)}"{" checked" if index == 0 else ""}>'

@@ -73,6 +73,30 @@ def test_every_catalogue_entry_names_a_real_published_server() -> None:
         assert "\u2014" not in blurb
 
 
+def test_the_picker_never_offers_this_repository_s_own_fixtures(tmp_path: Path) -> None:
+    """It used to sweep */*/fixtures/tools.py and show a person our benchmark plumbing.
+
+    Somebody creating an agent was offered domains.airline.fixtures.tools and three like it.
+    Those exist to make our own test agents work. They are not the person's code, they are not
+    usable by them, and being shown them is how the picker read as random.
+    """
+    fixtures = tmp_path / "domains" / "airline" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "tools.py").write_text("def get_user_details(x):\n    return x\n", encoding="utf-8")
+    (tmp_path / "usercode").mkdir()
+    (tmp_path / "usercode" / "mine.py").write_text("def send(x):\n    return x\n", encoding="utf-8")
+    assert newagent.python_modules(tmp_path) == [("usercode.mine", "send")]
+
+
+def test_an_empty_usercode_folder_says_what_to_put_in_it(tmp_path: Path, monkeypatch) -> None:
+    """An empty list is not an answer to "which functions". Say where they go."""
+    monkeypatch.setattr(newagent, "ROOT", tmp_path)
+    body = newagent.form_body()
+    assert "no tool modules yet" in body
+    assert "usercode/" in body
+    assert "docstring" in body  # and how to write one
+
+
 def test_the_python_picker_lists_modules_that_are_actually_here(tmp_path: Path) -> None:
     """Typing a dotted path from memory and finding out later is not an experience."""
     (tmp_path / "usercode").mkdir()

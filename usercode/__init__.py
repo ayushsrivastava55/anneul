@@ -1,1 +1,1 @@
-"""Code the user brings with them. Nothing in anneal/ imports from here."""
+"""Your own tool modules. Nothing in ``anneal/`` imports from here; see README.md."""
