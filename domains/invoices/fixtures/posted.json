@@ -7,38 +7,66 @@
     "vendor": "Corvid Electronics GmbH"
   },
   {
-    "currency": "GBP",
+    "currency": "EUR",
     "entry_id": "GL-0002",
+    "invoice_number": "INV-10003",
+    "total": 8479.2,
+    "vendor": "Halden Fasteners AB"
+  },
+  {
+    "currency": "EUR",
+    "entry_id": "GL-0003",
+    "invoice_number": "INV-10007",
+    "total": 3310.8,
+    "vendor": "Halden Fasteners AB"
+  },
+  {
+    "currency": "EUR",
+    "entry_id": "GL-0004",
+    "invoice_number": "INV-10008",
+    "total": 1887.5,
+    "vendor": "Halden Fasteners AB"
+  },
+  {
+    "currency": "EUR",
+    "entry_id": "GL-0005",
+    "invoice_number": "INV-10050-2",
+    "total": 7179.78,
+    "vendor": "Halden Fasteners AB"
+  },
+  {
+    "currency": "GBP",
+    "entry_id": "GL-0006",
     "invoice_number": "INV-90271",
     "total": 806.5,
     "vendor": "Kestrel Industrial Ltd"
   },
   {
     "currency": "USD",
-    "entry_id": "GL-0003",
-    "invoice_number": "INV-10003",
-    "total": 14729.76,
+    "entry_id": "GL-0007",
+    "invoice_number": "INV-10052-2",
+    "total": 4267.22,
     "vendor": "Pinebrook Supply Co"
   },
   {
     "currency": "USD",
-    "entry_id": "GL-0004",
+    "entry_id": "GL-0008",
     "invoice_number": "INV-90114",
     "total": 1240.0,
     "vendor": "Pinebrook Supply Co"
   },
   {
-    "currency": "USD",
-    "entry_id": "GL-0005",
-    "invoice_number": "INV-10016",
-    "total": 12472.8,
-    "vendor": "Tidewater Logistics Inc"
+    "currency": "GBP",
+    "entry_id": "GL-0009",
+    "invoice_number": "INV-10057-2",
+    "total": 7822.81,
+    "vendor": "Sable & Roe Chemicals"
   },
   {
     "currency": "USD",
-    "entry_id": "GL-0006",
-    "invoice_number": "INV-10012",
-    "total": 6723.0,
+    "entry_id": "GL-0010",
+    "invoice_number": "INV-10047-2",
+    "total": 21770.68,
     "vendor": "Vermillion Packaging"
   }
 ]
