@@ -46,11 +46,22 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - [x] 0.4 anneal-8 - anneal/tracing.py: init_tracing (once, no-op without key), wrap_client, node_span/tool_span/llm_span (sync+async, offline pass-through), run-context tags via contextvar, flush/shutdown, current_trace_id; tests/test_tracing.py (15 tests); smoke `uv run python -m anneal.tracing`
 
 ## Blockers
-- Generated tools are carried on a spec but not yet loadable at runtime (load_domain reads only tools.yaml). Fix sent to anneal-11; gates the end-to-end tool-synthesis demo.
-- Clock: machine time was 6:50 PM IST when Phase 1 spawned; docs say the window opens 9:30 PM IST. User to confirm which is right.
-- keys: `.env` exists but every value is empty (TensorMux, Neatlogs, Dodo, AIGI). `specs/models.yaml` still REPLACE_ME.
-- GitHub remote: `gh repo create` was blocked in the orchestrator session; `origin` is a local bare repo at ~/.ao/data/anneal-origin.git. Swap to GitHub before submission.
+- **THE blocker: the system has never run against a real model.** No `.env` on the build
+  machine, and every tier in `specs/models.yaml` is still `REPLACE_ME`. `runs/` holds nothing
+  but `.gitkeep`, so every cell of the README results table is still an em-dash. All 372 tests
+  are offline: they inject a fake client and resolve `REPLACE_ME` as an ordinary model id.
+  Nothing else on this list matters until one OpenAI-compatible key exists.
+  Unblocking needs exactly two things: fill `.env`, and put real model ids + prices in
+  `specs/models.yaml`. Any OpenAI-compatible endpoint works; `llm.get_client` reads
+  `base_url`/`api_key` from the env vars named per provider in that file.
 - Docker daemon down (only needed for the optional TensorMux OSS gateway).
+
+## Cleared
+- Generated tools loadable at runtime: fixed (`runtime-single` follow-up loads `tools.generated.yaml`).
+- GitHub remote: now `https://github.com/ayushsrivastava55/anneul.git`, no longer a local bare repo.
+- `anneal anneal` and `anneal dashboard` were listed in `cli.STUBS` and printed "not implemented
+  yet" even though both modules were built, tested and merged — so the two commands the README
+  tells judges to run were dead. Both are wired now.
 
 ## Decisions
 - Airline: no user simulator; task instruction is the single customer message. eval.py exposes setup(task) to reset DB state. 40 of 50 tasks, split 20/10/10, seed 0.
@@ -91,7 +102,8 @@ Unit tests passed on every module; these only appeared when the modules ran toge
    Fixed; the loop counter is authoritative.
 
 ## Latest numbers
-main: 369 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 372 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+These are all offline. There are still no measured numbers from a real model.
 
 ## Old latest numbers
 none
