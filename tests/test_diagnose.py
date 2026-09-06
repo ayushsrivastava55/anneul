@@ -218,3 +218,105 @@ def test_default_source_is_local_without_key(monkeypatch: pytest.MonkeyPatch) ->
     assert isinstance(diagnose.default_trace_source(ROWS), LocalTraces)
     monkeypatch.setenv("NEATLOGS_API_KEY", "k")
     assert isinstance(diagnose.default_trace_source(ROWS), NeatlogsMCP)
+
+
+# --- diagnosis confidence -----------------------------------------------------------------
+
+
+def test_reported_confidence_is_parsed_clamped_and_carried() -> None:
+    reply = json.dumps({"class": "wrong_tool", "node": "executor", "confidence": 0.9})
+    cls, node, conf = diagnose.classify_with_llm(
+        [{"role": "user", "content": "x"}], ["wrong_tool"], ["executor"], fake_client(reply)
+    )
+    assert (cls, node, conf) == ("wrong_tool", "executor", 0.9)
+    # Out-of-range values are clamped rather than trusted or discarded.
+    for raw, want in ((5, 1.0), (-2, 0.0)):
+        body = json.dumps({"class": "wrong_tool", "node": "executor", "confidence": raw})
+        assert diagnose.classify_with_llm(
+            [{"role": "user", "content": "x"}], ["wrong_tool"], ["executor"], fake_client(body)
+        )[2] == want
+
+
+@pytest.mark.parametrize("raw", ["null", '"high"', "{}"])
+def test_unreported_confidence_is_unknown_not_low(raw: str) -> None:
+    """Absent or junk confidence must read as None. It is the difference between "we do not
+    know how sure the classifier was" and "the classifier told us it was unsure", and only
+    the latter is allowed to block a repair."""
+    reply = f'{{"class": "wrong_tool", "node": "executor", "confidence": {raw}}}'
+    assert diagnose.classify_with_llm(
+        [{"role": "user", "content": "x"}], ["wrong_tool"], ["executor"], fake_client(reply)
+    )[2] is None
+
+
+def test_a_guessed_class_scores_as_the_low_confidence_diagnosis_it_is() -> None:
+    """An unusable reply falls back to a heuristic guess. The ledger already recorded that as
+    `fallback` and then nothing acted on it; a guess is a low-confidence diagnosis."""
+    ledger: list[Any] = []
+    issue = diagnose.upsert(
+        ledger, "wrong_tool", "executor", ["t1"], fallback=True,
+        confidence=diagnose.FALLBACK_CONFIDENCE,
+    )
+    assert issue["fallback"] is True
+    assert diagnose.confidence_of(issue) == diagnose.FALLBACK_CONFIDENCE
+    assert not diagnose.actionable(issue), "we must not spend an operator on a guess"
+
+
+def test_confidence_is_a_running_mean_so_one_shaky_row_cannot_sink_an_issue() -> None:
+    ledger: list[Any] = []
+    diagnose.upsert(ledger, "wrong_tool", "executor", ["t1"], confidence=0.9)
+    for i in range(8):
+        diagnose.upsert(ledger, "wrong_tool", "executor", [f"t{i + 2}"], confidence=0.9)
+    issue = diagnose.upsert(ledger, "wrong_tool", "executor", ["t99"], confidence=0.1)
+    assert issue["count"] == 10 and issue["confidence_n"] == 10
+    assert diagnose.confidence_of(issue) == pytest.approx(0.82)
+    assert diagnose.actionable(issue), "nine solid diagnoses outweigh one shaky one"
+
+
+def test_repeated_shaky_diagnoses_do_sink_an_issue() -> None:
+    ledger: list[Any] = []
+    for i in range(6):
+        issue = diagnose.upsert(ledger, "wrong_tool", "executor", [f"t{i}"], confidence=0.2)
+    assert diagnose.confidence_of(issue) == pytest.approx(0.2)
+    assert not diagnose.actionable(issue)
+
+
+def test_unscored_issue_is_actionable_so_a_silent_classifier_cannot_stall_the_loop() -> None:
+    """The failure mode this guards is severe: if absence blocked, a model that ignores the
+    confidence field would halt every repair while looking like a principled refusal."""
+    ledger: list[Any] = []
+    issue = diagnose.upsert(ledger, "wrong_tool", "executor", ["t1"], confidence=None)
+    assert not diagnose.confidence_known(issue)
+    assert diagnose.confidence_of(issue) == diagnose.DEFAULT_CONFIDENCE
+    assert diagnose.DEFAULT_CONFIDENCE < diagnose.CONFIDENCE_FLOOR, "default is below the floor"
+    assert diagnose.actionable(issue), "unknown must not block"
+
+
+def test_deterministic_classes_are_certain() -> None:
+    """A forbidden tool call is observed by rule, not inferred, so there is nothing to doubt."""
+    row = {"task_id": "t", "score": 0.0, "hard_fail": True}
+    cls, _node, fell_back, conf = diagnose._classify_row(
+        row, None, SPEC, LocalTraces([row]), diagnose.load_taxonomy(), None
+    )
+    assert cls == "unsafe_action" and not fell_back
+    assert conf == diagnose.CERTAIN_CONFIDENCE
+    assert diagnose.actionable({"confidence": conf, "confidence_n": 1})
+
+
+def test_rank_weights_by_confidence_without_letting_it_override_severity() -> None:
+    tax = diagnose.load_taxonomy()
+    unsure_severe = {
+        "id": "L-0001", "class": "unsafe_action", "node": "executor", "count": 4,
+        "status": "open", "confidence": 0.6, "confidence_n": 4,
+    }
+    certain_mild = {
+        "id": "L-0002", "class": "context_overflow", "node": "executor", "count": 1,
+        "status": "open", "confidence": 1.0, "confidence_n": 1,
+    }
+    # 4 * 5 * 0.6 = 12.0 still beats 1 * 2 * 1.0 = 2.0: confidence weights, it does not veto.
+    assert [i["id"] for i in diagnose.rank([certain_mild, unsure_severe], tax)] == [
+        "L-0001", "L-0002",
+    ]
+    # But between two equally common failures, the believed one goes first.
+    doubted = {**unsure_severe, "id": "L-0003", "confidence": 0.3}
+    believed = {**unsure_severe, "id": "L-0004", "confidence": 0.95}
+    assert [i["id"] for i in diagnose.rank([doubted, believed], tax)] == ["L-0004", "L-0003"]

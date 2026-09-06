@@ -51,6 +51,34 @@ SEARCH_SPLIT = "search"
 CLASSIFIER_TIER = "cheap"
 MAX_CONTEXT_CHARS = 6000
 
+# --- diagnosis confidence ---------------------------------------------------------------
+# Published failure-attribution accuracy for LLM classifiers of this kind is 14-48%, so a
+# diagnosis is a hypothesis, not a fact. Confidence travels with it and gates whether we act.
+
+CERTAIN_CONFIDENCE = 1.0
+"""Deterministic classes. A forbidden tool call or a schema violation is observed from the
+row by rule, not inferred by a model, so there is nothing to be unsure about."""
+
+FALLBACK_CONFIDENCE = 0.2
+"""The classifier reply was unusable and ``fallback_class`` guessed from heuristics. The
+ledger already recorded this as ``fallback`` and then nothing used it; a guessed class is
+precisely a low-confidence diagnosis, so it now scores as one."""
+
+DEFAULT_CONFIDENCE = 0.3
+"""Ranking weight for an issue whose confidence was never reported. Ordering only.
+
+It does NOT block, and that distinction is the whole design: a reply that parsed cleanly but
+omitted the field tells us nothing about certainty, which is not the same as telling us
+certainty is low. Blocking on absence would mean any model that ignores the field silently
+stops the optimiser dead -- a much worse failure than trying a fix on an unscored diagnosis.
+Reported-low blocks; unknown proceeds and says so in the log."""
+
+CONFIDENCE_FLOOR = 0.5
+"""Mean confidence an issue needs before Mutate will spend an operator on it, once
+confidence has actually been reported. Below this the issue stays open and ranked but is
+skipped in favour of the next one, because applying a typed fix to a misdiagnosed failure
+costs a full gate cycle and teaches us nothing."""
+
 # Row ``tokens_in``/``tokens_out`` are cumulative over every step of the task, not the peak
 # prompt size, so this default is sized for a whole multi-step run rather than one window.
 CONTEXT_TOKEN_LIMIT_ENV = "ANNEAL_CONTEXT_TOKEN_LIMIT"
@@ -297,18 +325,36 @@ def _next_id(ledger: list[Issue]) -> str:
 
 
 def upsert(
-    ledger: list[Issue], cls: str, node: str, evidence: Iterable[str], *, fallback: bool = False
+    ledger: list[Issue],
+    cls: str,
+    node: str,
+    evidence: Iterable[str],
+    *,
+    fallback: bool = False,
+    confidence: float | None = None,
 ) -> Issue:
     """Increment the ``(class, node)`` issue (creating it if needed) and dedupe evidence.
 
     ``fallback=True`` marks the issue as holding at least one row whose class came from the
     deterministic fallback rather than a usable classifier reply. It is sticky once set.
+
+    ``confidence`` accumulates as a running mean over the rows folded into the issue, kept
+    with its own sample count (``confidence_n``) so repeated diagnoses of the same failure
+    converge instead of the last row overwriting everything before it. One shaky diagnosis
+    among nine solid ones should barely move the issue; nine shaky ones should sink it. A row
+    that reported no confidence contributes nothing to the mean and leaves ``confidence_n``
+    alone, so ``confidence_n == 0`` means "never scored" rather than "scored zero".
     """
     for issue in ledger:
         if issue["class"] == cls and issue["node"] == node:
             issue["count"] += 1
             issue["evidence"].extend(e for e in evidence if e not in issue["evidence"])
             issue["fallback"] = bool(issue.get("fallback")) or fallback
+            if confidence is not None:
+                seen = int(issue.get("confidence_n", 0))
+                prior = float(issue.get("confidence", 0.0))
+                issue["confidence"] = (prior * seen + confidence) / (seen + 1)
+                issue["confidence_n"] = seen + 1
             return issue
     issue: Issue = {
         "id": _next_id(ledger),
@@ -319,17 +365,51 @@ def upsert(
         "status": "open",
         "operators_tried": [],
         "fallback": fallback,
+        "confidence": DEFAULT_CONFIDENCE if confidence is None else confidence,
+        "confidence_n": 0 if confidence is None else 1,
     }
     ledger.append(issue)
     return issue
 
 
+def confidence_of(issue: Issue) -> float:
+    """Mean reported diagnosis confidence, or ``DEFAULT_CONFIDENCE`` when never reported."""
+    if not int(issue.get("confidence_n", 0)):
+        return DEFAULT_CONFIDENCE
+    return float(issue.get("confidence", DEFAULT_CONFIDENCE))
+
+
+def confidence_known(issue: Issue) -> bool:
+    """Whether any row folded into ``issue`` actually reported a confidence."""
+    return bool(int(issue.get("confidence_n", 0)))
+
+
+def actionable(issue: Issue) -> bool:
+    """Whether to spend an operator on this issue.
+
+    Refusing to fix a diagnosis we do not believe is the point of scoring confidence: a typed
+    fix aimed at a misdiagnosed failure costs a whole gate cycle and teaches us nothing, and
+    if it happens to pass the gate we have promoted a change for a reason that was not real.
+
+    Only *reported* low confidence blocks. An issue nothing ever scored is unknown, not
+    doubted, and proceeds -- otherwise a classifier that ignores the field would stop the
+    optimiser dead while looking like a principled refusal.
+    """
+    return not confidence_known(issue) or confidence_of(issue) >= CONFIDENCE_FLOOR
+
+
 def rank(issues: Iterable[Issue], taxonomy: dict[str, dict[str, Any]] | None = None) -> list[Issue]:
-    """Open issues, highest ``count * severity`` first (ties: lower id first)."""
+    """Open issues, highest ``count * severity * confidence`` first (ties: lower id first).
+
+    Confidence is a factor, not a filter, so a frequent severe failure we are unsure about
+    still outranks a rare mild one we are certain of -- it just has to be believed more
+    before it outranks an equally common failure we understand.
+    """
     tax = taxonomy or load_taxonomy()
 
     def weight(issue: Issue) -> float:
-        return issue["count"] * float(tax.get(issue["class"], {}).get("severity", 1))
+        severity_ = float(tax.get(issue["class"], {}).get("severity", 1))
+        return issue["count"] * severity_ * confidence_of(issue)
 
     open_issues = [i for i in issues if i.get("status", "open") == "open"]
     return sorted(open_issues, key=lambda i: (-weight(i), i["id"]))
@@ -471,14 +551,18 @@ def build_prompt(
     nodes: list[str],
     guesses: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Chat messages asking the classifier for ``{"class": ..., "node": ...}``."""
+    """Chat messages asking for ``{"class": ..., "node": ..., "confidence": ...}``."""
     class_lines = "\n".join(
         f"- {cid}: {spec.get('description', '')}" for cid, spec in classes.items()
     )
     system = (
         "You classify why an LLM agent failed a task. Reply with a single JSON object "
-        '{"class": <one class id>, "node": <one node name>} and nothing else. Use only the '
-        "class ids listed below; never invent one.\n"
+        '{"class": <one class id>, "node": <one node name>, "confidence": <0.0-1.0>} and '
+        "nothing else. Use only the class ids listed below; never invent one.\n"
+        "confidence is how sure you are of the class, given the evidence you were shown. "
+        "Be honest and use the low end: if the trace does not show why the task failed, say "
+        "so with a low number. A low score is useful -- it stops us applying a fix for a "
+        "problem you are guessing at. Do not default to a high number.\n"
         f"Allowed class ids:\n{class_lines}\nAllowed nodes: {', '.join(nodes)}"
     )
     signals = (
@@ -497,16 +581,37 @@ def build_prompt(
 
 
 @llm_span("diagnose.classify")
+def _parse_confidence(raw: Any) -> float | None:
+    """Clamp a classifier-reported confidence into [0, 1]. None when it reported none.
+
+    None means "unknown", not "low": a junk or absent value must neither become 1.0 by
+    accident (letting the least trustworthy replies carry the most weight) nor be treated as
+    an explicit refusal. See ``DEFAULT_CONFIDENCE``.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value:  # NaN
+        return None
+    return max(0.0, min(1.0, value))
+
+
 def classify_with_llm(
     messages: list[dict[str, Any]],
     allowed: list[str],
     nodes: list[str],
     client: Any | None = None,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, float | None]:
     """Ask the ``cheap`` tier via the gateway; ``client`` overrides it (tests inject a fake).
 
-    Returns ``(class, node)``. The class is None -- never an invented id -- when the reply is
-    unparseable or names something outside ``allowed``; the caller then picks the fallback.
+    Returns ``(class, node, confidence)``, confidence None when the reply reported none. The
+    class is None -- never an invented id -- when the reply is unparseable or names something
+    outside ``allowed``; the caller then picks the fallback. Published attribution accuracy
+    for this kind of classifier runs 14-48%, so confidence travels with the diagnosis and
+    decides whether we act on it.
     """
     reply, _usage = llm.chat(CLASSIFIER_TIER, messages, client=client, temperature=0)
     parsed: dict[str, Any] = {}
@@ -521,7 +626,7 @@ def classify_with_llm(
         logger.warning("classifier returned unusable class", extra={"reply": reply[:200]})
         cls = None
     node = parsed.get("node")
-    return cls, str(node) if node in nodes else None
+    return cls, str(node) if node in nodes else None, _parse_confidence(parsed.get("confidence"))
 
 
 # --- entry point --------------------------------------------------------------------------
@@ -548,23 +653,27 @@ def _classify_row(
     traces: TraceSource,
     taxonomy: dict[str, dict[str, Any]],
     client: Any | None,
-) -> tuple[str, str, bool]:
-    """``(class, node, fell_back)`` for one failed row. Deterministic checks skip the model."""
+) -> tuple[str, str, bool, float | None]:
+    """``(class, node, fell_back, confidence)`` for one failed row, confidence None if unreported.
+
+    Deterministic checks skip the model and are certain by construction.
+    """
     cls = deterministic_class(row)
     if cls is not None:
-        return cls, default_node(row, spec), False
+        return cls, default_node(row, spec), False, CERTAIN_CONFIDENCE
     nodes = _node_names(spec)
     allowed = llm_classes(taxonomy)
     guesses = heuristic_guesses(row, spec, taxonomy)
     context = traces.get_trace_context(str(row.get("trace_id") or row.get("task_id")))
     classes = {cid: taxonomy[cid] for cid in allowed}
     messages = build_prompt(row, task_input, context, classes, nodes, guesses)
-    cls, node = classify_with_llm(messages, allowed, nodes, client)
+    cls, node, confidence = classify_with_llm(messages, allowed, nodes, client)
     fell_back = cls is None
     if cls is None:
         cls = fallback_class(guesses, allowed, taxonomy)
+        confidence = FALLBACK_CONFIDENCE
         logger.warning("classifier fell back", extra={"class": cls, "guesses": guesses})
-    return cls, node or default_node(row, spec), fell_back
+    return cls, node or default_node(row, spec), fell_back, confidence
 
 
 def diagnose(
@@ -593,9 +702,11 @@ def diagnose(
         if not is_failure(row, threshold):
             continue
         task_input = inputs.get(task_id) if inputs is not None else None
-        cls, node, fell_back = _classify_row(row, task_input, spec, source, taxonomy, client)
+        cls, node, fell_back, confidence = _classify_row(
+            row, task_input, spec, source, taxonomy, client
+        )
         evidence = [str(row.get("trace_id") or task_id)]
-        issue = upsert(ledger, cls, node, evidence, fallback=fell_back)
+        issue = upsert(ledger, cls, node, evidence, fallback=fell_back, confidence=confidence)
         touched[issue["id"]] = issue
         logger.info(
             "diagnosed",

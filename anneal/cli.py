@@ -201,6 +201,23 @@ def _propose_mutation(
     diagnose.diagnose(rows, loop.domain, incumbent, ledger_path=loop.ledger)
     ledger = diagnose.load_ledger(loop.ledger)
     for issue in diagnose.rank(ledger):
+        # Refuse to fix what we do not believe. Attribution accuracy for this class of
+        # classifier is 14-48%, so acting on every diagnosis spends gate cycles on
+        # hypotheses -- and a fix that passes the gate for a misdiagnosed reason is worse
+        # than one that fails. The issue stays open and ranked for when more evidence
+        # arrives; we just move to the next one we do believe.
+        if not diagnose.actionable(issue):
+            logger.info(json.dumps({
+                "event": "issue_skipped_low_confidence", "issue": issue["id"],
+                "class": issue["class"], "confidence": round(diagnose.confidence_of(issue), 3),
+                "floor": diagnose.CONFIDENCE_FLOOR,
+            }))
+            continue
+        if not diagnose.confidence_known(issue):
+            logger.info(json.dumps({
+                "event": "issue_confidence_unreported", "issue": issue["id"],
+                "class": issue["class"],
+            }))
         try:
             operator = mutate.select_operator(issue)
             candidate = mutate.apply(incumbent, issue, _evidence(issue, rows), loop.domain)
