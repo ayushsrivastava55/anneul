@@ -1,100 +1,124 @@
-# Design System: Anneal — Agent Engineering Console
+# Design System: Anneal
 
-Source of truth for every Stitch screen in this project. Two surfaces share one language:
-a **dense operator console** (the loop running) and a **calm onboarding interview** (a
-non-developer describing a job). Same tokens, different density.
+Source of truth for every Anneal surface: the landing page, the onboarding interview, and the
+run console. Calibrated against the approved reference: light, calm, enormously spacious, one
+orange accent, all technical content in monospace.
+
+**The governing principle: the interface is a flow, not a cockpit.** A first-time user should be
+able to operate it without a legend. When density and clarity conflict, clarity wins and the
+detail moves one level deeper.
 
 ## 1. Visual Theme & Atmosphere
 
-A metallurgy lab that happens to run software. Anneal takes a rough agent and cools it into a
-proven one, so the interface reads as **heat resolving into stability**: work in progress glows
-ember, work that survived the gate settles to a cool verified green, work the gate threw out is
-marked and kept visible rather than hidden.
+Swiss editorial calm applied to a technical product. Near-white paper, near-black ink, a single
+warm orange used perhaps four times per screen. The product's own output — the goal, the tools,
+the scorer, the run trace — is rendered in monospace inside a bordered panel, so the machine's
+voice is visually distinct from ours.
 
-Restrained, never decorative. Every pixel is either a measurement or the structure holding a
-measurement. Panels are separated by hairlines and negative space, not by floating cards.
-
-- **Density:** 8 on the console (cockpit dense), 3 on the interview (gallery airy)
-- **Variance:** 7 — asymmetric split columns, never a symmetric three-up grid
-- **Motion:** 6 — spring physics, one perpetual pulse on the single active stage, nothing else loops
+- **Density:** 3 — gallery airy. Whitespace is the primary layout tool.
+- **Variance:** 6 — asymmetric split (prose left, live panel right). Never centred, never a
+  symmetric three-up grid.
+- **Motion:** 4 — restrained. Content settles in; nothing bounces, nothing loops except one small
+  status dot on the actively running step.
 
 ## 2. Color Palette & Roles
 
-Absolute neutral base, one accent. Status colours are semantic signals, not decoration, and
-appear only on data that has a verdict.
+- **Paper** (#F7F7F5) — page background, a warm off-white. Never pure white for the canvas.
+- **Panel** (#FFFFFF) — the bordered console/product panel fill, so it lifts off Paper by tone
+  alone rather than by shadow
+- **Ink** (#111214) — headlines and primary text. Never pure black.
+- **Graphite** (#5B6068) — body copy, descriptions
+- **Ash** (#8A9099) — labels, axis ticks, metadata, timestamps
+- **Rule** (#E4E4E1) — 1px borders, dividers, chart gridlines
+- **Anneal Orange** (#F4511E) — the ONLY accent. Reserved for: the full stop after the headline,
+  the currently running step's dot, the score curve, and the single primary button fill. If it
+  appears more than about four times on a screen, something is wrong.
+- **Signal Green** (#2F9E79) — semantic only, and used sparingly: a promoted result, a healthy
+  status dot
+- **Signal Clay** (#C4544F) — semantic only: a rejected mutation, a hard failure
 
-- **Void** (#0A0B0D) — page background. Never pure black.
-- **Slate Panel** (#141619) — panel and table fill
-- **Raised Panel** (#1A1D21) — hovered row, active input
-- **Hairline** (#22262B) — 1px structural borders and dividers, the primary separation device
-- **Anneal Ember** (#E2622A) — THE accent. Primary action, the active pipeline stage, in-progress
-  heat. Saturation held under 80%. Used once per view, never as a gradient wash.
-- **Verified Green** (#2F9E79) — semantic only: promoted, passed, the Pareto front
-- **Reject Clay** (#C4544F) — semantic only: rejected, hard-fail
-- **Bone** (#E8EAED) — primary text
-- **Ash** (#7C838C) — secondary text, axis labels, metadata
-- **Iron** (#4A5058) — disabled, future pipeline stages, dominated scatter points
+No second accent. No purple, no neon, no gradient fills.
 
 ## 3. Typography Rules
 
-- **Display & UI:** `Geist` — tracking-tight, hierarchy by weight and colour, never by size alone
-- **Mono:** `Geist Mono` — mandatory for every number, score, p-value, model id, trace id, task id,
-  latency and currency figure. Density is above 7, so numbers never render in the sans face.
-- **Body (interview only):** `Geist`, relaxed leading, 65 characters maximum per line
-- **Banned:** `Inter`, system-font stacks, and all serif faces. This is a dashboard.
+- **Display:** `Geist` at 600–700 weight, tracking tight (-0.03em), scaled with `clamp()`. The
+  hero headline is genuinely large (about 92px desktop) and sits on 3 short lines. Hierarchy comes
+  from weight and colour, not from shouting.
+- **Body:** `Geist` 400, relaxed leading, maximum 65 characters per line, in Graphite.
+- **Mono:** `Geist Mono` — mandatory for every goal/tool/scorer value, every number, score,
+  p-value, timestamp, model id, task id, and every line of the run trace. Section labels above
+  panels are mono, uppercase, letterspaced, 11px, in Ash.
+- **Banned:** `Inter`, system-font stacks as the design choice, and all serif faces.
 
 ## 4. Component Stylings
 
-- **Buttons:** flat fill, no outer glow. Primary is Anneal Ember with Void text. Secondary is a
-  hairline outline. Active state translates down 1px. One primary action per view.
-- **Panels, not cards:** the console separates regions with a 1px Hairline and a panel header in
-  Ash small-caps. No drop shadows, no floating elevation. The interview may use a single
-  contained panel because there is only one thing on screen.
-- **Rows:** tabular rows carry a 2px left border in the status colour when they have a verdict;
-  otherwise no border. Hover raises fill to Raised Panel only.
-- **Status chips:** small, uppercase, mono, 1px border in the status colour, transparent fill.
-  Never a solid pill, never a glow.
-- **Inputs (interview):** label above, generous 44px minimum target, focus ring is a 1px Anneal
-  Ember border with no glow. Choice questions render as stacked selectable rows, not radio dots.
-- **Loading:** skeleton rows matching the exact table geometry. No circular spinners anywhere.
-- **Empty states:** a composed line explaining the next action, e.g. "No runs yet — describe a job
-  to generate a domain". Never the word "empty" alone.
-- **Charts:** 1px axes in Hairline, Ash mono tick labels, no gridline fill, no legend box border.
+- **The product panel** (the console on the right of the hero, and the run console page): white
+  fill, 1px Rule border, generous internal padding, a thin header strip with a mono path label on
+  the left and a version plus status dot on the right. This is the one place elevation exists,
+  and it is achieved with a border, not a shadow.
+- **Definition rows:** a mono label in Ash on the left (GOAL, TOOLS, SCORER), value in Ink on the
+  right. Aligned in a two-column grid. This is how the three inputs are always shown.
+- **Step timeline:** a vertical list of steps, each with a small dot on a 1px connector line, a
+  mono step name in Ink, a one-line description in Ash, an elapsed timestamp on the right, and a
+  chevron for detail. The active step's dot is Anneal Orange; completed dots are Ash; future dots
+  are Rule. This is the primary way progress is communicated anywhere in the product.
+- **Charts:** 1px Rule gridlines, Ash mono ticks, the measured series as a 2px Anneal Orange line
+  with small filled dots, projected or not-yet-run points as a dotted Ash line with hollow dots.
+  No filled areas, no legend boxes.
+- **Buttons:** one primary per view — Ink fill, Paper text, small right arrow, 8px radius, no
+  shadow, no glow. Secondary is a Rule outline on Panel fill. Active state translates down 1px.
+- **The explainer row:** four columns separated by 1px vertical rules, each a mono uppercase label
+  and two short lines of Graphite prose. This is the exception to the no-equal-columns rule
+  because it is a definition list, not a feature grid.
+- **Inputs (interview):** one question on screen at a time. Label above in mono uppercase Ash,
+  the control below at a minimum 44px target. Choice questions are stacked selectable rows with a
+  1px Rule border, not radio dots; the selected row takes a 1px Ink border.
+- **Loading:** skeleton lines matching the real geometry. Never a spinner.
+- **Empty states:** one sentence naming the next action, e.g. "No runs yet — describe a job to
+  generate a domain."
 
 ## 5. Layout Principles
 
-- CSS Grid, max width 1440px, 24px gutters, 16px internal panel padding
-- **Console:** asymmetric split — a wide left column (~62%) for candidates and the live run, a
-  narrow right column (~38%) for the ledger and the gate verdict. A full-width pipeline rail sits
-  above both, a full-width Pareto strip below.
-- **Interview:** single centred column, 560px maximum, one question visible at a time, a thin
-  progress rail showing five steps.
-- No overlapping elements. No absolute-positioned stacking. Every element owns its zone.
-- Below 768px every multi-column layout collapses to one column. Horizontal scroll is a failure,
-  except inside a wide data table which scrolls within its own panel.
+- 1440px max width, centred, with large outer margins. 24px gutter, 12-column grid.
+- **Hero / landing:** asymmetric split, roughly 46% prose and 54% product panel, vertically
+  centred against each other. A small mono eyebrow ("01 — FROM INTENT TO AGENT") sits above the
+  headline. Below the fold line, the four-column explainer row. A thin footer strip carries the
+  loop as breadcrumbs: BUILD > EVALUATE > IMPROVE > REPEAT.
+- **Interview:** a single centred column, 560px maximum. One question visible. A five-step
+  progress rail at the top. Back is always available; nothing is destructive.
+- **Console:** the same step timeline as the hero panel, expanded. Prose narration on the left,
+  the current artefact on the right. Detail (per-task tables, the full ledger) lives behind a
+  step's chevron rather than all on one screen. **Do not render every panel at once.**
+- No overlapping elements. No absolute-positioned stacking.
+- Below 768px everything collapses to one column, in reading order, with no horizontal scroll.
 
 ## 6. Motion & Interaction
 
 - Spring physics, stiffness 100, damping 20. No linear easing.
-- Exactly one perpetual loop per view: a slow pulse ring on the currently active pipeline stage.
-  Nothing else animates forever.
-- Table rows and ledger entries mount in a staggered cascade, ~40ms apart.
+- Exactly one perpetual loop in the entire product: the pulse on the active step's dot.
+- Step rows and table rows mount in a staggered cascade about 40ms apart.
+- The score curve draws left to right once when it enters the viewport, then rests.
 - Animate `transform` and `opacity` only.
 
 ## 7. Anti-Patterns (Banned)
 
 - No emojis, anywhere
-- No `Inter`, no serif faces, no system-font fallback stacks as the design choice
-- No pure black `#000000`
-- No neon or outer-glow shadows, no purple/blue "AI" glow
-- No gradient text on headings
-- No three equal columns of cards
+- No `Inter`, no serif faces
+- No pure black `#000000` and no pure white page canvas
+- No dark mode for the landing or the interview; the console may invert only if it stays on this
+  palette
+- No neon or outer-glow shadows, no drop shadows at all — separation is by 1px Rule and tone
+- No gradient text, no gradient fills
+- No second accent colour
 - No custom mouse cursors
 - No filler text: "Scroll to explore", bouncing chevrons, scroll arrows
-- No fake round numbers. Every figure on screen must look like it came from a run: `0.767`,
-  `$0.266`, `p 0.750`, `190.9s` — never `99.9%` or `50%`
-- No generic placeholder names. Use real artefact names from this system: `cand-01`,
+- No AI copywriting clichés: "Elevate", "Seamless", "Unleash", "Next-Gen", "Supercharge",
+  "Revolutionise". The reference voice is flat and declarative: "You define the objective."
+- No fake round numbers. Every figure shown must look like it came from a run: `0.767`, `$0.266`,
+  `p 0.750`, `190.9s`, `iteration 4 / 12` — never `99.9%` or `50%`
+- No generic placeholder names. Use real artefacts: `cand-01`,
   `cand-01-rewrite_tool_desc-i1`, `invoices`, `airline`, `qwen2.5:3b-instruct`
-- No AI copywriting clichés: "Elevate", "Seamless", "Unleash", "Next-Gen", "Supercharge"
-- No claiming success in the UI copy. The gate rejects more often than it promotes, and the
-  interface must show a rejection as calmly and prominently as a promotion.
+- **No cockpit.** If a screen needs a legend to be understood, it has failed. Push detail one
+  level deeper instead of adding another panel.
+- No claiming success in UI copy. The gate rejects more often than it promotes; a rejection is
+  displayed as calmly and as prominently as a promotion.
