@@ -252,3 +252,30 @@ def test_summarize_empty() -> None:
         "p95_latency_ms": 0.0,
         "cost_usd": 0.0,
     }
+
+
+def test_summarize_tolerates_malformed_models_yaml(tmp_path: Path) -> None:
+    bad = tmp_path / "models.yaml"
+    bad.write_text("tiers: [unclosed\n")
+    summary = runner.summarize([_row(1.0, False, 1.0)], 1.0, models_path=bad)
+    assert summary["cost_usd"] == 0.0
+
+
+def test_run_uses_requested_number_of_threads(tmp_path: Path, tasks) -> None:
+    import threading
+    import time
+
+    seen: set[str] = set()
+    started = threading.Barrier(3, timeout=5)
+
+    def slow(spec, task, domain, *, seed=0):
+        seen.add(threading.current_thread().name)
+        started.wait()  # all three tasks must be in flight together
+        time.sleep(0.01)
+        return FakeResult(output="ok", per_node=_per_node(1, 1))
+
+    rows = runner.run(
+        SPEC, make_domain(tasks, {}), SPLIT, concurrency=3, run_task=slow, runs_dir=tmp_path
+    )
+    assert len(rows) == 3 and len(seen) == 3
+    assert all(name.startswith("anneal") for name in seen)

@@ -11,12 +11,17 @@ failures with ``domain.eval.is_hard_fail`` and writes one JSON line per task to
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import json
 import logging
 import math
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from anneal import config, llm, tracing
 
@@ -135,15 +140,26 @@ async def _run_all(
     seed: int,
     concurrency: int,
 ) -> list[dict]:
-    sem = asyncio.Semaphore(max(1, concurrency))
+    """Fan tasks out over a thread pool of exactly ``concurrency`` workers, in task order."""
+    loop = asyncio.get_running_loop()
 
-    async def guarded(task: Any) -> dict:
-        async with sem:
-            return await asyncio.to_thread(
-                _run_one, run_task, spec, task, domain, split, iteration, seed
-            )
+    def submit(task: Any) -> asyncio.Future[dict]:
+        # copy_context() carries the caller's contextvars (run context) into the pool thread.
+        call = functools.partial(
+            contextvars.copy_context().run,
+            _run_one,
+            run_task,
+            spec,
+            task,
+            domain,
+            split,
+            iteration,
+            seed,
+        )
+        return loop.run_in_executor(pool, call)
 
-    return list(await asyncio.gather(*(guarded(t) for t in tasks)))
+    with ThreadPoolExecutor(max_workers=max(1, concurrency), thread_name_prefix="anneal") as pool:
+        return list(await asyncio.gather(*(submit(t) for t in tasks)))
 
 
 def write_rows(rows: list[dict], path: Path) -> Path:
@@ -210,7 +226,7 @@ def _node_cost(node: dict[str, Any], models_path: Path | str | None) -> float:
     )
     try:
         return llm.cost(usage, models_path)
-    except (KeyError, FileNotFoundError, ValueError) as exc:
+    except (KeyError, FileNotFoundError, ValueError, yaml.YAMLError) as exc:
         logger.warning(
             json.dumps({"event": "unpriced_node", "backend": backend, "error": str(exc)})
         )
