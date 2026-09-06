@@ -119,3 +119,43 @@ The setter clears the path-keyed caches; nothing else may mutate `MODELS_PATH`.
 | `ANNEAL_CONCURRENCY`, `ANNEAL_HOLDOUT_RUNS` | `runner`, `gate` | run defaults |
 | `NEATLOGS_API_KEY`, `NEATLOGS_WORKFLOW` | `tracing`, `diagnose` | tracing on/off, MCP trace source |
 | `DODO_API_KEY`, `DODO_ENV`, `DODO_CUSTOMER_ID` | `billing` | live billing vs local ledger |
+
+## Onboarding (`anneal init` — the interview → generation contract)
+
+Everything above assumes `domains/<name>/{goal.md,tools.yaml,eval.py,tasks.jsonl}` already
+exists. `anneal/onboard.py` is how it comes to exist without anyone writing Python: five
+questions in, a runnable domain directory out. The three input files are Anneal's *output*,
+not the user's homework.
+
+**The interview is data.** A `Question` (id, prompt, kind `choice|text|examples`, choices,
+help, and an optional `when` gate on an earlier answer) is a value; `SCRIPT` is the ordered
+list of them; `Interview` holds the answers plus whatever tool discovery found. A `Transport`
+is one method, `ask(Question) -> str`. `RichTransport` (terminal, numbered menus, and it reads
+piped stdin) and `ScriptedTransport` (tests) ship here; a voice or web frontend is a third
+implementation of that one method, not a rewrite of the interview.
+
+The five questions: **name** (slugified to a Python-package-safe directory name, refused if it
+already exists), **job**, **tools**, **success**, **examples** (≥3 input/expected pairs).
+Choosing an MCP server asks for its launch command or URL and then *connects*: `anneal.mcp`
+starts it, runs `tools/list`, and the tools it publishes are shown to the user. A user is
+never asked to describe a tool the server already describes; a server that will not start is
+reported and the interview continues with no tools. Choosing Python functions imports the
+module and introspects its public callables the same way.
+
+**Generation.** `goal.md` uses the same floor-plus-elaboration contract as `architect.py`: a
+deterministic template built from the job, the success criterion and the discovered tool names
+is always written, and a frontier call may only *add* validated rules to it — no key, no
+network or an unusable reply leaves the template standing, and `PROVENANCE.md` records which
+path was taken. `tools.yaml` carries the `servers:` block plus the server's own schemas (or
+`python:` impls) and is validated by `ToolsManifest` before the write and by `spec.load_tools`
+after it. `eval.py` is rendered from one of four templates — one per success kind — and is
+**deterministic string comparison only; no LLM-as-judge, ever**, which is the whole reason an
+Anneal number means something. `tasks.jsonl` is the examples under a seeded 50/25/25 split
+with at least one task in every split; too few examples for an honest split is said plainly in
+the console, in `PROVENANCE.md` and in the generated evaluator's own docstring.
+
+**What generation cannot know, it says rather than fakes.** `FORBIDDEN_TOOLS` is emitted empty
+with a comment (the interview cannot know which action is unforgivable), and the `state`
+template's `read_state()` is a labelled stub that believes the agent's own report until someone
+replaces it with a real probe. The core still never imports from `domains/`: `onboard.py`
+writes files and stops.

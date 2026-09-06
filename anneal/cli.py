@@ -35,6 +35,7 @@ from anneal.spec import HarnessSpec
 logger = logging.getLogger("anneal.cli")
 
 COMMANDS: dict[str, str] = {
+    "init": "interview the user and generate a runnable domains/<name>/",
     "run": "generate, run, diagnose, mutate and gate candidates for a domain",
     "gate": "re-run the held-out gate on the incumbent",
     "report": "render the README results block from runs/<domain>/<iter>/summary.json",
@@ -423,6 +424,33 @@ def _progress(console: Console, rows: list[dict[str, Any]]) -> None:
             f"{r['spend_usd']:.4f}", str(r["decision"]),
         )
     console.print(table)
+
+
+def cmd_init(args: argparse.Namespace, console: Console) -> int:
+    """`anneal init`: five questions in, a runnable domain directory out.
+
+    All the work belongs to ``anneal.onboard``; this only picks the terminal transport (which
+    reads piped stdin just as happily as a keyboard) and prints the command to run next.
+    """
+    from anneal import onboard
+
+    domains_dir = Path(args.domains_dir)
+    domains_dir.mkdir(parents=True, exist_ok=True)
+    transport = onboard.RichTransport(console)
+    interview = None
+    try:
+        interview = onboard.run_interview(transport, domains_dir=domains_dir, console=console)
+        path = onboard.generate_domain(interview, domains_dir=domains_dir)
+    except onboard.OnboardError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 1
+    for note in interview.notes:
+        console.print(f"[yellow]{note}[/yellow]")
+    console.print(f"\n[green]wrote[/green] {path}")
+    for name in sorted(p.name for p in path.iterdir()):
+        console.print(f"  {name}")
+    console.print(f"\nNext: [cyan]uv run anneal run {path}[/cyan]")
+    return 0
 
 
 def cmd_run(args: argparse.Namespace, console: Console) -> int:
@@ -926,6 +954,11 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in COMMANDS.items():
         sub.add_parser(name, help=help_text)
 
+    init = sub.choices["init"]
+    init.add_argument("--domains-dir", default="domains",
+                      help="where to write the generated domain (default domains/)")
+    init.add_argument("--models", default=None, help="price table (default specs/models.yaml)")
+
     run = sub.choices["run"]
     run.add_argument("domain_dir", help="path to domains/<name>")
     run.add_argument("--iterations", type=int, default=4)
@@ -983,7 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
         # runner does (docs/ARCHITECTURE.md, "Configuration").
         llm.set_default_models_path(args.models)
     handler = {
-        "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
+        "init": cmd_init, "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
         "anneal": cmd_anneal, "dashboard": cmd_dashboard,
     }[args.command]
     # Nothing on the run path used to call this -- only mutate.py did, for the prompt
