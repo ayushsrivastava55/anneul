@@ -513,6 +513,18 @@ def test_dashboard_serves_instead_of_stubbing(monkeypatch, tmp_path):
     assert served["app"].state.anneal.runs_dir == tmp_path
 
 
+def test_anneal_domain_filter_skips_other_domains(monkeypatch, tmp_path, capsys):
+    """--domain scopes the downshift, so a finished domain is not re-annealed."""
+    root = tmp_path / "runs"
+    write_summary(root, 0)
+    seen: list[str] = []
+    monkeypatch.setattr(cli, "_anneal_domain", lambda s, a, c: seen.append(s[-1]["domain"]) or 0)
+    assert cli.main(["anneal", str(root), "--domain", "airline"]) == 0
+    assert seen == ["airline"]
+    assert cli.main(["anneal", str(root), "--domain", "bugfix"]) == 1
+    assert "no summaries for ['bugfix']" in capsys.readouterr().out
+
+
 def test_anneal_subcommand_needs_a_gated_run(capsys, tmp_path):
     """`anneal anneal` on an empty runs dir explains itself rather than crashing."""
     assert cli.main(["anneal", str(tmp_path)]) == 1

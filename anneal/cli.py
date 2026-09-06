@@ -504,8 +504,13 @@ def cmd_anneal(args: argparse.Namespace, console: Console) -> int:
         console.print(f"[red]no summary.json under {args.runs_dir}[/red]")
         return 1
     gate.clear_cache()
+    wanted = set(args.domain or ())
+    names = [n for n in dict.fromkeys(b["domain"] for b in summaries) if not wanted or n in wanted]
+    if wanted - set(names):
+        console.print(f"[red]no summaries for {sorted(wanted - set(names))}[/red]")
+        return 1
     status = 0
-    for name in dict.fromkeys(b["domain"] for b in summaries):
+    for name in names:
         got = [b for b in summaries if b["domain"] == name]
         try:
             status |= _anneal_domain(got, args, console)
@@ -635,6 +640,12 @@ def build_parser() -> argparse.ArgumentParser:
                                        metavar="USD")
         sub.choices[name].add_argument("--concurrency", type=int, default=None)
         sub.choices[name].add_argument("--models", default=None)
+    # without this every `anneal anneal` re-anneals every domain in runs/, which both wastes
+    # spend on finished domains and collides with one that is still mid-loop.
+    sub.choices["anneal"].add_argument(
+        "--domain", action="append", metavar="NAME",
+        help="only anneal this domain (repeatable); default is every domain in runs_dir",
+    )
 
     dash = sub.choices["dashboard"]
     dash.add_argument("--runs-dir", default=str(runner.RUNS_DIR))
