@@ -91,6 +91,21 @@ def event_id(domain: str, iteration: int, candidate: str, task: str) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
+def balance(path: Path | None = None) -> float | None:
+    """Last known credit balance from the cache ``BillingClient`` writes, else ``None``.
+
+    Module-level and read-only on purpose: the dashboard needs a balance without holding a
+    client, without a key and without touching the network. Returns ``None`` when no run has
+    billed yet or the cache is unreadable.
+    """
+    try:
+        raw = json.loads((path or BALANCE_CACHE).read_text(encoding="utf-8"))
+        value = raw["balance_tokens"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return float(value) if isinstance(value, int | float) else None
+
+
 def tokens_per_usd() -> float:
     """Credits granted per USD of budget; override with ``ANNEAL_TOKENS_PER_USD``."""
     raw = (os.environ.get("ANNEAL_TOKENS_PER_USD") or "").strip()

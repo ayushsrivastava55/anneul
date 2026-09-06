@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -165,11 +164,23 @@ def test_balance_is_a_dash_without_billing(client: TestClient, monkeypatch) -> N
 
 
 def test_balance_comes_from_billing_when_importable(client: TestClient, monkeypatch) -> None:
-    fake = types.ModuleType("anneal.billing")
-    fake.balance = lambda: 4.25  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "anneal.billing", fake)
+    # anneal.billing is a real module now, so `from anneal import billing` resolves the
+    # package attribute and ignores a sys.modules stub. Patch the real accessor instead.
+    from anneal import billing
+
+    monkeypatch.setattr(billing, "balance", lambda: 4.25)
     body = client.get("/fragments/balance").text
     assert "$4.25" in body
+
+
+def test_balance_reads_the_cache_billing_writes(tmp_path: Path) -> None:
+    """The real integration: billing caches balance.json, the dashboard reads it."""
+    from anneal import billing
+
+    cache = tmp_path / "balance.json"
+    cache.write_text(json.dumps({"balance_tokens": 1234.0, "unit": "tokens"}), encoding="utf-8")
+    assert billing.balance(cache) == 1234.0
+    assert billing.balance(tmp_path / "missing.json") is None
 
 
 def test_ledger_accepts_dict_wrapper(tmp_path: Path) -> None:
