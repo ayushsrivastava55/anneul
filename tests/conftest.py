@@ -36,6 +36,7 @@ LIVE_KEYS = (
     "DODO_CUSTOMER_ID",
     "DODO_CUSTOMER_EMAIL",
     "AO_AGENT",
+    "ANNEAL_TIER_CAP",
 )
 
 

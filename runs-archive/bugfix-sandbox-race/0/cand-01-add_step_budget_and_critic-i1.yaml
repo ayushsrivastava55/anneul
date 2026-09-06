@@ -1,0 +1,30 @@
+id: cand-01-add_step_budget_and_critic-i1
+topology: critic_loop
+step_budget: 28
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/bugfix/executor@v4
+  tools:
+  - read_file
+  - write_file
+  max_steps: 24
+  schema_ref: null
+- name: critic
+  role: critic
+  model_tier: mid
+  system_prompt_ref: anneal/bugfix/critic@v9
+  tools: []
+  max_steps: 4
+  schema_ref: null
+lineage:
+  parent: cand-01
+  iteration: 0
+  operator: add_step_budget_and_critic
+  ledger_issue: L-0001
+tool_overrides: {}
