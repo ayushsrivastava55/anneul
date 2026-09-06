@@ -3,8 +3,36 @@
 Phase: core loop live on all three domains with real models. All sponsor surfaces
 functioning: Anthropic + TensorMux + AIGI tiers, Neatlogs tracing + prompt registry,
 AO worker spawn/accept verified end to end (session anneal-1, branch ao/selftest-5989c5).
-Runs in flight: airline (iterating), bugfix (rerun after operator fix), invoices anneal
-stage (downshift + Pareto). Dodo still keyless.
+Runs in flight: airline (iterating), bugfix (rerun with cause-first diagnosis).
+Invoices is done: saturated at 1.000, annealed down to nano. Dodo still keyless.
+
+## Found and fixed on 6 Sep (evening)
+1. **Headline result — invoices Pareto is in.** The anneal stage walked the executor down
+   every tier and every downgrade held: mid $0.0425/task -> cheap $0.0137 -> flash
+   $0.0009 -> nano $0.0014, score 0.989-1.000, pass^3 0.93-1.00, zero hard fails at every
+   step. nano (gpt-5-nano on the AIGI key) scored a perfect 1.000 at ~29x cheaper than
+   mid. Both sponsor floor tiers sit on the front (`runs/invoices/anneal/pareto.json`).
+2. **The flagship bugfix demo could never trigger, root cause found and fixed.** The
+   domain deliberately withholds `run_tests` so Diagnose would class the failures
+   missing_capability and `synthesize_tool` would ask an AO worker to write the tool.
+   Never happened: (a) rows carried only a `trace_id`, no steps, so the
+   missing-capability signal had no evidence to read, and (b) `hit_step_budget` was
+   deterministically classed loop_or_timeout — the *symptom* — whose two operators were
+   spent by iteration 1, then the plateau ended the run. Rows now carry a bounded trace;
+   a budget death with an ungranted-tool call reclasses as missing_capability (certain);
+   otherwise the model picks the cause with loop_or_timeout still on the menu. Bugfix
+   rerun in flight (old run archived: runs-archive/bugfix-symptom-not-cause).
+3. **Second prompt-registry 401.** prompts.py was fixed to create_prompt, but
+   mutate.py's LocalPromptStore had its own sync still calling save_as_version, so every
+   operator-written version v2+ failed to reach the registry (visible in the bugfix run
+   log). Same fix applied; only v1s made it to the cloud registry before this.
+4. **Dashboard ledger panel was empty by construction.** `--ledger` defaulted to
+   ./ledger.json but the run loop writes runs/<domain>/ledger.json. The dashboard now
+   aggregates the per-domain ledgers with a domain column; an explicit file still wins.
+5. **AO worker built real product code.** Session anneal-2 (readme-results) wrote
+   scripts/update_readme_results.py + its test from a spawn prompt; the branch was
+   accepted by pytest and cherry-picked to main (AO branched from a stale lineage, so
+   accept-on-branch failed; the commit itself was clean).
 
 ## Found and fixed on 6 Sep (afternoon)
 1. **Every run froze at 99% CPU before its first LLM call.** neatlogs 1.4.21's
