@@ -230,6 +230,16 @@ def test_promoted_spec_yaml_is_written_for_the_gate_subcommand(loop, tmp_path):
     assert Path(specs["cand-1-m1"]).is_file()
 
 
+def test_every_summary_carries_a_ledger_snapshot(loop, tmp_path):
+    """Memory growth must be a plottable series in the artifacts, not a claim."""
+    run_cli(tmp_path, "--iterations", "1")
+    snapshot = summaries(tmp_path)[0]["ledger"]
+    for key in ("issues", "observations", "operators_tried", "by_class", "by_status"):
+        assert key in snapshot, key
+    assert snapshot["issues"] >= 1  # the loop fixture diagnoses one issue per iteration
+    assert snapshot["by_status"].get("open", 0) >= 1
+
+
 # --- stopping conditions -----------------------------------------------------------------
 
 

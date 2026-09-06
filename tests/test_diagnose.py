@@ -320,3 +320,25 @@ def test_rank_weights_by_confidence_without_letting_it_override_severity() -> No
     doubted = {**unsure_severe, "id": "L-0003", "confidence": 0.3}
     believed = {**unsure_severe, "id": "L-0004", "confidence": 0.95}
     assert [i["id"] for i in diagnose.rank([doubted, believed], tax)] == ["L-0004", "L-0003"]
+
+
+def test_ledger_stats_summarise_growth_for_the_iteration_series() -> None:
+    ledger = [
+        {"id": "L-0001", "class": "wrong_tool", "node": "executor", "count": 3,
+         "status": "open", "operators_tried": ["rewrite_tool_desc"]},
+        {"id": "L-0002", "class": "wrong_tool", "node": "planner", "count": 1,
+         "status": "attempted", "operators_tried": ["rewrite_tool_desc", "add_fewshots"]},
+        {"id": "L-0003", "class": "unsafe_action", "node": "executor", "count": 2,
+         "status": "open"},
+    ]
+    stats = diagnose.ledger_stats(ledger)
+    assert stats == {
+        "issues": 3,
+        "observations": 6,
+        "operators_tried": 3,
+        "by_class": {"unsafe_action": 1, "wrong_tool": 2},
+        "by_status": {"attempted": 1, "open": 2},
+    }
+    assert diagnose.ledger_stats([]) == {
+        "issues": 0, "observations": 0, "operators_tried": 0, "by_class": {}, "by_status": {},
+    }

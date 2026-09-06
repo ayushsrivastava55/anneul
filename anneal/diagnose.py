@@ -415,6 +415,29 @@ def rank(issues: Iterable[Issue], taxonomy: dict[str, dict[str, Any]] | None = N
     return sorted(open_issues, key=lambda i: (-weight(i), i["id"]))
 
 
+def ledger_stats(ledger: Iterable[Issue]) -> dict[str, Any]:
+    """Compact snapshot of the ledger for per-iteration summaries.
+
+    This is the 'memory growing over iterations' number: every iteration's summary.json
+    carries one, so the growth of what the optimiser knows (issues seen, observations
+    accumulated, repairs attempted) is a plottable series, not a claim.
+    """
+    issues = list(ledger)
+    by_class: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    for issue in issues:
+        by_class[issue["class"]] = by_class.get(issue["class"], 0) + 1
+        status = issue.get("status", "open")
+        by_status[status] = by_status.get(status, 0) + 1
+    return {
+        "issues": len(issues),
+        "observations": sum(int(i.get("count", 1)) for i in issues),
+        "operators_tried": sum(len(i.get("operators_tried") or ()) for i in issues),
+        "by_class": dict(sorted(by_class.items())),
+        "by_status": dict(sorted(by_status.items())),
+    }
+
+
 # --- classification -----------------------------------------------------------------------
 
 

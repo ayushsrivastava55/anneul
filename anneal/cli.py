@@ -260,6 +260,8 @@ def _summary(loop: Loop, iteration: int, inc: Any, **kw: Any) -> dict[str, Any]:
         "budget_usd": loop.budget,
         "search": dict(loop.search),
         "specs": dict(loop.specs),
+        # what the optimiser has learned so far: the judges' "memory growing" series
+        "ledger": diagnose.ledger_stats(diagnose.load_ledger(loop.ledger)),
     }
     body.update(kw)
     return body
