@@ -487,7 +487,16 @@ def add_cite_or_abstain(
 def add_step_budget_and_critic(
     spec: HarnessSpec, issue: Issue, evidence: Evidence, domain: Any, client: Any
 ) -> HarnessSpec:
-    """Raise the step budget once and add a critic, moving to the critic_loop topology."""
+    """Unstarve the node the issue names, raise the budget, and add a critic.
+
+    A global budget raise alone does nothing when the diagnosed node is capped by its own
+    ``max_steps`` -- observed on bugfix, where the executor (capped at 10) hit the budget
+    on 8/10 tasks while this operator handed it a critic and four more *global* steps it
+    could never use. The node named in the issue gets its cap doubled; the spec budget
+    grows by the same amount plus the critic's steps so the raise is actually spendable.
+    """
+    doubled = 0
+    named = str(issue.get("node") or "")
     data = _append_node(
         spec,
         "add_step_budget_and_critic",
@@ -497,7 +506,13 @@ def add_step_budget_and_critic(
         prompt_text=NODE_PROMPTS["critic"],
         max_steps=CRITIC_STEPS,
     )
-    data["step_budget"] = int(data["step_budget"]) + STEP_BUDGET_BUMP
+    for entry in data["nodes"]:
+        if entry["name"] == named and entry["role"] != "critic":
+            before = int(entry["max_steps"])
+            entry["max_steps"] = before * 2
+            doubled = before
+    # _append_node already added the critic's own steps; add the spendable raise on top
+    data["step_budget"] = int(data["step_budget"]) + max(STEP_BUDGET_BUMP, doubled)
     data["topology"] = "critic_loop"  # the critic only runs when the topology reviews
     return HarnessSpec.model_validate(data)
 
