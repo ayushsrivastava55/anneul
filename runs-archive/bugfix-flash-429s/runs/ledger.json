@@ -1,0 +1,36 @@
+[
+  {
+    "id": "L-0001",
+    "class": "missing_capability",
+    "node": "executor",
+    "count": 1,
+    "evidence": [
+      "52b182dee777308d9901292286a54dc7"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "synthesize_tool"
+    ],
+    "fallback": false,
+    "confidence": 0.7,
+    "confidence_n": 1
+  },
+  {
+    "id": "L-0002",
+    "class": "wrong_tool",
+    "node": "executor",
+    "count": 3,
+    "evidence": [
+      "52b182dee777308d9901292286a54dc7"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "rewrite_tool_desc",
+      "add_fewshots",
+      "switch_topology"
+    ],
+    "fallback": false,
+    "confidence": 0.75,
+    "confidence_n": 3
+  }
+]

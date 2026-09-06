@@ -1,0 +1,35 @@
+id: cand-01-rewrite_tool_desc-i1
+topology: single
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: flash
+  system_prompt_ref: anneal/bugfix/executor@v6
+  tools:
+  - read_file
+  - write_file
+  max_steps: 12
+  schema_ref: null
+lineage:
+  parent: cand-01
+  iteration: 1
+  operator: rewrite_tool_desc
+  ledger_issue: L-0002
+tool_overrides:
+  read_file: "Read a text file from the task directory. `path` is relative to that\
+    \ directory, such as 'chunk_list.py' or 'tests/test_bugfix_01.py'. Returns the\
+    \ file's contents, or an 'Error' string if it cannot be read.\n\nUse when: you\
+    \ need to inspect the current contents of the module or the test file before editing,\
+    \ including re-reading the module after a write to confirm the exact text you\
+    \ must reproduce (write_file overwrites the whole file, so you must know every\
+    \ line, not just the buggy one).\n\nDo not use when: you already believe you know\
+    \ a file's contents from memory or from a partial view \u2014 always read the\
+    \ full module and the full test file first; do not guess exact expected values\
+    \ (e.g. truncation lengths, slice boundaries) from context or assumption, since\
+    \ acting on an unread or misremembered value is what causes off-by-one fixes to\
+    \ be miscounted."
