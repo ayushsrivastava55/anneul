@@ -36,6 +36,7 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_PATH = ROOT / "specs" / "models.yaml"
 BACKEND_HEADER = "x-tensormux-backend"
+PLACEHOLDER = "REPLACE_ME"
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,17 @@ def _env(name: str) -> str:
 
 
 def get_client(tier: str = "mid", path: Path | str | None = None) -> OpenAI:
-    """OpenAI-compatible client for the provider backing ``tier`` (TensorMux by default)."""
+    """OpenAI-compatible client for the provider backing ``tier`` (TensorMux by default).
+
+    Catches the shipped ``REPLACE_ME`` placeholder on the way out to a real provider, which
+    would otherwise come back as an opaque model-not-found from somebody else's API. Offline
+    tests inject a fake client and never reach here, so they keep running on the placeholder.
+    """
+    if resolve_model(tier, path) == PLACEHOLDER:
+        raise RuntimeError(
+            f"model tier {tier!r} is still {PLACEHOLDER} in {path or MODELS_PATH}: "
+            f"set a real model id and its prices before running against a live provider"
+        )
     provider_name = _tier(tier, path)["provider"]
     providers = load_models(path)["providers"]
     if provider_name not in providers:

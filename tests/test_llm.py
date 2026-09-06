@@ -78,6 +78,18 @@ def test_get_client_missing_key_raises(models_path: Path, monkeypatch: pytest.Mo
         get_client("mid", models_path)
 
 
+def test_get_client_rejects_the_shipped_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unfilled models.yaml fails here, not as a model-not-found from the provider."""
+    path = tmp_path / "models.yaml"
+    path.write_text(FIXTURE_YAML.replace("mid-model", "REPLACE_ME"))
+    monkeypatch.setenv("T_BASE", "http://localhost:1/v1")
+    monkeypatch.setenv("T_KEY", "sk-test")
+    with pytest.raises(RuntimeError, match="REPLACE_ME"):
+        get_client("mid", path)
+
+
 def test_real_models_yaml_parses() -> None:
     models = llm.load_models()
     assert set(models["tiers"]) >= {"frontier", "mid", "cheap"}
