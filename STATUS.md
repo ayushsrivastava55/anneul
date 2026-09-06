@@ -1,6 +1,43 @@
 # STATUS
 
-Phase: 1 core loop merged (architect, runtime, runner, diagnose, mutate, gate). cli-run in flight for the H8 row. Phase 2 and 3 tasks running in parallel. H2 checkpoint (traced call through TensorMux visible in Neatlogs) is blocked on keys.
+Phase: core loop live on all three domains with real models. All sponsor surfaces
+functioning: Anthropic + TensorMux + AIGI tiers, Neatlogs tracing + prompt registry,
+AO worker spawn/accept verified end to end (session anneal-1, branch ao/selftest-5989c5).
+Runs in flight: airline (iterating), bugfix (rerun after operator fix), invoices anneal
+stage (downshift + Pareto). Dodo still keyless.
+
+## Found and fixed on 6 Sep (afternoon)
+1. **Every run froze at 99% CPU before its first LLM call.** neatlogs 1.4.21's
+   `_serialize_obj` recurses into `__dict__` with no depth limit, no cycle detection, no
+   memoisation; span-decorated functions whose arguments reach a module object sent it
+   walking the interpreter's import graph (16+ CPU-minutes, zero network). Caught with a
+   faulthandler stack dump; `init_tracing` now installs a bounded, cycle-safe drop-in over
+   the SDK seam. The three domain runs only became possible after this.
+2. **AO daemon had lost the project registration** (desktop restart) and the `claude`
+   binary had vanished from the machine. Re-registered via the bundled CLI, installed
+   Claude Code, authorized it via an apiKeyHelper reading the project .env, made the
+   worker harness per-machine config (`AO_AGENT`). Selftest passes: spawn -> agent writes
+   tool+test on its branch -> branch accepted on pytest, in 34 s. `synthesize_tool` is
+   therefore genuinely available for missing_capability issues now.
+3. **Neatlogs prompt registry 401.** `save_as_version` 401s under an SDK key;
+   `create_prompt` on /api/managed-prompts creates a *version* per call (verified live).
+   prompts.py now uses only the working endpoint.
+4. **Invoices saturated: every candidate scored 1.000 at iteration 0** — nothing to learn,
+   nothing to report. Dataset v2 adds four trap classes (40% non-trivial rows, uniform per
+   split): total_match_breach and short_receipt punish under-checking (wrong approve = hard
+   fail), similar_number and symbol_currency punish over-caution (wrong escalate). The
+   frontier/mid executor still clears v2 at 1.000 with 0 hard fails — but critic_loop took
+   4 hard fails, so the traps bite weaker configs; the invoices story is the anneal stage
+   (hold 1.000, walk the cost down) plus the gate rejecting the unsafe config.
+5. **Bugfix stalled at 0.2 because the executor was starved, and the repair operator
+   couldn't unstarve it.** All specs get step_budget 12; 8/10 failures were
+   hit_step_budget. `add_step_budget_and_critic` raised the *global* budget by 4 while the
+   executor stayed capped by its node max_steps 10 — the raise was unspendable. The
+   operator now doubles the named node's cap and grows the budget to match. Bugfix rerun
+   in flight (old run archived: runs/bugfix-starved-executor).
+6. **Ledger growth is now a plottable series**: every iteration's summary.json carries
+   `ledger` (issues, observations, operators_tried, by_class, by_status) — the direct
+   answer to the judges' "show the memory growing" question.
 
 ## AO sessions (project `anneal`)
 | Session | Task | Branch | State |
