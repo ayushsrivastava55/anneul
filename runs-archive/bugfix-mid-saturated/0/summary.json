@@ -1,0 +1,80 @@
+{
+  "budget_usd": 60.0,
+  "candidate_id": null,
+  "cost_usd": null,
+  "decision": "no_candidate",
+  "domain": "bugfix",
+  "domain_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/domains/bugfix",
+  "gen_gap": null,
+  "hard_fails": null,
+  "incumbent_id": "cand-01",
+  "issue": null,
+  "iteration": 0,
+  "ledger": {
+    "by_class": {},
+    "by_status": {},
+    "issues": 0,
+    "observations": 0,
+    "operators_tried": 0
+  },
+  "mean_score": null,
+  "operator": null,
+  "p95_latency_ms": null,
+  "p_value": null,
+  "pass3_rate": null,
+  "reason": "every ranked issue has exhausted its implemented operators",
+  "search": {
+    "cand-01": {
+      "cost_by_node": {
+        "executor": 0.33657
+      },
+      "cost_per_task": 0.033657,
+      "cost_usd": 0.33657,
+      "hard_fails": 0,
+      "mean_score": 1.0,
+      "n_tasks": 10,
+      "p95_latency_ms": 9493.9,
+      "pass_rate": 1.0,
+      "tokens_in": 84350,
+      "tokens_out": 5568
+    },
+    "cand-02": {
+      "cost_by_node": {
+        "executor": 0.390708,
+        "planner": 0.379665
+      },
+      "cost_per_task": 0.077037,
+      "cost_usd": 0.770373,
+      "hard_fails": 0,
+      "mean_score": 1.0,
+      "n_tasks": 10,
+      "p95_latency_ms": 24431.8,
+      "pass_rate": 1.0,
+      "tokens_in": 146049,
+      "tokens_out": 12024
+    },
+    "cand-03": {
+      "cost_by_node": {
+        "critic": 0.071801,
+        "executor": 0.776967
+      },
+      "cost_per_task": 0.084877,
+      "cost_usd": 0.848768,
+      "hard_fails": 0,
+      "mean_score": 1.0,
+      "n_tasks": 10,
+      "p95_latency_ms": 39313.8,
+      "pass_rate": 1.0,
+      "tokens_in": 235870,
+      "tokens_out": 18984
+    }
+  },
+  "specs": {
+    "cand-01": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/0/cand-01.yaml",
+    "cand-02": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/0/cand-02.yaml",
+    "cand-03": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/0/cand-03.yaml"
+  },
+  "spend_usd": 1.955711,
+  "stop_reason": "no_candidate",
+  "winner_id": "cand-01"
+}

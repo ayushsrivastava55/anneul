@@ -48,6 +48,30 @@ MODELS_PATH = ROOT / "specs" / "models.yaml"
 BACKEND_HEADER = "x-tensormux-backend"
 PLACEHOLDER = "REPLACE_ME"
 
+# TensorMux enforces 60 requests/min per key; a gate run (3 seeds x 10 concurrent tasks,
+# several steps each) bursts straight through that, and a mutation whose holdout tasks all
+# died with 429s was being scored 0.1 and rejected on garbage. The SDK's own retries wait
+# under a second - useless against a one-minute window - so 429s are retried here with
+# exponential backoff that can outlast the window. Other errors still raise immediately.
+RATE_LIMIT_RETRIES = 5
+RATE_LIMIT_BASE_S = 4.0
+
+
+def _create_with_rate_limit_retry(client: Any, **kw: Any) -> Any:
+    import random
+
+    from openai import RateLimitError
+
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return client.chat.completions.with_raw_response.create(**kw)
+        except RateLimitError:
+            if attempt == RATE_LIMIT_RETRIES:
+                raise
+            delay = RATE_LIMIT_BASE_S * (2**attempt) * (0.5 + random.random())
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
+
 
 @dataclass(frozen=True)
 class Usage:
@@ -161,7 +185,7 @@ def complete(
         kw["tools"] = tools
     with span("llm.chat", tier=tier, model=model):
         start = time.perf_counter()
-        raw = client.chat.completions.with_raw_response.create(model=model, messages=messages, **kw)
+        raw = _create_with_rate_limit_retry(client, model=model, messages=messages, **kw)
         latency_ms = (time.perf_counter() - start) * 1000
     message = raw.parse().choices[0].message.model_dump(exclude_none=True)
     message.setdefault("role", "assistant")
