@@ -78,12 +78,71 @@ def test_get_client_missing_key_raises(models_path: Path, monkeypatch: pytest.Mo
         get_client("mid", models_path)
 
 
+def test_get_client_rejects_the_shipped_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unfilled models.yaml fails here, not as a model-not-found from the provider."""
+    path = tmp_path / "models.yaml"
+    path.write_text(FIXTURE_YAML.replace("mid-model", "REPLACE_ME"))
+    monkeypatch.setenv("T_BASE", "http://localhost:1/v1")
+    monkeypatch.setenv("T_KEY", "sk-test")
+    with pytest.raises(RuntimeError, match="REPLACE_ME"):
+        get_client("mid", path)
+
+
+def test_rate_limited_calls_back_off_and_recover(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two 429s then success: the caller sees the success, after real (mocked) sleeps.
+
+    TensorMux caps at 60 RPM; a gate holdout burst was scoring whole candidates 0.1 on
+    nothing but rate-limit errors. Only RateLimitError is retried.
+    """
+    import httpx
+    from openai import RateLimitError
+
+    def make_429() -> RateLimitError:
+        request = httpx.Request("POST", "http://gateway/v1/chat/completions")
+        return RateLimitError(
+            "rate_limit_exceeded", response=httpx.Response(429, request=request), body=None
+        )
+
+    from types import SimpleNamespace
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(llm.time, "sleep", sleeps.append)
+
+    def client_with(create: object) -> SimpleNamespace:
+        raw = SimpleNamespace(create=create)
+        return SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(with_raw_response=raw))
+        )
+
+    calls = {"n": 0}
+
+    def flaky_create(**kw: object) -> str:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise make_429()
+        return "raw-response"
+
+    client = client_with(flaky_create)
+    assert llm._create_with_rate_limit_retry(client, model="m", messages=[]) == "raw-response"
+    assert calls["n"] == 3
+    assert len(sleeps) == 2 and sleeps[1] > 0
+
+    def always_429(**kw: object) -> str:
+        raise make_429()
+
+    with pytest.raises(RateLimitError):
+        llm._create_with_rate_limit_retry(client_with(always_429), model="m", messages=[])
+
+
 def test_real_models_yaml_parses() -> None:
     models = llm.load_models()
     assert set(models["tiers"]) >= {"frontier", "mid", "cheap"}
     assert models["downshift_order"][0] == "frontier"
 
 
+@pytest.mark.live
 @pytest.mark.skipif(
     not os.getenv("TENSORMUX_API_KEY"), reason="ready pending key: TENSORMUX_API_KEY unset"
 )

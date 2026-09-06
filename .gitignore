@@ -36,3 +36,6 @@ domains/*/generated_tools/*
 # Media and logs
 *.mp4
 *.log
+
+# local dev-env bootstrap (uv + managed pythons), not part of the project
+.tooling/

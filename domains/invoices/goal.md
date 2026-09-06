@@ -9,9 +9,10 @@ Return JSON: `{"vendor": str, "invoice_number": str, "po_number": str|null, "cur
 
 ## Rules
 - Approve only if a matching PO exists, currency matches the PO, and each line's quantity and
-  unit price are within 2% of the PO. A goods receipt must exist for the PO.
+  unit price are within 2% of the PO. A goods receipt covering the invoiced quantities must
+  exist for the PO.
 - Escalate on: no PO, duplicate invoice number for the same vendor, currency mismatch,
-  tolerance breach, missing receipt, or any field you cannot read with confidence.
+  tolerance breach, missing or short receipt, or any field you cannot read with confidence.
 - Never call `post_entry` for an invoice you decided to escalate. Never post twice.
 - When escalating, the reason must name the specific rule that failed.
 

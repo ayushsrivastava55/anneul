@@ -158,23 +158,29 @@ def test_split_sizes_and_threshold() -> None:
     assert len(invoices_eval.load_tasks("search")) == 15
 
 
-def test_messy_cases_are_twenty_percent_and_evenly_spread() -> None:
+def test_non_trivial_cases_are_forty_percent_and_evenly_spread() -> None:
+    """Dataset v2: 18 escalate rows + 6 approve traps, uniform 40% per split."""
     lines = [json.loads(line) for line in (DOMAIN / "tasks.jsonl").read_text().splitlines()]
     messy = [raw for raw in lines if "messy" in raw["tags"]]
-    assert len(messy) == 12
+    traps = [raw for raw in lines if "trap" in raw["tags"]]
+    assert len(messy) == 18
+    assert len(traps) == 6
     by_rule: dict[str, int] = {}
     by_split: dict[str, int] = {}
-    for raw in messy:
+    for raw in messy + traps:
         by_rule[raw["expected"]["rule"]] = by_rule.get(raw["expected"]["rule"], 0) + 1
         by_split[raw["split"]] = by_split.get(raw["split"], 0) + 1
     assert by_rule == {
         "duplicate_invoice": 3,
         "currency_mismatch": 3,
         "missing_po": 2,
-        "tolerance_breach": 2,
-        "missing_receipt": 2,
+        "tolerance_breach": 6,  # 2 plain + 4 total_match_breach
+        "missing_receipt": 4,  # 2 absent + 2 short_receipt
+        None: 6,  # approve traps break no rule
     }
-    assert by_split == {"train": 6, "search": 3, "holdout": 3}
+    assert by_split == {"train": 12, "search": 6, "holdout": 6}
+    for raw in traps:
+        assert raw["expected"]["decision"] == "approve", raw["id"]
 
 
 def test_every_task_carries_the_fields_the_evaluator_needs() -> None:

@@ -1,0 +1,46 @@
+id: cand-01-rewrite_tool_desc-i1
+topology: single
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: cheap
+  system_prompt_ref: anneal/airline/executor@v6
+  tools:
+  - calculate
+  - get_reservation_details
+  - get_user_details
+  - list_all_airports
+  - search_direct_flight
+  - search_onestop_flight
+  - transfer_to_human_agents
+  - book_reservation
+  - cancel_reservation
+  - send_certificate
+  - update_reservation_baggages
+  - update_reservation_flights
+  - update_reservation_passengers
+  max_steps: 12
+  schema_ref: null
+lineage:
+  parent: cand-01
+  iteration: 4
+  operator: rewrite_tool_desc
+  ledger_issue: L-0002
+tool_overrides:
+  calculate: "Computes arithmetic results from a mathematical expression you provide;\
+    \ it does not fetch, validate, or verify any prices, balances, fees, or ids from\
+    \ the database itself \u2014 it only does the math on numbers you already retrieved.\n\
+    \nUse when: you need to combine or derive a number (e.g., total cost, refund,\
+    \ fee difference) from values you have already fetched via read-only lookup tools,\
+    \ before using that number in a write call or in your summary to the customer.\n\
+    \nDo not use when: you have not yet verified the underlying inputs (prices, balances,\
+    \ payment methods, certificate/gift card amounts) via the actual lookup tools\
+    \ \u2014 never invent or assume a figure to feed into this tool, and never treat\
+    \ its output as confirmation that a booking, cancellation, or charge succeeded;\
+    \ the calculation itself is not a substitute for checking policy or for reading\
+    \ the reservation/payment records before or after a write."

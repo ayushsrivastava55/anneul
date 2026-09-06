@@ -1,0 +1,55 @@
+id: cand-02-rewrite_tool_desc-i1
+topology: planner_executor
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: planner
+  role: planner
+  model_tier: nano
+  system_prompt_ref: anneal/airline/planner@v4
+  tools: []
+  max_steps: 2
+  schema_ref: null
+- name: executor
+  role: executor
+  model_tier: nano
+  system_prompt_ref: anneal/airline/executor@v10
+  tools:
+  - calculate
+  - get_reservation_details
+  - get_user_details
+  - list_all_airports
+  - search_direct_flight
+  - search_onestop_flight
+  - transfer_to_human_agents
+  - book_reservation
+  - cancel_reservation
+  - send_certificate
+  - update_reservation_baggages
+  - update_reservation_flights
+  - update_reservation_passengers
+  max_steps: 10
+  schema_ref: null
+lineage:
+  parent: cand-02
+  iteration: 2
+  operator: rewrite_tool_desc
+  ledger_issue: L-0002
+tool_overrides:
+  calculate: "Computes the result of a pure mathematical expression (e.g., summing\
+    \ prices, multiplying fees, computing differences) from numbers you already fetched\
+    \ via tools. It does not fetch, verify, or validate any data itself.\n\nUse when:\
+    \ you need an arithmetic result (totals, refund amounts, fee differences) built\
+    \ from values already retrieved from the user/reservation/flight lookups, purely\
+    \ to report an answer or to determine an amount for a write call whose eligibility\
+    \ you have already confirmed via policy and tool data.\n\nDo not use when: you\
+    \ are trying to decide whether an action is policy-compliant (e.g., whether a\
+    \ cancellation, refund, or exception is allowed) \u2014 policy eligibility must\
+    \ be checked against the actual reservation/user data returned by lookup tools,\
+    \ not inferred or computed; also do not use it as a substitute for looking up\
+    \ missing data (e.g., insurance status, fare class, cabin) or as a basis for deciding\
+    \ to escalate to a human \u2014 escalation and policy decisions must come from\
+    \ tool-verified facts, not from calculator output."

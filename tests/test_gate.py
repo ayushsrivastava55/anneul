@@ -89,13 +89,72 @@ def test_gen_gap_is_none_without_search_rows():
 
 
 @pytest.mark.parametrize("wins,losses", [(5, 0), (4, 1), (3, 3), (0, 2), (7, 1)])
-def test_paired_test_matches_scipy_exact_two_sided(wins: int, losses: int):
+def test_paired_test_matches_scipy_exact_one_sided(wins: int, losses: int):
+    """One-sided by design: the gate only ever asks whether the candidate is better."""
     tasks = [f"w{i}" for i in range(wins)] + [f"l{i}" for i in range(losses)] + ["tie"]
     cand = {t: t.startswith("w") or t == "tie" for t in tasks}
     inc = {t: t.startswith("l") or t == "tie" for t in tasks}
     result = gate.paired_test(cand, inc)
     assert (result.wins, result.losses) == (wins, losses)
-    assert result.p == pytest.approx(binomtest(wins, wins + losses, 0.5).pvalue)
+    expected = binomtest(wins, wins + losses, 0.5, alternative="greater").pvalue
+    assert result.p == pytest.approx(expected)
+
+
+def test_a_lone_clean_win_is_reported_as_underpowered_not_as_no_effect():
+    """The airline regression: 1 win, 0 losses, rejected. The rejection is arithmetic.
+
+    No candidate can clear alpha on a single discordant pair, so this must be legible as
+    "too little data to tell" rather than "the change did not help".
+    """
+    result = gate.paired_test({"a": True, "b": True}, {"a": False, "b": True})
+    assert (result.wins, result.losses) == (1, 0)
+    assert result.p >= gate.ALPHA
+    assert gate.underpowered(result)
+    # Enough same-direction pairs and the very same test does clear alpha.
+    many = gate.paired_test({f"w{i}": True for i in range(4)}, {f"w{i}": False for i in range(4)})
+    assert (many.wins, many.losses) == (4, 0)
+    assert many.p < gate.ALPHA
+    assert not gate.underpowered(many)
+
+
+def test_pass_counts_see_partial_movement_that_pass3_booleans_hide():
+    """The bugfix regression, with its real shape: 3 runs, threshold 1.0, 4 tasks that moved.
+
+    Under pass^3 booleans none of these tasks changed state, so the test saw zero discordant
+    pairs and reported p=1.000 -- indistinguishable from "we have no data". Replayed on the
+    archived bugfix rows, this is exactly what happened twice, and the pass-count statistic
+    recovers 2-2 and 3-1 respectively. It must recover the pairs WITHOUT promoting: the
+    candidate here is a wash, and a wash has to stay rejected.
+    """
+    runs_inc = [
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 1.0}],
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 0.0}],
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 0.0}],
+    ]
+    runs_cand = [
+        [{"task_id": "a", "score": 1.0}, {"task_id": "b", "score": 0.0}],
+        [{"task_id": "a", "score": 1.0}, {"task_id": "b", "score": 0.0}],
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 0.0}],
+    ]
+    # Neither task is a clean sweep either side, so pass^3 calls both False: no pairs at all.
+    assert gate.pass3_by_task(runs_cand, 1.0) == {"a": False, "b": False}
+    assert gate.pass3_by_task(runs_inc, 1.0) == {"a": False, "b": False}
+    blind = gate.paired_test(gate.pass3_by_task(runs_cand, 1.0), gate.pass3_by_task(runs_inc, 1.0))
+    assert (blind.wins, blind.losses, blind.p) == (0, 0, 1.0)
+
+    # Pass counts see a moved 0->2 and b moved 1->0: one win, one loss. A wash, but visible.
+    assert gate.passes_by_task(runs_cand, 1.0) == {"a": 2, "b": 0}
+    assert gate.passes_by_task(runs_inc, 1.0) == {"a": 0, "b": 1}
+    seeing = gate.paired_test(
+        gate.passes_by_task(runs_cand, 1.0), gate.passes_by_task(runs_inc, 1.0)
+    )
+    assert (seeing.wins, seeing.losses) == (1, 1)
+    assert seeing.p >= gate.ALPHA, "a wash must still be rejected"
+
+
+def test_min_discordant_to_promote_matches_the_exact_binomial_floor():
+    floor = gate._min_discordant_to_promote()
+    assert 0.5**floor < gate.ALPHA <= 0.5 ** (floor - 1)
 
 
 def test_paired_test_no_discordant_pairs_has_p_one():
@@ -160,7 +219,7 @@ def test_gate_promote_path_writes_gate_json_and_flips_labels(tmp_path: Path, mon
     )
     assert result.promoted and result.reason == "promoted"
     assert result.wins == 6 and result.losses == 0
-    assert result.p == pytest.approx(binomtest(6, 6, 0.5).pvalue)
+    assert result.p == pytest.approx(binomtest(6, 6, 0.5, alternative="greater").pvalue)
     assert flipped == ["cand"]
     path = tmp_path / "synthetic" / "2" / "gate.json"
     data = json.loads(path.read_text())
@@ -172,6 +231,65 @@ def test_gate_promote_path_writes_gate_json_and_flips_labels(tmp_path: Path, mon
     assert data["p"] == pytest.approx(result.p) and data["iteration"] == 2
     assert {c[1] for c in runner.calls} == {"holdout"}
     assert sorted(c[2] for c in runner.calls if c[0] == "cand") == [0, 1, 2]
+
+
+def test_underpowered_but_winning_candidate_earns_a_second_block_and_promotes(
+    tmp_path: Path, monkeypatch
+):
+    """2-0 in the first block cannot clear alpha (floor is 4); the escalated gate can.
+
+    Six seeds are scripted around a flaky incumbent: in the first block only t1/t2 are
+    discordant (2-0, no verdict reachable), and the extension surfaces the incumbent's
+    flakiness on t3/t4, ending 4-0 with p=0.0625 < 0.1. The gate must buy the second
+    block itself, extend the incumbent too, and record `escalated`.
+    """
+    inc_scores = {
+        "t1": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "t2": [1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        "t3": [1.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+        "t4": [1.0, 1.0, 1.0, 1.0, 0.0, 1.0],
+    }
+    cand_scores = {t: [1.0] * 6 for t in inc_scores}
+    runner = FakeRunner({"inc": _rows(inc_scores), "cand": _rows(cand_scores)})
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=0, runs_dir=tmp_path, run=runner
+    )
+    assert result.escalated
+    assert result.promoted, result.reason
+    assert (result.wins, result.losses) == (4, 0)
+    assert result.p == pytest.approx(0.0625)
+    data = json.loads((tmp_path / "synthetic" / "0" / "gate.json").read_text())
+    assert data["escalated"] is True
+    # both specs ran seeds 0..5 on holdout
+    assert sorted(c[2] for c in runner.calls if c[0] == "cand") == [0, 1, 2, 3, 4, 5]
+    assert sorted(c[2] for c in runner.calls if c[0] == "inc") == [0, 1, 2, 3, 4, 5]
+
+
+def test_a_regression_rejection_never_escalates(tmp_path: Path, monkeypatch):
+    """pass^3 or hard-fail regressions are verdicts; more data is not bought for them."""
+    scen = _scenario()
+    scen["cand"], scen["inc"] = scen["inc"], scen["cand"]  # candidate is the worse one
+    runner = FakeRunner(scen)
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=0, runs_dir=tmp_path, run=runner
+    )
+    assert not result.promoted and not result.escalated
+    assert max(c[2] for c in runner.calls) == 2  # never went past the first block
+
+
+def test_escalation_can_be_disabled_by_env(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ANNEAL_GATE_ESCALATION", "0")
+    inc_scores = {"t1": [0.0] * 3, "t2": [0.0] * 3, "t3": [1.0] * 3, "t4": [1.0] * 3}
+    cand_scores = {"t1": [1.0] * 3, "t2": [1.0] * 3, "t3": [1.0] * 3, "t4": [1.0] * 3}
+    runner = FakeRunner({"inc": _rows(inc_scores), "cand": _rows(cand_scores)})
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=0, runs_dir=tmp_path, run=runner
+    )
+    assert not result.promoted and not result.escalated
+    assert max(c[2] for c in runner.calls) == 2
 
 
 def test_gate_reject_does_not_flip_labels(tmp_path: Path, monkeypatch):

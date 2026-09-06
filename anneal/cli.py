@@ -26,17 +26,8 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from anneal import (
-    __version__,
-    architect,
-    diagnose,
-    gate,
-    llm,
-    mutate,
-    runner,
-    spec,
-    tracing,
-)
+from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec, tracing
+from anneal import anneal as anneal_stage
 from anneal import memory as memory_mod
 from anneal.domain import load_domain
 from anneal.spec import HarnessSpec
@@ -50,8 +41,6 @@ COMMANDS: dict[str, str] = {
     "anneal": "downshift node models along the cost/latency Pareto front",
     "dashboard": "serve the runs/ dashboard on http://localhost:8000",
 }
-STUBS = ("anneal", "dashboard")
-
 SEARCH_SPLIT = diagnose.SEARCH_SPLIT
 DEFAULT_BUDGET = 5.00
 DEFAULT_CANDIDATES = len(architect.MENU)
@@ -142,7 +131,13 @@ def _charge(loop: Loop, candidate: Any, rows: list[dict]) -> float:
 
 
 def _budgeted_run(loop: Loop) -> Any:
-    """A ``runner.run`` with ``--concurrency``/``--runs-dir`` bound and spend metered."""
+    """A ``runner.run`` with ``--concurrency``/``--runs-dir`` bound and spend metered.
+
+    Spend is charged per completed task, not per finished split. Charging a whole split at
+    once meant the cap could not interrupt work already running: a 10-task airline split at
+    ~$0.28/task blew a $0.50 budget out to $2.85 before anyone looked. Overshoot is now
+    bounded by whatever is in flight, i.e. ``--concurrency`` tasks.
+    """
 
     def run(spec_, domain, split, *, iteration=0, seed=0, **kw):
         if loop.spend >= loop.budget:
@@ -150,12 +145,11 @@ def _budgeted_run(loop: Loop) -> Any:
                 f"budget exhausted before running {spec_.id}: "
                 f"spent ${loop.spend:.4f} of ${loop.budget:.2f}"
             )
-        rows = runner.run(
+        return runner.run(
             spec_, domain, split, iteration=iteration, seed=seed,
             concurrency=loop.concurrency, runs_dir=loop.runs_dir,
+            on_row=lambda row: _charge(loop, spec_, [row]),
         )
-        _charge(loop, spec_, rows)
-        return rows
 
     return run
 
@@ -250,6 +244,23 @@ def _propose_mutation(
     diagnose.diagnose(rows, loop.domain, incumbent, ledger_path=loop.ledger)
     ledger = diagnose.load_ledger(loop.ledger)
     for issue in diagnose.rank(ledger):
+        # Refuse to fix what we do not believe. Attribution accuracy for this class of
+        # classifier is 14-48%, so acting on every diagnosis spends gate cycles on
+        # hypotheses -- and a fix that passes the gate for a misdiagnosed reason is worse
+        # than one that fails. The issue stays open and ranked for when more evidence
+        # arrives; we just move to the next one we do believe.
+        if not diagnose.actionable(issue):
+            logger.info(json.dumps({
+                "event": "issue_skipped_low_confidence", "issue": issue["id"],
+                "class": issue["class"], "confidence": round(diagnose.confidence_of(issue), 3),
+                "floor": diagnose.CONFIDENCE_FLOOR,
+            }))
+            continue
+        if not diagnose.confidence_known(issue):
+            logger.info(json.dumps({
+                "event": "issue_confidence_unreported", "issue": issue["id"],
+                "class": issue["class"],
+            }))
         try:
             operator = mutate.select_operator(issue)
             candidate = mutate.apply(incumbent, issue, _evidence(issue, rows), loop.domain)
@@ -292,6 +303,8 @@ def _summary(loop: Loop, iteration: int, inc: Any, **kw: Any) -> dict[str, Any]:
         "budget_usd": loop.budget,
         "search": dict(loop.search),
         "specs": dict(loop.specs),
+        # what the optimiser has learned so far: the judges' "memory growing" series
+        "ledger": diagnose.ledger_stats(diagnose.load_ledger(loop.ledger)),
         # episodic memory: what the agent has learned, and how much of it this run used
         "memory_entries": len(loop.memory.active) if loop.memory is not None else 0,
         "memory_by_kind": loop.memory.by_kind() if loop.memory is not None else {},
@@ -374,6 +387,20 @@ def _iteration(
     if result.promoted:
         loop.rejects = 0
         return candidate, cand_rows, body
+    # A plateau is meant to mean "we tried things and they genuinely do not help". A
+    # rejection the gate itself flags as underpowered means only "too few discordant tasks
+    # for any verdict", so counting it conceded the loop on no evidence. That is not
+    # hypothetical: PLATEAU is 2, and both airline and bugfix stopped at iteration 1 on two
+    # such rejections -- one iteration before rewrite_tool_desc, the third operator listed
+    # for their top-ranked issue, would have been tried at all.
+    if gate.is_underpowered(result.wins, result.losses):
+        body["underpowered"] = True
+        console.print(
+            f"    [yellow]not counted toward plateau: only {result.wins + result.losses} "
+            f"discordant task(s), need {gate._min_discordant_to_promote()} for any verdict"
+            "[/yellow]"
+        )
+        return incumbent, rows, body
     loop.rejects += 1
     if loop.rejects >= PLATEAU:
         body["stop_reason"] = "plateau"
@@ -519,6 +546,98 @@ def _regate_one(loop: Loop, body: dict[str, Any], specs: dict[str, str],
     )
 
 
+# --- `anneal anneal` and `anneal dashboard` ----------------------------------------------
+
+
+def _peak_score(runs_dir: Path, summaries: list[dict[str, Any]]) -> float | None:
+    """The winner's held-out mean score, which is the bar the downshift has to hold 95% of."""
+    block = _winner_block(runs_dir, summaries)
+    score = block.get("mean_score")
+    return None if score is None else float(score)
+
+
+def _anneal_domain(summaries: list[dict[str, Any]], args: argparse.Namespace,
+                   console: Console) -> int:
+    """Downshift one domain's winning spec. Returns 0 when it ran, 1 when it could not."""
+    last = summaries[-1]
+    name, winner_id = last["domain"], last["winner_id"]
+    spec_path = last["specs"].get(winner_id)
+    if spec_path is None:
+        console.print(f"[yellow]{name}: no spec was recorded for {winner_id}[/yellow]")
+        return 1
+    # None when the optimiser never gated this domain (it saturated at iteration 0 with no
+    # failures to diagnose). downshift then measures its own baseline to hold against.
+    peak = _peak_score(Path(args.runs_dir), summaries)
+    if peak is None:
+        console.print(
+            f"[dim]{name}: no gate result for {winner_id}; "
+            f"holding against its own measured baseline[/dim]"
+        )
+    domain = load_domain(last["domain_path"])
+    runs_dir = Path(args.runs_dir)
+    loop = Loop(
+        domain=domain, runs_dir=runs_dir, ledger=runs_dir / domain.name / "ledger.json",
+        budget=float(args.budget), concurrency=args.concurrency, seed=0,
+        models_path=args.models,
+    )
+    result = anneal_stage.downshift(
+        spec.load_spec(spec_path), domain,
+        peak_score=peak, runs_dir=runs_dir, iteration=int(last["iteration"]),
+        run=_budgeted_run(loop), models_path=args.models,
+    )
+    _anneal_table(console, name, result.points[0].score if peak is None else peak, result)
+    console.print(f"  pareto: {result.pareto_path}\n  winner: {result.spec_path}")
+    return 0
+
+
+def _anneal_table(console: Console, domain: str, peak: float, result: Any) -> None:
+    front = {p.config_id for p in result.front}
+    table = Table(title=f"anneal {domain} (peak {peak:.3f})", show_edge=False)
+    for column in ("config", "tiers", "acc", "pass^3", "$/task", "p95 ms", "kept", "front"):
+        table.add_column(column)
+    for p in result.points:
+        table.add_row(
+            p.config_id, ",".join(f"{n}={t}" for n, t in sorted(p.node_tiers.items())),
+            _num(p.score), _num(p.pass3), _num(p.cost_per_task, 4),
+            _num(p.p95_latency_ms, 0), "yes" if p.kept else "no",
+            "*" if p.config_id in front else "",
+        )
+    console.print(table)
+
+
+def cmd_anneal(args: argparse.Namespace, console: Console) -> int:
+    """Walk each domain's winning spec down the model tiers while its gated score holds."""
+    summaries = _summaries(Path(args.runs_dir))
+    if not summaries:
+        console.print(f"[red]no summary.json under {args.runs_dir}[/red]")
+        return 1
+    gate.clear_cache()
+    wanted = set(args.domain or ())
+    names = [n for n in dict.fromkeys(b["domain"] for b in summaries) if not wanted or n in wanted]
+    if wanted - set(names):
+        console.print(f"[red]no summaries for {sorted(wanted - set(names))}[/red]")
+        return 1
+    status = 0
+    for name in names:
+        got = [b for b in summaries if b["domain"] == name]
+        try:
+            status |= _anneal_domain(got, args, console)
+        except BudgetExceeded as exc:
+            console.print(f"[red]{name}: {exc}[/red]")
+            status = 1
+    return status
+
+
+def cmd_dashboard(args: argparse.Namespace, console: Console) -> int:
+    """Serve the runs/ dashboard. Imported lazily so the CLI does not pay for FastAPI."""
+    from anneal import dashboard
+
+    return dashboard.main(
+        ["--runs-dir", args.runs_dir, "--ledger", args.ledger,
+         "--host", args.host, "--port", str(args.port)]
+    )
+
+
 def _num(value: Any, digits: int = 3) -> str:
     return DASH if value is None else f"{float(value):.{digits}f}"
 
@@ -602,6 +721,32 @@ def _winner_block(runs_dir: Path, summaries: list[dict[str, Any]]) -> dict[str, 
     return {}
 
 
+def _annealed_row(runs_dir: Path, domain: str) -> str | None:
+    """The `annealed` row from the downshift stage, or None if it has not run for ``domain``.
+
+    ``anneal anneal`` scores its configurations on the reserved split through the gate, so the
+    winning Pareto point carries the same accuracy/pass^3/hard-fail meaning as the rows above
+    it. Its cost and latency come from that same measurement rather than from the search split.
+    """
+    path = runs_dir / domain / "anneal" / "pareto.json"
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    winner = data.get("winner")
+    point = next((p for p in data.get("points", []) if p.get("config_id") == winner), None)
+    if point is None:
+        return None
+    block = {
+        "mean_score": point.get("score"), "pass3_rate": point.get("pass3"),
+        "gen_gap": None, "hard_fails": point.get("hard_fails"),
+    }
+    search = {
+        "cost_per_task": point.get("cost_per_task"),
+        "p95_latency_ms": point.get("p95_latency_ms"),
+    }
+    return _row(domain, "annealed", block, search, None)
+
+
 def _blocks(body: dict[str, Any], gate_json: dict[str, Any], key: str) -> dict[str, Any]:
     """The summary's ``incumbent``/``candidate`` metrics, falling back to the gate's own copy."""
     return body.get(key) or gate_json.get(key) or {}
@@ -617,7 +762,8 @@ def _last_p(runs_dir: Path, bodies: list[dict[str, Any]]) -> Any:
 
 
 def _report_rows(runs_dir: Path, summaries: list[dict[str, Any]]) -> list[str]:
-    """Two rows per domain: the iteration-0 baseline and whatever survived the last gate."""
+    """Per domain: the iteration-0 baseline, whatever survived the last gate, and - when the
+    downshift stage has run - the annealed configuration that holds the score for less."""
     rows: list[str] = []
     for name in dict.fromkeys(b["domain"] for b in summaries):
         got = [b for b in summaries if b["domain"] == name]
@@ -631,6 +777,9 @@ def _report_rows(runs_dir: Path, summaries: list[dict[str, Any]]) -> list[str]:
             name, "final", _winner_block(runs_dir, got),
             last["search"].get(last["winner_id"], {}), _last_p(runs_dir, got),
         ))
+        annealed = _annealed_row(runs_dir, name)
+        if annealed is not None:
+            rows.append(annealed)
     return rows
 
 
@@ -741,12 +890,19 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-memory", action="store_true",
                      help="disable episodic memory (no recall, no reflection)")
 
-    for name in ("gate", "report"):
+    for name in ("gate", "report", "anneal"):
         sub.choices[name].add_argument("runs_dir", help="runs/ directory to read")
-    sub.choices["gate"].add_argument("--budget", type=float, default=DEFAULT_BUDGET,
-                                     metavar="USD")
-    sub.choices["gate"].add_argument("--concurrency", type=int, default=None)
-    sub.choices["gate"].add_argument("--models", default=None)
+    for name in ("gate", "anneal"):
+        sub.choices[name].add_argument("--budget", type=float, default=DEFAULT_BUDGET,
+                                       metavar="USD")
+        sub.choices[name].add_argument("--concurrency", type=int, default=None)
+        sub.choices[name].add_argument("--models", default=None)
+    # without this every `anneal anneal` re-anneals every domain in runs/, which both wastes
+    # spend on finished domains and collides with one that is still mid-loop.
+    sub.choices["anneal"].add_argument(
+        "--domain", action="append", metavar="NAME",
+        help="only anneal this domain (repeatable); default is every domain in runs_dir",
+    )
 
     report = sub.choices["report"]
     report.add_argument("--markdown", action="store_true",
@@ -754,6 +910,12 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--write-readme", nargs="?", const="README.md", default=None,
                         metavar="PATH",
                         help="replace the <!-- results --> block in PATH (default README.md)")
+
+    dash = sub.choices["dashboard"]
+    dash.add_argument("--runs-dir", default=str(runner.RUNS_DIR))
+    dash.add_argument("--ledger", default="ledger.json")
+    dash.add_argument("--host", default="127.0.0.1")
+    dash.add_argument("--port", type=int, default=8000)
     return parser
 
 
@@ -766,10 +928,22 @@ def main(argv: list[str] | None = None) -> int:
         for name, help_text in COMMANDS.items():
             console.print(f"  [cyan]{name:<10}[/cyan] {help_text}")
         return 0
-    if args.command in STUBS:
-        console.print(f"[yellow]anneal {args.command}[/yellow]: not implemented yet")
-        return 2
-    handler = {"run": cmd_run, "gate": cmd_gate, "report": cmd_report}[args.command]
+    handler = {
+        "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
+        "anneal": cmd_anneal, "dashboard": cmd_dashboard,
+    }[args.command]
+    # Nothing on the run path used to call this -- only mutate.py did, for the prompt
+    # registry -- so a fully configured Neatlogs project still received zero traces, and
+    # Diagnose would ask the MCP for spans that were never sent. No-op without a key.
+    if args.command in ("run", "gate", "anneal"):
+        from anneal.tracing import init_tracing, shutdown
+
+        init_tracing()
+        try:
+            return handler(args, console)
+        finally:
+            # Traces are batched; without this the last iteration's spans die with the process.
+            shutdown()
     return handler(args, console)
 
 

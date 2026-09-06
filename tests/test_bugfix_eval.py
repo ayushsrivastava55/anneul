@@ -36,6 +36,35 @@ def test_leaving_the_bug_alone_scores_zero(task: bugfix_eval.Task) -> None:
     assert bugfix_eval.score(task, "I could not find the bug.") == 0.0
 
 
+def test_concurrent_tasks_each_see_their_own_sandbox() -> None:
+    """The runner executes tasks in a thread pool, each in a copy of the caller's context.
+
+    With a module-global "current task" every in-flight task read whichever sandbox
+    setup() touched last: read_file returned "No such file or directory" for files that
+    existed, the agent looped and the step-budget deaths were misdiagnosed. The current
+    task must therefore be context-local, exactly like the runner's own run context.
+    """
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    tasks = bugfix_eval.load_tasks("train")[:4]
+
+    def run_one(chosen: bugfix_eval.Task) -> str:
+        bugfix_eval.setup(chosen)
+        try:
+            return bugfix_tools.read_file(chosen.input["module"])
+        finally:
+            bugfix_tools.close_sandbox(chosen.id)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(contextvars.copy_context().run, run_one, chosen) for chosen in tasks
+        ]
+        contents = [f.result() for f in futures]
+    for chosen, text in zip(tasks, contents, strict=True):
+        assert not text.startswith("Error"), f"{chosen.id} read the wrong sandbox: {text[:80]}"
+
+
 def test_rewriting_the_test_file_does_not_buy_a_pass(task: bugfix_eval.Task) -> None:
     """The tests are the specification: score() restores them before running pytest."""
     bugfix_tools.write_file(task.input["test_file"], "def test_nothing():\n    assert True\n")

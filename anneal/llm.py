@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -21,8 +20,13 @@ from typing import Any
 
 import httpx
 import yaml
-from dotenv import load_dotenv
 from openai import OpenAI
+
+# anneal.config is the single owner of .env loading. Importing it for the side effect is
+# the point: this module is runnable on its own (`python -m anneal.llm --tier flash ...`)
+# and calling dotenv itself here meant a second loader that missed config's blank-var
+# handling, so a blank exported var silently beat a filled-in .env.
+from anneal import config as _config
 
 try:  # anneal.tracing is task 0.4; until it lands, spans are a no-op seam.
     from anneal.tracing import span
@@ -32,11 +36,42 @@ except ImportError:  # pragma: no cover - exercised only before tracing merges
         return contextlib.nullcontext()
 
 
-load_dotenv()
+def _env(name: str) -> str:
+    """Required env var, via config so blank-shadowing is handled in exactly one place."""
+    value = (_config.env(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"environment variable {name} is unset or empty (see .env.example)")
+    return value
+
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_PATH = ROOT / "specs" / "models.yaml"
 BACKEND_HEADER = "x-tensormux-backend"
+PLACEHOLDER = "REPLACE_ME"
+
+# TensorMux enforces 60 requests/min per key; a gate run (3 seeds x 10 concurrent tasks,
+# several steps each) bursts straight through that, and a mutation whose holdout tasks all
+# died with 429s was being scored 0.1 and rejected on garbage. The SDK's own retries wait
+# under a second - useless against a one-minute window - so 429s are retried here with
+# exponential backoff that can outlast the window. Other errors still raise immediately.
+RATE_LIMIT_RETRIES = 5
+RATE_LIMIT_BASE_S = 4.0
+
+
+def _create_with_rate_limit_retry(client: Any, **kw: Any) -> Any:
+    import random
+
+    from openai import RateLimitError
+
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return client.chat.completions.with_raw_response.create(**kw)
+        except RateLimitError:
+            if attempt == RATE_LIMIT_RETRIES:
+                raise
+            delay = RATE_LIMIT_BASE_S * (2**attempt) * (0.5 + random.random())
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 @dataclass(frozen=True)
@@ -72,13 +107,6 @@ def resolve_model(tier: str, path: Path | str | None = None) -> str:
     return str(_tier(tier, path)["model"])
 
 
-def _env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise RuntimeError(f"environment variable {name} is unset or empty (see .env.example)")
-    return value
-
-
 def _client_timeout() -> httpx.Timeout:
     """Connect generously; a local server swapping models takes far longer than to connect.
 
@@ -89,7 +117,7 @@ def _client_timeout() -> httpx.Timeout:
 
     def _secs(name: str, default: float) -> float:
         try:
-            value = float(os.environ.get(name, "") or default)
+            value = float(_config.env(name) or default)
         except ValueError:
             return default
         return value if value > 0 else default
@@ -99,19 +127,38 @@ def _client_timeout() -> httpx.Timeout:
     )
 
 
+@lru_cache(maxsize=16)
 def get_client(tier: str = "mid", path: Path | str | None = None) -> OpenAI:
-    """OpenAI-compatible client for the provider backing ``tier`` (TensorMux by default)."""
+    """OpenAI-compatible client for the provider backing ``tier``, wrapped for tracing.
+
+    Catches the shipped ``REPLACE_ME`` placeholder on the way out to a real provider, which
+    would otherwise come back as an opaque model-not-found from somebody else's API. Offline
+    tests inject a fake client and never reach here, so they keep running on the placeholder.
+
+    ``neatlogs.wrap`` is what emits the per-request LLM span (model, tokens, messages); an
+    unwrapped client produces no LLM evidence at all, which is what the whole Diagnose stage
+    reads. Cached per tier so each client is wrapped once and connections are reused rather
+    than rebuilt on every call.
+    """
+    if resolve_model(tier, path) == PLACEHOLDER:
+        raise RuntimeError(
+            f"model tier {tier!r} is still {PLACEHOLDER} in {path or MODELS_PATH}: "
+            f"set a real model id and its prices before running against a live provider"
+        )
     provider_name = _tier(tier, path)["provider"]
     providers = load_models(path)["providers"]
     if provider_name not in providers:
         raise KeyError(f"tier {tier!r} names unknown provider {provider_name!r}")
     provider = providers[provider_name]
-    return OpenAI(
+    client = OpenAI(
         base_url=_env(provider["base_url_env"]),
         api_key=_env(provider["api_key_env"]),
         timeout=_client_timeout(),
-        max_retries=int(os.environ.get("ANNEAL_LLM_RETRIES", "2") or 2),
+        max_retries=int(_config.env("ANNEAL_LLM_RETRIES") or 2),
     )
+    from anneal.tracing import wrap_client
+
+    return wrap_client(client)
 
 
 def _price_table(path: Path | str | None = None) -> dict[str, tuple[float, float]]:
@@ -164,7 +211,7 @@ def complete(
         kw["tools"] = tools
     with span("llm.chat", tier=tier, model=model):
         start = time.perf_counter()
-        raw = client.chat.completions.with_raw_response.create(model=model, messages=messages, **kw)
+        raw = _create_with_rate_limit_retry(client, model=model, messages=messages, **kw)
         latency_ms = (time.perf_counter() - start) * 1000
     message = raw.parse().choices[0].message.model_dump(exclude_none=True)
     message.setdefault("role", "assistant")

@@ -1,0 +1,39 @@
+{
+  "domain": "bugfix",
+  "front": [
+    "cand-01-anneal-0",
+    "cand-01-anneal-1"
+  ],
+  "iteration": 1,
+  "node_tiers": {
+    "executor": "cheap"
+  },
+  "points": [
+    {
+      "config_id": "cand-01-anneal-0",
+      "cost_per_task": 0.073906,
+      "hard_fails": 0,
+      "kept": true,
+      "node_tiers": {
+        "executor": "mid"
+      },
+      "p95_latency_ms": 35015.4,
+      "pass3": 0.1,
+      "score": 0.3
+    },
+    {
+      "config_id": "cand-01-anneal-1",
+      "cost_per_task": 0.025968,
+      "hard_fails": 0,
+      "kept": true,
+      "node_tiers": {
+        "executor": "cheap"
+      },
+      "p95_latency_ms": 13517.7,
+      "pass3": 0.1,
+      "score": 0.23333333333333334
+    }
+  ],
+  "winner": "cand-01-anneal-1",
+  "winning_spec": "runs/bugfix/anneal/cand-01-anneal-1.yaml"
+}

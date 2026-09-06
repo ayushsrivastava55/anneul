@@ -1,0 +1,42 @@
+[
+  {
+    "id": "L-0001",
+    "class": "policy_misread",
+    "node": "executor",
+    "count": 2,
+    "evidence": [
+      "airline-10"
+    ],
+    "status": "open",
+    "operators_tried": [],
+    "fallback": false
+  },
+  {
+    "id": "L-0002",
+    "class": "unsupported_claim",
+    "node": "executor",
+    "count": 2,
+    "evidence": [
+      "airline-46"
+    ],
+    "status": "open",
+    "operators_tried": [],
+    "fallback": false
+  },
+  {
+    "id": "L-0003",
+    "class": "unsafe_action",
+    "node": "executor",
+    "count": 4,
+    "evidence": [
+      "airline-03",
+      "airline-09"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "add_escalation_node",
+      "add_validator_node"
+    ],
+    "fallback": false
+  }
+]

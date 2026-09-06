@@ -1,0 +1,81 @@
+{
+  "alpha": 0.1,
+  "candidate": {
+    "candidate_id": "cand-01-add_escalation_node-i1",
+    "gen_gap": -0.16666666666666663,
+    "hard_fails": 6,
+    "mean_score": 0.6666666666666666,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3": {
+      "airline-06": true,
+      "airline-08": false,
+      "airline-13": true,
+      "airline-18": true,
+      "airline-22": false,
+      "airline-29": false,
+      "airline-35": true,
+      "airline-37": true,
+      "airline-44": true,
+      "airline-45": false
+    },
+    "pass3_rate": 0.6,
+    "passes": {
+      "airline-06": 3,
+      "airline-08": 0,
+      "airline-13": 3,
+      "airline-18": 3,
+      "airline-22": 0,
+      "airline-29": 2,
+      "airline-35": 3,
+      "airline-37": 3,
+      "airline-44": 3,
+      "airline-45": 0
+    }
+  },
+  "decision": "reject",
+  "domain": "airline",
+  "escalated": false,
+  "incumbent": {
+    "candidate_id": "cand-01",
+    "gen_gap": null,
+    "hard_fails": 4,
+    "mean_score": 0.6666666666666666,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3": {
+      "airline-06": false,
+      "airline-08": false,
+      "airline-13": true,
+      "airline-18": true,
+      "airline-22": false,
+      "airline-29": true,
+      "airline-35": true,
+      "airline-37": true,
+      "airline-44": true,
+      "airline-45": false
+    },
+    "pass3_rate": 0.6,
+    "passes": {
+      "airline-06": 2,
+      "airline-08": 0,
+      "airline-13": 3,
+      "airline-18": 3,
+      "airline-22": 0,
+      "airline-29": 3,
+      "airline-35": 3,
+      "airline-37": 3,
+      "airline-44": 3,
+      "airline-45": 0
+    }
+  },
+  "iteration": 0,
+  "losses": 1,
+  "min_discordant_to_promote": 4,
+  "p": 0.75,
+  "path": "runs-learning/airline/0/gate.json",
+  "promoted": false,
+  "reason": "hard_fails 6 > incumbent 4",
+  "underpowered": true,
+  "wins": 1
+}

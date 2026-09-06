@@ -263,3 +263,94 @@ def test_current_trace_id_inside_span_is_hex(in_memory_neatlogs):
     assert len(captured[0]) == 32
     int(captured[0], 16)
     assert tracing.current_trace_id() is None
+
+
+# --- bounded serializer: the guard against neatlogs' unbounded _serialize_obj -------------
+#
+# neatlogs 1.4.21 serializes every decorated function's arguments by recursing into
+# __dict__ with no depth limit and no cycle detection. An argument that reaches a module
+# object sent it walking the whole import graph: 99% CPU for 16+ minutes before the first
+# LLM call. These tests pin the replacement's bounds and that init actually installs it.
+
+
+def test_bounded_serialize_refuses_modules_classes_and_callables():
+    import json as json_module
+
+    out = tracing._bounded_serialize(json_module)
+    assert isinstance(out, str)  # a short str(), not a walk of the module's globals
+
+    assert isinstance(tracing._bounded_serialize(dict), str)
+    assert isinstance(tracing._bounded_serialize(lambda: None), str)
+
+
+def test_bounded_serialize_survives_cycles():
+    a: dict = {"name": "a"}
+    a["self"] = a
+    out = tracing._bounded_serialize(a)
+    assert out["name"] == "a"
+    assert out["self"] == "<cycle>"
+
+
+def test_bounded_serialize_truncates_depth_items_and_strings():
+    deep: dict = {"leaf": "x"}
+    for _ in range(10):
+        deep = {"child": deep}
+    flat = tracing._bounded_serialize(deep)
+    for _ in range(tracing._MAX_DEPTH - 1):
+        flat = flat["child"]
+    assert isinstance(flat["child"], str)  # depth floor reached: stringified, not recursed
+
+    wide = tracing._bounded_serialize(list(range(1000)))
+    assert len(wide) == tracing._MAX_ITEMS + 1
+    assert wide[-1] == f"...[{1000 - tracing._MAX_ITEMS} more]"
+
+    long = tracing._bounded_serialize("y" * (tracing._MAX_STR + 5))
+    assert len(long) == tracing._MAX_STR + len("...[truncated]")
+
+
+def test_bounded_serialize_keeps_model_dump_style_protocols():
+    class Spec:
+        def to_dict(self) -> dict:
+            return {"topology": "single", "nodes": [1, 2]}
+
+    assert tracing._bounded_serialize(Spec()) == {"topology": "single", "nodes": [1, 2]}
+
+
+def test_bounded_serialize_reads_plain_object_dicts():
+    class Row:
+        def __init__(self) -> None:
+            self.task_id = "t1"
+            self._private = "hidden"
+
+    assert tracing._bounded_serialize(Row()) == {"task_id": "t1"}
+
+
+def test_init_tracing_installs_the_bounded_serializer(in_memory_neatlogs):
+    from neatlogs.decorators import _base as nl_base
+
+    assert nl_base._serialize_obj is tracing._bounded_serialize
+
+
+def test_span_with_a_module_reaching_argument_completes_and_stays_bounded(in_memory_neatlogs):
+    """Regression: this exact shape (arg whose __dict__ reaches a module) froze real runs."""
+    import time
+
+    class Domain:
+        def __init__(self) -> None:
+            import json as json_module
+
+            self.name = "airline"
+            self.module = json_module  # the poison: __dict__ walk reaches a module object
+
+    @tracing.node_span("runner.run_split")
+    def run_split(domain: Domain) -> str:
+        return domain.name
+
+    start = time.monotonic()
+    assert run_split(Domain()) == "airline"
+    assert time.monotonic() - start < 5  # unpatched, this path burned minutes of CPU
+
+    exporter = in_memory_neatlogs
+    (span,) = [s for s in exporter.get_finished_spans() if s.name == "runner.run_split"]
+    input_value = span.attributes.get("input.value", "")
+    assert len(input_value) < 20_000  # bounded evidence, not a heap dump

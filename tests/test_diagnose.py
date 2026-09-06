@@ -92,6 +92,7 @@ def fake_domain(task_ids: list[str]) -> Any:
 
 
 WRONG_TOOL = json.dumps({"class": "wrong_tool", "node": "executor"})
+LOOP = json.dumps({"class": "loop_or_timeout", "node": "executor"})
 
 
 def fake_client(reply: str, turns: int = 1) -> FakeClient:
@@ -105,7 +106,7 @@ def ledger_path(tmp_path: Path) -> Path:
 
 
 def test_four_failures_produce_four_ledger_entries(ledger_path: Path) -> None:
-    fake = fake_client(WRONG_TOOL)
+    fake = FakeClient(turns=[LOOP, WRONG_TOOL])
     domain = fake_domain([r["task_id"] for r in ROWS])
     issues = diagnose.diagnose(ROWS, domain, SPEC, ledger_path=ledger_path, client=fake)
 
@@ -115,15 +116,16 @@ def test_four_failures_produce_four_ledger_entries(ledger_path: Path) -> None:
     assert by_class["unsafe_action"]["evidence"] == ["trace-t-unsafe"]
     assert by_class["wrong_tool"]["node"] == "executor"
     assert [i["id"] for i in issues] == ["L-0001", "L-0002", "L-0003", "L-0004"]
-    # Only the LLM-detected failure needed a model call; deterministic classes did not.
-    assert len(fake.calls) == 1
-    prompt = json.dumps(fake.calls[0]["messages"])
+    # hard_fail and schema_error are decided without a model; the step-budget death and the
+    # wrong-tool failure each get a model call (a budget death is a symptom, not a verdict).
+    assert len(fake.calls) == 2
+    prompt = json.dumps(fake.calls[1]["messages"])
     assert "do t-wrongtool" in prompt and "cancel_reservation" in prompt
     assert json.loads(ledger_path.read_text()) == issues
 
 
 def test_rerun_upserts_counts_and_dedupes_evidence(ledger_path: Path) -> None:
-    fake = fake_client(WRONG_TOOL, turns=2)
+    fake = FakeClient(turns=[LOOP, WRONG_TOOL] * 2)
     domain = fake_domain([r["task_id"] for r in ROWS])
     diagnose.diagnose(ROWS, domain, SPEC, ledger_path=ledger_path, client=fake)
     second = diagnose.diagnose(ROWS, domain, SPEC, ledger_path=ledger_path, client=fake)
@@ -133,6 +135,44 @@ def test_rerun_upserts_counts_and_dedupes_evidence(ledger_path: Path) -> None:
     assert all(len(i["evidence"]) == 1 for i in second)
     ids = [i["id"] for i in load_ledger(ledger_path)]
     assert ids == ["L-0001", "L-0002", "L-0003", "L-0004"]
+
+
+def test_budget_death_reaching_for_an_ungranted_tool_is_a_missing_capability(
+    ledger_path: Path,
+) -> None:
+    """The bugfix flagship: no run_tests tool -> the agent loops -> synthesize_tool must fire.
+
+    A step-budget death whose trace shows a call to a tool the spec does not grant is the
+    missing capability itself, classed deterministically with no model call.
+    """
+    row = _row(
+        "t-blind",
+        hit_step_budget=True,
+        trace=[
+            {"tool": "write_file", "args": {"path": "f.py"}, "result": "ok"},
+            {"tool": "run_tests", "args": {}, "result": "Error: unknown tool 'run_tests'"},
+        ],
+    )
+    fake = fake_client(WRONG_TOOL, turns=0)
+    domain = fake_domain(["t-blind"])
+    issues = diagnose.diagnose([row], domain, SPEC, ledger_path=ledger_path, client=fake)
+    assert [i["class"] for i in issues] == ["missing_capability"]
+    assert diagnose.confidence_of(issues[0]) == diagnose.CERTAIN_CONFIDENCE
+    assert fake.calls == []
+
+
+def test_budget_death_without_a_capability_signal_lets_the_model_pick_the_cause(
+    ledger_path: Path,
+) -> None:
+    """An unusable classifier reply on a step-budget death falls back to loop_or_timeout."""
+    row = _row("t-loop", hit_step_budget=True)
+    fake = fake_client("not json at all")
+    domain = fake_domain(["t-loop"])
+    issues = diagnose.diagnose([row], domain, SPEC, ledger_path=ledger_path, client=fake)
+    assert [i["class"] for i in issues] == ["loop_or_timeout"]
+    # the model was consulted and loop_or_timeout was on its menu
+    assert len(fake.calls) == 1
+    assert "loop_or_timeout" in json.dumps(fake.calls[0]["messages"])
 
 
 def test_rank_orders_by_count_times_severity() -> None:
@@ -218,3 +258,127 @@ def test_default_source_is_local_without_key(monkeypatch: pytest.MonkeyPatch) ->
     assert isinstance(diagnose.default_trace_source(ROWS), LocalTraces)
     monkeypatch.setenv("NEATLOGS_API_KEY", "k")
     assert isinstance(diagnose.default_trace_source(ROWS), NeatlogsMCP)
+
+
+# --- diagnosis confidence -----------------------------------------------------------------
+
+
+def test_reported_confidence_is_parsed_clamped_and_carried() -> None:
+    reply = json.dumps({"class": "wrong_tool", "node": "executor", "confidence": 0.9})
+    cls, node, conf = diagnose.classify_with_llm(
+        [{"role": "user", "content": "x"}], ["wrong_tool"], ["executor"], fake_client(reply)
+    )
+    assert (cls, node, conf) == ("wrong_tool", "executor", 0.9)
+    # Out-of-range values are clamped rather than trusted or discarded.
+    for raw, want in ((5, 1.0), (-2, 0.0)):
+        body = json.dumps({"class": "wrong_tool", "node": "executor", "confidence": raw})
+        assert diagnose.classify_with_llm(
+            [{"role": "user", "content": "x"}], ["wrong_tool"], ["executor"], fake_client(body)
+        )[2] == want
+
+
+@pytest.mark.parametrize("raw", ["null", '"high"', "{}"])
+def test_unreported_confidence_is_unknown_not_low(raw: str) -> None:
+    """Absent or junk confidence must read as None. It is the difference between "we do not
+    know how sure the classifier was" and "the classifier told us it was unsure", and only
+    the latter is allowed to block a repair."""
+    reply = f'{{"class": "wrong_tool", "node": "executor", "confidence": {raw}}}'
+    assert diagnose.classify_with_llm(
+        [{"role": "user", "content": "x"}], ["wrong_tool"], ["executor"], fake_client(reply)
+    )[2] is None
+
+
+def test_a_guessed_class_scores_as_the_low_confidence_diagnosis_it_is() -> None:
+    """An unusable reply falls back to a heuristic guess. The ledger already recorded that as
+    `fallback` and then nothing acted on it; a guess is a low-confidence diagnosis."""
+    ledger: list[Any] = []
+    issue = diagnose.upsert(
+        ledger, "wrong_tool", "executor", ["t1"], fallback=True,
+        confidence=diagnose.FALLBACK_CONFIDENCE,
+    )
+    assert issue["fallback"] is True
+    assert diagnose.confidence_of(issue) == diagnose.FALLBACK_CONFIDENCE
+    assert not diagnose.actionable(issue), "we must not spend an operator on a guess"
+
+
+def test_confidence_is_a_running_mean_so_one_shaky_row_cannot_sink_an_issue() -> None:
+    ledger: list[Any] = []
+    diagnose.upsert(ledger, "wrong_tool", "executor", ["t1"], confidence=0.9)
+    for i in range(8):
+        diagnose.upsert(ledger, "wrong_tool", "executor", [f"t{i + 2}"], confidence=0.9)
+    issue = diagnose.upsert(ledger, "wrong_tool", "executor", ["t99"], confidence=0.1)
+    assert issue["count"] == 10 and issue["confidence_n"] == 10
+    assert diagnose.confidence_of(issue) == pytest.approx(0.82)
+    assert diagnose.actionable(issue), "nine solid diagnoses outweigh one shaky one"
+
+
+def test_repeated_shaky_diagnoses_do_sink_an_issue() -> None:
+    ledger: list[Any] = []
+    for i in range(6):
+        issue = diagnose.upsert(ledger, "wrong_tool", "executor", [f"t{i}"], confidence=0.2)
+    assert diagnose.confidence_of(issue) == pytest.approx(0.2)
+    assert not diagnose.actionable(issue)
+
+
+def test_unscored_issue_is_actionable_so_a_silent_classifier_cannot_stall_the_loop() -> None:
+    """The failure mode this guards is severe: if absence blocked, a model that ignores the
+    confidence field would halt every repair while looking like a principled refusal."""
+    ledger: list[Any] = []
+    issue = diagnose.upsert(ledger, "wrong_tool", "executor", ["t1"], confidence=None)
+    assert not diagnose.confidence_known(issue)
+    assert diagnose.confidence_of(issue) == diagnose.DEFAULT_CONFIDENCE
+    assert diagnose.DEFAULT_CONFIDENCE < diagnose.CONFIDENCE_FLOOR, "default is below the floor"
+    assert diagnose.actionable(issue), "unknown must not block"
+
+
+def test_deterministic_classes_are_certain() -> None:
+    """A forbidden tool call is observed by rule, not inferred, so there is nothing to doubt."""
+    row = {"task_id": "t", "score": 0.0, "hard_fail": True}
+    cls, _node, fell_back, conf = diagnose._classify_row(
+        row, None, SPEC, LocalTraces([row]), diagnose.load_taxonomy(), None
+    )
+    assert cls == "unsafe_action" and not fell_back
+    assert conf == diagnose.CERTAIN_CONFIDENCE
+    assert diagnose.actionable({"confidence": conf, "confidence_n": 1})
+
+
+def test_rank_weights_by_confidence_without_letting_it_override_severity() -> None:
+    tax = diagnose.load_taxonomy()
+    unsure_severe = {
+        "id": "L-0001", "class": "unsafe_action", "node": "executor", "count": 4,
+        "status": "open", "confidence": 0.6, "confidence_n": 4,
+    }
+    certain_mild = {
+        "id": "L-0002", "class": "context_overflow", "node": "executor", "count": 1,
+        "status": "open", "confidence": 1.0, "confidence_n": 1,
+    }
+    # 4 * 5 * 0.6 = 12.0 still beats 1 * 2 * 1.0 = 2.0: confidence weights, it does not veto.
+    assert [i["id"] for i in diagnose.rank([certain_mild, unsure_severe], tax)] == [
+        "L-0001", "L-0002",
+    ]
+    # But between two equally common failures, the believed one goes first.
+    doubted = {**unsure_severe, "id": "L-0003", "confidence": 0.3}
+    believed = {**unsure_severe, "id": "L-0004", "confidence": 0.95}
+    assert [i["id"] for i in diagnose.rank([doubted, believed], tax)] == ["L-0004", "L-0003"]
+
+
+def test_ledger_stats_summarise_growth_for_the_iteration_series() -> None:
+    ledger = [
+        {"id": "L-0001", "class": "wrong_tool", "node": "executor", "count": 3,
+         "status": "open", "operators_tried": ["rewrite_tool_desc"]},
+        {"id": "L-0002", "class": "wrong_tool", "node": "planner", "count": 1,
+         "status": "attempted", "operators_tried": ["rewrite_tool_desc", "add_fewshots"]},
+        {"id": "L-0003", "class": "unsafe_action", "node": "executor", "count": 2,
+         "status": "open"},
+    ]
+    stats = diagnose.ledger_stats(ledger)
+    assert stats == {
+        "issues": 3,
+        "observations": 6,
+        "operators_tried": 3,
+        "by_class": {"unsafe_action": 1, "wrong_tool": 2},
+        "by_status": {"attempted": 1, "open": 2},
+    }
+    assert diagnose.ledger_stats([]) == {
+        "issues": 0, "observations": 0, "operators_tried": 0, "by_class": {}, "by_status": {},
+    }

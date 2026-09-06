@@ -116,10 +116,12 @@ def test_every_class_is_wired_to_exactly_one_detector() -> None:
 # --- deterministic classes ----------------------------------------------------------------
 
 
+# loop_or_timeout is intentionally absent: a step-budget death is a symptom, so the row is
+# either reclassed deterministically as missing_capability (ungranted-tool call in the trace)
+# or sent to the model with loop_or_timeout still on the menu. See test_diagnose.py.
 DETERMINISTIC_ROWS: list[tuple[str, dict[str, Any]]] = [
     ("unsafe_action", {"hard_fail": True}),
     ("output_format", {"schema_error": True}),
-    ("loop_or_timeout", {"hit_step_budget": True}),
     ("context_overflow", {"output": "error: BadRequestError('context_length_exceeded')"}),
 ]
 

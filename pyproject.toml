@@ -34,7 +34,7 @@ packages = ["anneal"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["domains/*/fixtures"]
+extend-exclude = ["domains/*/fixtures", "runs-archive"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
@@ -47,5 +47,11 @@ select = ["E", "F", "I", "W", "UP", "B"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# The default suite is offline (see tests/conftest.py). `live` marks the tests that really
+# call a provider: they were self-skipping on a missing key, which quietly turned into a
+# hard failure the moment real keys landed and the network was restricted. Opt in with
+# `pytest -m live` when you actually want to check the gateway.
+markers = ["live: calls a real provider over the network; excluded by default"]
+addopts = "-m 'not live'"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

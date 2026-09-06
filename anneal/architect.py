@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import anneal.prompts as prompts
-from anneal import llm
+from anneal import config, llm
 from anneal.spec import HarnessSpec, Lineage, ModelTier, Node, Role, ToolsManifest, ToolSpec
 from anneal.tracing import llm_span, node_span
 
@@ -53,6 +53,24 @@ NODE_TIER: dict[Role, ModelTier] = {
     "router": "cheap",
     "escalate": "cheap",
 }
+
+# Strongest tier first. ``ANNEAL_TIER_CAP`` names a rung; every node whose default tier is
+# stronger is capped to it. This sets where the *learning loop starts*: a domain that a mid
+# executor already saturates shows nothing, while a capped baseline fails, is diagnosed,
+# and demonstrably improves - and the anneal stage still owns cost from there.
+TIER_LADDER: tuple[ModelTier, ...] = ("frontier", "mid", "cheap", "flash", "nano")
+TIER_CAP_ENV = "ANNEAL_TIER_CAP"
+
+
+def node_tier(role: Role) -> ModelTier:
+    """The default tier for ``role``, capped at ``$ANNEAL_TIER_CAP`` when that names a tier."""
+    tier = NODE_TIER[role]
+    cap = (config.env(TIER_CAP_ENV) or "").strip()
+    if cap not in TIER_LADDER:
+        return tier
+    if TIER_LADDER.index(tier) < TIER_LADDER.index(cap):
+        return cap  # type: ignore[return-value]
+    return tier
 NODE_BRIEF: dict[str, str] = {
     "planner": (
         "The PLANNER sees the task and the tool list but calls no tools. It writes a short,"
@@ -355,7 +373,7 @@ def _build_spec(
         Node(
             name=name,
             role=role,
-            model_tier=NODE_TIER[role],
+            model_tier=node_tier(role),
             system_prompt_ref=refs[name][0],
             prompt_source=refs[name][1],
             tools=list(tool_names) if role == "executor" else [],

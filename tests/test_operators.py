@@ -144,9 +144,14 @@ def test_add_cite_or_abstain_is_not_applied_twice(store: LocalPromptStore) -> No
 # --- add_step_budget_and_critic ------------------------------------------------------------
 
 
-def test_add_step_budget_and_critic_raises_budget_and_switches_topology(
+def test_add_step_budget_and_critic_unstarves_the_named_node(
     store: LocalPromptStore,
 ) -> None:
+    """The diagnosed node's own cap must rise: a global raise alone is unspendable.
+
+    Observed on bugfix: the executor (capped at 10) hit the budget on 8/10 tasks while
+    this operator handed it a critic and four more global steps it could never use.
+    """
     client = FakeClient(turns=[])
     spec = make_spec()
     out = apply(spec, make_issue("loop_or_timeout"), EVIDENCE, make_domain(), client=client)
@@ -157,9 +162,13 @@ def test_add_step_budget_and_critic_raises_budget_and_switches_topology(
     assert critic.max_steps == mutate.CRITIC_STEPS
     assert critic.system_prompt_ref == "anneal/airline/critic@v1"
     assert out.topology == "critic_loop"
-    assert out.step_budget == spec.step_budget + mutate.CRITIC_STEPS + mutate.STEP_BUDGET_BUMP
+    # the issue names the executor (max_steps 6): its cap doubles to 12, and the budget
+    # grows by that doubling (6 > STEP_BUDGET_BUMP) plus the critic's own steps
+    assert node_named(out, "executor").max_steps == 12
+    assert out.step_budget == spec.step_budget + 6 + mutate.CRITIC_STEPS
     assert out.lineage is not None and out.lineage.operator == "add_step_budget_and_critic"
     assert spec.topology == "single" and spec.step_budget == 8
+    assert node_named(spec, "executor").max_steps == 6  # input spec untouched
     assert client.calls == []
 
 

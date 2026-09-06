@@ -1,0 +1,30 @@
+id: cand-03
+topology: critic_loop
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/bugfix/executor@v4
+  tools:
+  - read_file
+  - write_file
+  max_steps: 8
+  schema_ref: null
+- name: critic
+  role: critic
+  model_tier: cheap
+  system_prompt_ref: anneal/bugfix/critic@v8
+  tools: []
+  max_steps: 4
+  schema_ref: null
+lineage:
+  parent: cand-03
+  iteration: 0
+  operator: architect
+  ledger_issue: null
+tool_overrides: {}

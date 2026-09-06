@@ -1,0 +1,49 @@
+id: cand-01-rewrite_tool_desc-i1
+topology: single
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: cheap
+  system_prompt_ref: anneal/airline/executor@v12
+  tools:
+  - calculate
+  - get_reservation_details
+  - get_user_details
+  - list_all_airports
+  - search_direct_flight
+  - search_onestop_flight
+  - transfer_to_human_agents
+  - book_reservation
+  - cancel_reservation
+  - send_certificate
+  - update_reservation_baggages
+  - update_reservation_flights
+  - update_reservation_passengers
+  max_steps: 12
+  schema_ref: null
+lineage:
+  parent: cand-01
+  iteration: 2
+  operator: rewrite_tool_desc
+  ledger_issue: L-0001
+tool_overrides:
+  calculate: "Computes the result of a mathematical expression from numbers you provide\
+    \ (e.g., summing fares, comparing totals). It does not fetch, validate, or store\
+    \ any data, and it does not verify that a price, balance, or fee you plug in is\
+    \ current, correct, or policy-compliant.\n\nUse when: you already have verified\
+    \ figures (fetched from a lookup tool in this same turn) and need to combine them\u2014\
+    e.g., add flight segment prices, sum baggage fees, total multiple payment sources\u2014\
+    before deciding on or executing a write action.\n\nDo not use when: you have not\
+    \ just fetched the specific prices/balances/fees involved (never assume or recall\
+    \ a price from memory or a prior turn); you are using its output as a substitute\
+    \ for checking policy eligibility (e.g., 24-hour window, cancellation rules, refund-to-original-payment-method\
+    \ rules) \u2014 those are policy checks, not arithmetic, and must be verified\
+    \ via lookup tools/policy text, not inferred by calculation; or you are trying\
+    \ to justify a booking/cancellation/refund decision that itself requires a tool\
+    \ call (e.g., checking availability, checking passenger count rules) rather than\
+    \ a calculation."

@@ -15,15 +15,28 @@ domains, four numbers.
 <!-- results:start -->
 | Domain | Stage | Holdout acc | pass^3 | Gen gap | Hard fails | $/task | p95 s | p (gate) |
 |---|---|---|---|---|---|---|---|---|
-| invoices | iteration 0 | 0.189 | 0.000 | 0.211 | 3 | 0.000169 | 148.3 | 1.000 |
-| invoices | final | 0.178 | 0.000 | 0.222 | 1 | 0.000169 | 148.3 | 1.000 |
+| airline | iteration 0 | 0.733 | 0.700 | -0.033 | 5 | 0.367 | 298.2 | 0.875 |
+| airline | final | 0.767 | 0.700 | -0.067 | 4 | 0.367 | 298.2 | 0.750 |
+| airline | annealed | 0.733 | 0.700 | — | 3 | 0.266 | 190.9 | — |
+| bugfix | iteration 0 | 1.000 | 1.000 | -0.100 | 0 | 0.00148 | 93.7 | 1.000 |
+| bugfix | final | 0.800 | 0.700 | 0.100 | 0 | 0.00148 | 93.7 | 0.125 |
+| invoices | iteration 0 | — | — | — | — | 0.0393 | 12.3 | — |
+| invoices | final | — | — | — | — | 0.0393 | 12.3 | — |
+| invoices | annealed | 1.000 | 1.000 | — | 0 | 0.00145 | 23.9 | — |
 
 **Rejected mutations** — the gate refusing to promote, and which condition failed.
 
 | Domain | Iteration | Operator | Gate condition that failed |
 |---|---|---|---|
-| invoices | 0 | rewrite_tool_desc | p 1.000 >= alpha 0.1 |
-| invoices | 1 | add_fewshots | hard_fails 2 > incumbent 1 |
+| airline | 0 | add_escalation_node | pass3_rate 0.600 < incumbent 0.700 |
+| airline | 1 | add_validator_node | pass3_rate 0.500 < incumbent 0.700 |
+| airline | 2 | rewrite_tool_desc | p 1.000 >= alpha 0.1 |
+| airline | 3 | add_memory | p 0.750 >= alpha 0.1 |
+| bugfix | 0 | add_cite_or_abstain | pass3_rate 0.800 < incumbent 1.000 |
+| bugfix | 1 | rewrite_tool_desc | pass3_rate 0.800 < incumbent 1.000 |
+| bugfix | 2 | add_fewshots | pass3_rate 0.800 < incumbent 1.000 |
+| bugfix | 3 | switch_topology | pass3_rate 0.900 < incumbent 1.000 |
+| bugfix | 4 | add_fewshots | p 0.125 >= alpha 0.1 |
 
 `—` means the value does not exist in the runs (no gate ran at that iteration, or the
 spec was never scored on that split) — it is never a zero and never a rounded-away number.
@@ -120,6 +133,12 @@ worktree. A rejected branch leaves the candidate spec untouched and marks the le
 attempted. This path is verified end to end: `uv run python -m anneal.ao --selftest` spawned a
 real session that wrote a tool, committed it, and passed the gate.
 
+This is not hypothetical: in a live bugfix run the loop diagnosed `missing_capability` (the
+domain deliberately withholds `run_tests`), spawned session `tool-run_pytest-9b51`, and the
+worker wrote `run_pytest.py` with its test, which the gate then evaluated on the reserved
+split like any other mutation. A separate worker session (`readme-results`) built the README
+results splicer used below — the optimiser and its own build pipeline share the same executor.
+
 Two things we learned about AO and worked around, both documented in `anneal/ao.py`: `ao spawn`
 has no `--json` flag despite what the architecture notes assumed, so the REST body was recovered
 by probing; and a project needs a remote with a resolved default branch before it will create
@@ -127,38 +146,42 @@ worktrees.
 
 ## Sponsor usage
 
-Split honestly into what actually ran and what is wired but unexercised, because we never
-received keys for some sponsors and will not claim otherwise.
+Split honestly into what actually ran and what is wired but unexercised, because we will
+not claim otherwise.
 
 **Exercised end to end**
 
 - **AO** — every task built as its own worker session on its own branch, and `anneal/ao.py`
   spawns AO workers *at runtime* to write missing tools, accepted only when their tests pass.
-  Verified: `uv run python -m anneal.ao --selftest`.
+  Verified: `uv run python -m anneal.ao --selftest`. On the bugfix domain the optimiser
+  itself spawned a worker that wrote `run_pytest` plus its acceptance test.
+- **Neatlogs** — every node, tool and LLM call is a live span (workflow `anneal`); Diagnose
+  reads traces; the prompt registry versions every operator edit and the gate flips
+  `staging` → `production` on promotion. Two SDK issues found and worked around: an
+  unbounded serializer recursion (bounded replacement patched in `anneal/tracing.py`) and a
+  401 on `save_as_version` (`create_prompt` versions instead).
+- **TensorMux** — the `flash` tier, glm-4-7-flash, reached by the downshift and used as a
+  learning-run baseline. Its 60 requests/min cap is survived with exponential backoff.
+- **AI Grants India** — the `nano` tier (gpt-5-nano): the cheapest rung of the ladder, and
+  on invoices it holds a perfect 1.000 at ~29× below the mid tier's cost.
 - **Model Context Protocol** — `anneal/mcp.py` speaks real MCP over stdio and streamable HTTP.
   `domains/filesystem` is served by the official `@modelcontextprotocol/server-filesystem`
   through `npx`; the agent discovers that server's 14 tools from its own `tools/list` rather
   than from anything we hand-wrote.
-- **Local inference (Ollama)** — the OpenAI-compatible endpoint behind `anneal/llm.py`, running
-  qwen2.5 3b / 1.5b / 0.5b as the frontier / mid / cheap tiers that the anneal stage walks down.
 - **Maximor's problem space** — `domains/invoices` is AP triage with an escalation hard-fail
   rule, plus the issue ledger and versioned prompts as an audit trail of every change the
   optimiser made to itself.
 
 **Built and tested, but not exercised against a live account**
 
-- **Neatlogs** — every node, tool and LLM call is wrapped in a span, and Diagnose has an MCP
-  client for `search_traces` / `get_trace_context`. With `NEATLOGS_API_KEY` unset it degrades
-  to a local trace source and the spans are no-ops, which is how every run in this repo went.
-  No trace in this README came from the Neatlogs UI.
-- **TensorMux** — `anneal/llm.py` is provider-agnostic and reads `x-tensormux-backend` for
-  per-backend cost attribution. We never received a key, so the gateway path is unexercised and
-  the `backend` field is null in every row we shipped.
 - **Dodo Payments** — `anneal/billing.py` implements credit entitlement, deterministic
   per-run event ids, batched ingestion, a budget guard that halts the loop, and a shipped-agent
   product with a usage meter. Without `DODO_API_KEY` it runs as a local ledger, which still
-  enforces `--budget`. No live Dodo call was made.
-- **AI Grants India** — a provider slot in `specs/models.yaml`. Never used.
+  enforces `--budget`. No live Dodo call was made (no key was ever obtained).
+- **Local inference (Ollama)** — a fully supported provider (`ollama` in `specs/models.yaml`);
+  the fork lineage ran the whole loop on qwen2.5 3b/1.5b/0.5b at $0 real cost. The shipped
+  config uses the live five-tier ladder because every provider in it was exercised.
+- **smallest.ai** — voice credits received but unused: no voice domain, by scope decision.
 
 ## Team
 

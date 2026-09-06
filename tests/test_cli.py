@@ -77,19 +77,32 @@ def loop(monkeypatch, tmp_path):
         "scores": {},
         "promote": True,
         "classes": ["wrong_tool", "output_format", "unsupported_claim"],
+        # Enough discordant pairs that a rejection carries evidence. Below
+        # gate._min_discordant_to_promote() a rejection is underpowered and, by design,
+        # does not count toward the plateau -- tests that want a plateau need this powered.
+        "wins": 4,
     }
 
     def fake_propose(domain, n=3, **kw):
         rec.note("architect.propose")
         return [make_spec(f"cand-{i}") for i in range(1, n + 1)]
 
-    def fake_run(spec, domain, split, *, iteration=0, seed=0, concurrency=None, **kw):
+    def fake_run(spec, domain, split, *, iteration=0, seed=0, concurrency=None,
+                 on_row=None, **kw):
+        """Stands in for runner.run, including its per-row ``on_row`` budget callback.
+
+        The real runner fires ``on_row`` as each task lands, which is how the loop meters
+        spend; a fake that ignored it would report every run as free.
+        """
         rec.note(f"runner.run:{spec.id}:{split}")
         base = state["scores"].get(spec.id, 0.5)
-        return [
-            make_row(t.id, spec.id, base, iteration=iteration)
-            for t in domain.eval.load_tasks(split)
-        ]
+        rows = []
+        for t in domain.eval.load_tasks(split):
+            row = make_row(t.id, spec.id, base, iteration=iteration)
+            if on_row is not None:
+                on_row(row)
+            rows.append(row)
+        return rows
 
     def fake_diagnose(rows, domain, spec, *, ledger_path="ledger.json", **kw):
         """One issue per call, cycling classes so operators do not run out immediately."""
@@ -118,7 +131,7 @@ def loop(monkeypatch, tmp_path):
         )
         return gate.GateResult(
             domain=domain.name, iteration=iteration, incumbent=inc, candidate=cand,
-            wins=3, losses=0, p=0.01 if promoted else 0.9, promoted=promoted,
+            wins=state["wins"], losses=0, p=0.01 if promoted else 0.9, promoted=promoted,
             reason="promoted" if promoted else "p 0.900 >= alpha 0.1",
             path=Path(runs_dir) / domain.name / str(iteration) / "gate.json",
         )
@@ -217,6 +230,16 @@ def test_promoted_spec_yaml_is_written_for_the_gate_subcommand(loop, tmp_path):
     assert Path(specs["cand-1-m1"]).is_file()
 
 
+def test_every_summary_carries_a_ledger_snapshot(loop, tmp_path):
+    """Memory growth must be a plottable series in the artifacts, not a claim."""
+    run_cli(tmp_path, "--iterations", "1")
+    snapshot = summaries(tmp_path)[0]["ledger"]
+    for key in ("issues", "observations", "operators_tried", "by_class", "by_status"):
+        assert key in snapshot, key
+    assert snapshot["issues"] >= 1  # the loop fixture diagnoses one issue per iteration
+    assert snapshot["by_status"].get("open", 0) >= 1
+
+
 # --- stopping conditions -----------------------------------------------------------------
 
 
@@ -225,6 +248,26 @@ def test_plateau_stops_after_two_consecutive_rejects(loop, tmp_path):
     assert run_cli(tmp_path, "--iterations", "6") == 0
     assert len(summaries(tmp_path)) == 2
     assert summaries(tmp_path)[-1]["stop_reason"] == "plateau"
+
+
+def test_underpowered_rejects_do_not_count_toward_the_plateau(loop, tmp_path):
+    """A plateau must mean "tried it, does not help", not "could not measure".
+
+    This is the loop-level half of the airline/bugfix stall: with PLATEAU at 2, two
+    rejections that no sample size could have decided ended the run at iteration 1 --
+    before rewrite_tool_desc, the third operator listed for the top-ranked issue, was ever
+    reached. So the loop conceded on no evidence and never tried the tool-learning fix.
+    """
+    loop.state["promote"] = False
+    loop.state["wins"] = 1  # one discordant task: no verdict is arithmetically possible
+    assert run_cli(tmp_path, "--iterations", "5") == 0
+    got = summaries(tmp_path)
+    assert all(s["decision"] == "reject" for s in got)
+    assert all(s.get("underpowered") for s in got)
+    assert not any(s["stop_reason"] == "plateau" for s in got), "conceded without evidence"
+    # Runs the full budget of iterations rather than giving up at PLATEAU, which is what
+    # lets a later operator in the issue's list get its turn at all.
+    assert len(got) == 5 > cli.PLATEAU
 
 
 def test_promote_resets_the_plateau_counter(loop, tmp_path):
@@ -253,6 +296,19 @@ def test_budget_halts_the_loop(loop, tmp_path, monkeypatch):
     assert run_cli(tmp_path, "--iterations", "5", "--budget", "10.00") == 1
     assert summaries(tmp_path)[-1]["stop_reason"] == "budget"
     assert summaries(tmp_path)[-1]["spend_usd"] >= 10.0
+
+
+def test_budget_stops_mid_split_instead_of_after_it(priced, tmp_path):
+    """The cap interrupts a split in progress rather than charging the whole thing.
+
+    Regression: spend used to be charged once per finished split, so a $0.50 cap on a
+    10-task airline split at ~$0.28/task ran to $2.85 before anything checked. At the
+    fixture's $2.00/task, a $3.00 cap must stop after ~2 tasks, not after all 10.
+    """
+    assert run_cli(tmp_path, "--iterations", "1", "--budget", "3.00", "--models", priced) == 1
+    last = summaries(tmp_path)[-1]
+    assert last["stop_reason"] == "budget"
+    assert 3.0 <= last["spend_usd"] < 20.0
 
 
 def test_budget_message_is_explicit(loop, tmp_path, monkeypatch, capsys):
@@ -317,6 +373,41 @@ def test_report_renders_iteration_zero_and_final_rows(tmp_path, capsys):
     assert lines[0].split("|")[9].strip() == "0.010"  # the gate p-value of that iteration
 
 
+def write_pareto(root: Path, **point: Any) -> None:
+    body = {
+        "config_id": "cand-1-m1-anneal-2", "node_tiers": {"executor": "cheap"},
+        "score": 0.88, "pass3": 0.8, "cost_per_task": 0.004, "p95_latency_ms": 700.0,
+        "kept": True, "hard_fails": 0,
+    }
+    body.update(point)
+    path = root / "airline" / "anneal" / "pareto.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"winner": body["config_id"], "points": [body]}))
+
+
+def test_report_adds_an_annealed_row_when_the_downshift_has_run(tmp_path, capsys):
+    """The third README stage comes from pareto.json, not from a summary."""
+    root = tmp_path / "runs"
+    write_summary(root, 0)
+    write_pareto(root)
+    assert cli.main(["report", str(root)]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    stages = [ln.split("|")[2].strip() for ln in lines[2:]]  # skip header + separator
+    assert stages == ["iteration 0", "final", "annealed"]
+    annealed = lines[4].split("|")
+    assert annealed[3].strip() == "0.880"
+    assert annealed[7].strip() == "0.004"  # cheaper $/task than the search rows above
+    assert annealed[8].strip() == "0.7"  # p95 is reported in seconds
+
+
+def test_report_omits_the_annealed_row_before_the_downshift_runs(tmp_path, capsys):
+    root = tmp_path / "runs"
+    write_summary(root, 0)
+    assert cli.main(["report", str(root)]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    assert [ln.split("|")[2].strip() for ln in lines[2:]] == ["iteration 0", "final"]
+
+
 def test_report_final_row_is_the_last_winner(tmp_path, capsys):
     root = tmp_path / "runs"
     write_summary(root, 0)
@@ -377,14 +468,21 @@ def priced(loop, tmp_path, monkeypatch):
     llm.load_models.cache_clear()
     base = cli.runner.run
 
-    def run_with_usage(spec_, domain, split, **kw):
-        rows = base(spec_, domain, split, **kw)
+    # backend None is what every offline run records; pricing must fall back to the model
+    # the node's tier requested, not silently charge 0.
+    usage = {"executor": {"tokens_in": 1000, "tokens_out": 1000, "backend": None, "ms": 1.0}}
+
+    def run_with_usage(spec_, domain, split, *, on_row=None, **kw):
+        # The real runner fills per_node before firing on_row, so the budget callback sees a
+        # priced row. Decorating after the split returned would charge every task as free.
+        def decorate(row):
+            row["per_node"] = dict(usage)
+            if on_row is not None:
+                on_row(row)
+
+        rows = base(spec_, domain, split, on_row=decorate, **kw)
         for row in rows:
-            # backend None is what every offline run records; pricing must fall back to the
-            # model the node's tier requested, not silently charge 0.
-            row["per_node"] = {
-                "executor": {"tokens_in": 1000, "tokens_out": 1000, "backend": None, "ms": 1.0}
-            }
+            row.setdefault("per_node", dict(usage))
         return rows
 
     monkeypatch.setattr(cli.runner, "run", run_with_usage)
@@ -440,9 +538,97 @@ def test_persisted_spec_carries_the_loop_iteration(loop, tmp_path):
 # --- surface -----------------------------------------------------------------------------
 
 
-def test_stub_subcommands_still_report_not_implemented(capsys):
-    assert cli.main(["dashboard"]) == 2
-    assert "not implemented" in capsys.readouterr().out
+def test_dashboard_serves_instead_of_stubbing(monkeypatch, tmp_path):
+    """`anneal dashboard` reaches uvicorn with the runs dir and port it was given."""
+    served: dict[str, Any] = {}
+
+    def fake_run(app, host, port):
+        served.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    code = cli.main(
+        ["dashboard", "--runs-dir", str(tmp_path), "--port", "8123", "--host", "127.0.0.1"]
+    )
+    assert code == 0
+    assert (served["host"], served["port"]) == ("127.0.0.1", 8123)
+    assert served["app"].state.anneal.runs_dir == tmp_path
+
+
+@pytest.mark.parametrize("command", ["run", "gate", "anneal", "report"])
+def test_run_path_initialises_and_shuts_down_tracing(monkeypatch, tmp_path, command):
+    """Regression: nothing on the run path called init_tracing, so a configured tracing
+    project received zero spans and Diagnose queried the MCP for traces never sent.
+
+    report is included to pin the other half: it does no model work, so it must not pay
+    the tracing handshake.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr("anneal.tracing.init_tracing", lambda *a, **k: calls.append("init"))
+    monkeypatch.setattr("anneal.tracing.shutdown", lambda *a, **k: calls.append("shutdown"))
+    for name in ("cmd_run", "cmd_gate", "cmd_anneal", "cmd_report"):
+        monkeypatch.setattr(cli, name, lambda args, console: 0)
+    root = tmp_path / "runs"
+    root.mkdir()
+    assert cli.main([command, str(root)]) == 0
+    expected = ["init", "shutdown"] if command != "report" else []
+    assert calls == expected
+
+
+def test_tracing_is_shut_down_even_when_the_command_raises(monkeypatch, tmp_path):
+    """Spans are batched, so a crash without shutdown loses the evidence for the failure
+    that is most worth looking at."""
+    calls: list[str] = []
+    monkeypatch.setattr("anneal.tracing.init_tracing", lambda *a, **k: calls.append("init"))
+    monkeypatch.setattr("anneal.tracing.shutdown", lambda *a, **k: calls.append("shutdown"))
+
+    def boom(args, console):
+        raise RuntimeError("domain blew up")
+
+    monkeypatch.setattr(cli, "cmd_run", boom)
+    with pytest.raises(RuntimeError, match="domain blew up"):
+        cli.main(["run", str(tmp_path)])
+    assert calls == ["init", "shutdown"]
+
+
+def test_anneal_domain_filter_skips_other_domains(monkeypatch, tmp_path, capsys):
+    """--domain scopes the downshift, so a finished domain is not re-annealed."""
+    root = tmp_path / "runs"
+    write_summary(root, 0)
+    seen: list[str] = []
+    monkeypatch.setattr(cli, "_anneal_domain", lambda s, a, c: seen.append(s[-1]["domain"]) or 0)
+    assert cli.main(["anneal", str(root), "--domain", "airline"]) == 0
+    assert seen == ["airline"]
+    assert cli.main(["anneal", str(root), "--domain", "bugfix"]) == 1
+    assert "no summaries for ['bugfix']" in capsys.readouterr().out
+
+
+def test_anneal_subcommand_needs_a_gated_run(capsys, tmp_path):
+    """`anneal anneal` on an empty runs dir explains itself rather than crashing."""
+    assert cli.main(["anneal", str(tmp_path)]) == 1
+    assert "no summary.json" in capsys.readouterr().out
+
+
+def test_anneal_subcommand_downshifts_the_winner(loop, monkeypatch, tmp_path):
+    """A gated run reaches `anneal.downshift` with the winner spec and its gated score."""
+    run_cli(tmp_path, "--iterations", "1")
+    seen: dict[str, Any] = {}
+
+    def fake_downshift(spec, domain, *, peak_score, runs_dir, iteration, **kw):
+        seen.update(spec_id=spec.id, peak=peak_score, iteration=iteration)
+        point = cli.anneal_stage.ParetoPoint(
+            config_id=f"{spec.id}-anneal-0", node_tiers={"executor": "mid"}, score=peak_score,
+            pass3=1.0, cost_per_task=0.01, p95_latency_ms=100.0, kept=True,
+        )
+        return cli.anneal_stage.AnnealResult(
+            spec=spec, points=[point], front=[point],
+            pareto_path=Path(runs_dir) / "pareto.json", spec_path=Path(runs_dir) / "w.yaml",
+        )
+
+    monkeypatch.setattr(cli.anneal_stage, "downshift", fake_downshift)
+    assert cli.main(["anneal", str(tmp_path / "runs")]) == 0
+    summary = summaries(tmp_path)[-1]
+    assert seen["spec_id"] == summary["winner_id"]
+    assert seen["peak"] is not None
 
 
 def test_no_args_prints_usage(capsys):

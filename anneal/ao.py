@@ -122,6 +122,13 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PORT = "3001"
 DEFAULT_PROJECT = "anneal"
 DEFAULT_AGENT = "claude-code"
+
+
+def default_agent() -> str:
+    """Worker harness id. ``AO_AGENT`` overrides (the daemon 400s with
+    AGENT_BINARY_NOT_FOUND when the named harness is not installed on this machine, so
+    the right value is per-machine configuration, not code)."""
+    return env("AO_AGENT") or DEFAULT_AGENT
 MAX_NAME_LEN = 20
 HTTP_TIMEOUT_S = 10.0
 ACCEPT_TIMEOUT_S = 900.0
@@ -181,7 +188,7 @@ def spawn_worker(
     prompt: str,
     *,
     project: str = DEFAULT_PROJECT,
-    agent: str = DEFAULT_AGENT,
+    agent: str | None = None,
     client: httpx.Client | None = None,
 ) -> str:
     """Spawn an AO worker session on `branch` and return its session id.
@@ -196,6 +203,7 @@ def spawn_worker(
         raise ValueError(f"AO session name {name!r} is {len(name)} chars, max {MAX_NAME_LEN}")
     if not branch:
         raise ValueError("AO session branch must not be empty")
+    agent = agent or default_agent()
     payload = _request(
         "POST",
         "/api/v1/sessions",

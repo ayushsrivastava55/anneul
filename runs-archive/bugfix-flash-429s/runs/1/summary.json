@@ -1,0 +1,162 @@
+{
+  "budget_usd": 40.0,
+  "candidate": {
+    "candidate_id": "cand-01-rewrite_tool_desc-i1",
+    "gen_gap": 0.20000000000000007,
+    "hard_fails": 0,
+    "mean_score": 0.7,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 0.1,
+    "passes": {
+      "bugfix_04": 3,
+      "bugfix_08": 2,
+      "bugfix_14": 2,
+      "bugfix_18": 2,
+      "bugfix_21": 2,
+      "bugfix_24": 2,
+      "bugfix_26": 2,
+      "bugfix_29": 2,
+      "bugfix_32": 2,
+      "bugfix_35": 2
+    }
+  },
+  "candidate_id": "cand-01-rewrite_tool_desc-i1",
+  "cost_usd": 0.011333,
+  "decision": "reject",
+  "domain": "bugfix",
+  "domain_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/domains/bugfix",
+  "gate_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/1/gate.json",
+  "gen_gap": 0.20000000000000007,
+  "hard_fails": 0,
+  "incumbent": {
+    "candidate_id": "cand-01",
+    "gen_gap": null,
+    "hard_fails": 0,
+    "mean_score": 1.0,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 1,
+    "passes": {
+      "bugfix_04": 3,
+      "bugfix_08": 3,
+      "bugfix_14": 3,
+      "bugfix_18": 3,
+      "bugfix_21": 3,
+      "bugfix_24": 3,
+      "bugfix_26": 3,
+      "bugfix_29": 3,
+      "bugfix_32": 3,
+      "bugfix_35": 3
+    }
+  },
+  "incumbent_id": "cand-01",
+  "issue": {
+    "class": "wrong_tool",
+    "id": "L-0002",
+    "node": "executor"
+  },
+  "iteration": 1,
+  "ledger": {
+    "by_class": {
+      "missing_capability": 1,
+      "wrong_tool": 1
+    },
+    "by_status": {
+      "open": 2
+    },
+    "issues": 2,
+    "observations": 2,
+    "operators_tried": 2
+  },
+  "mean_score": 0.7,
+  "operator": "rewrite_tool_desc",
+  "p95_latency_ms": 133713.0,
+  "p_value": 1.0,
+  "pass3_rate": 0.1,
+  "reason": "pass3_rate 0.100 < incumbent 1.000",
+  "search": {
+    "cand-01": {
+      "cost_by_node": {
+        "executor": 0.015363
+      },
+      "cost_per_task": 0.001536,
+      "cost_usd": 0.015363,
+      "hard_fails": 0,
+      "mean_score": 0.9,
+      "n_tasks": 10,
+      "p95_latency_ms": 116908.1,
+      "pass_rate": 0.9,
+      "tokens_in": 117828,
+      "tokens_out": 20734
+    },
+    "cand-01-rewrite_tool_desc-i1": {
+      "cost_by_node": {
+        "executor": 0.011333
+      },
+      "cost_per_task": 0.001133,
+      "cost_usd": 0.011333,
+      "hard_fails": 0,
+      "mean_score": 0.9,
+      "n_tasks": 10,
+      "p95_latency_ms": 133713.0,
+      "pass_rate": 0.9,
+      "tokens_in": 102869,
+      "tokens_out": 12903
+    },
+    "cand-01-synthesize_tool-i1": {
+      "cost_by_node": {
+        "executor": 0.019593
+      },
+      "cost_per_task": 0.001959,
+      "cost_usd": 0.019593,
+      "hard_fails": 0,
+      "mean_score": 0.9,
+      "n_tasks": 10,
+      "p95_latency_ms": 142177.0,
+      "pass_rate": 0.9,
+      "tokens_in": 170883,
+      "tokens_out": 23351
+    },
+    "cand-02": {
+      "cost_by_node": {
+        "executor": 0.018028,
+        "planner": 0.018882
+      },
+      "cost_per_task": 0.003691,
+      "cost_usd": 0.03691,
+      "hard_fails": 0,
+      "mean_score": 0.6,
+      "n_tasks": 10,
+      "p95_latency_ms": 156196.0,
+      "pass_rate": 0.6,
+      "tokens_in": 210624,
+      "tokens_out": 60682
+    },
+    "cand-03": {
+      "cost_by_node": {
+        "critic": 0.024982,
+        "executor": 0.020902
+      },
+      "cost_per_task": 0.004588,
+      "cost_usd": 0.045884,
+      "hard_fails": 0,
+      "mean_score": 0.9,
+      "n_tasks": 10,
+      "p95_latency_ms": 185862.9,
+      "pass_rate": 0.9,
+      "tokens_in": 224488,
+      "tokens_out": 81038
+    }
+  },
+  "specs": {
+    "cand-01": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/1/cand-01.yaml",
+    "cand-01-rewrite_tool_desc-i1": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/1/cand-01-rewrite_tool_desc-i1.yaml",
+    "cand-01-synthesize_tool-i1": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/0/cand-01-synthesize_tool-i1.yaml",
+    "cand-02": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/0/cand-02.yaml",
+    "cand-03": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/0/cand-03.yaml"
+  },
+  "spend_usd": 0.250892,
+  "stop_reason": null,
+  "winner_id": "cand-01"
+}

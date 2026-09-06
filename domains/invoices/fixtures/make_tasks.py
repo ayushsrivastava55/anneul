@@ -1,22 +1,34 @@
-"""One-shot generator for the invoices dataset. Ran once with seed 0; DO NOT RERUN.
+"""One-shot generator for the invoices dataset (v2, seed 0). DO NOT RERUN casually.
 
 Emits all four artifacts in a single pass so they cannot drift apart:
 `fixtures/pos.json`, `fixtures/receipts.json`, `fixtures/posted.json` and `tasks.jsonl`.
 
-Regenerating would reshuffle the train/search/holdout split and invalidate every number
-reported from runs/. Kept only so the dataset is auditable.
+v2 (2026-09-06): regenerated deliberately. The v1 dataset saturated -- every candidate
+scored 1.000 at iteration 0, so there was nothing for the optimiser to learn and no
+reportable number was invalidated by regenerating. v2 keeps the five v1 rules and adds
+four traps aimed at the shortcuts a naive agent actually takes:
 
-Invariants asserted before anything is written (this is what covers holdout correctness,
+  * total_match_breach (escalate): two lines deviate +/-6% in opposite directions so the
+    invoice total equals the PO total to the cent. Comparing totals instead of lines
+    approves it -- and posting it is a hard fail.
+  * short_receipt (escalate): a goods receipt exists but covers only ~85% of one invoiced
+    line. Checking receipt *existence* instead of quantities approves it.
+  * similar_number (approve): the ledger already holds `<number>-2` for the same vendor.
+    Fuzzy duplicate-matching escalates a perfectly payable invoice.
+  * symbol_currency (approve): no `Currency:` header; the total line carries the symbol
+    (EUR euro sign / GBP pound / USD dollar). Extraction must infer the ISO code.
+
+Invariants asserted before anything is written (this covers gated-split correctness,
 since CHECKED.md only names train/search rows):
   * exactly 60 rows, split 30 train / 15 search / 15 holdout;
-  * exactly 12 messy rows -- 3 duplicate invoice numbers, 3 currency mismatches,
-    2 missing POs, 2 tolerance breaches, 2 missing receipts -- 6/3/3 across the splits;
+  * exactly 24 non-trivial rows (12 v1 messy + 6 escalate traps + 6 approve traps),
+    12/6/6 across the splits -- a uniform 40% per split;
   * the rule oracle, replayed against the fixtures, reports *exactly* the one rule each
-    messy row is meant to exercise, and no rule at all for the 48 clean rows;
+    escalate row is meant to exercise, and no rule for approve rows (incl. approve traps);
   * every clean line deviates from its PO by <= 1.5% and every breach by >= 4%, measured
     after rounding to cents, so no case sits near the 2% boundary.
 
-Run:  uv run python -m domains.invoices.fixtures.make_tasks   (don't)
+Run:  uv run python -m domains.invoices.fixtures.make_tasks
 """
 
 from __future__ import annotations
@@ -34,7 +46,9 @@ SEED = 0
 N_TRAIN, N_SEARCH, N_HOLDOUT = 30, 15, 15
 N_TASKS = N_TRAIN + N_SEARCH + N_HOLDOUT
 
-# 12 messy rows (20%), spread across the splits in proportion to their size.
+# 24 non-trivial rows (40%), spread uniformly across the splits: the 12 v1 messy rows,
+# 6 escalate traps (look clean, must be escalated) and 6 approve traps (look suspicious,
+# must be approved). Traps appear in every split so a learned fix has to generalise.
 MESSY_BY_SPLIT: dict[str, list[str]] = {
     "train": [
         "duplicate_invoice",
@@ -43,10 +57,44 @@ MESSY_BY_SPLIT: dict[str, list[str]] = {
         "missing_po",
         "tolerance_breach",
         "missing_receipt",
+        "total_match_breach",
+        "total_match_breach",
+        "short_receipt",
+        "similar_number",
+        "similar_number",
+        "symbol_currency",
     ],
-    "search": ["duplicate_invoice", "currency_mismatch", "missing_po"],
-    "holdout": ["currency_mismatch", "tolerance_breach", "missing_receipt"],
+    "search": [
+        "duplicate_invoice",
+        "currency_mismatch",
+        "missing_po",
+        "total_match_breach",
+        "short_receipt",
+        "similar_number",
+    ],
+    "holdout": [
+        "currency_mismatch",
+        "tolerance_breach",
+        "missing_receipt",
+        "total_match_breach",
+        "symbol_currency",
+        "similar_number",
+    ],
 }
+
+# Escalate rules as the oracle reports them; traps that fail an existing rule map onto it.
+ORACLE_RULE = {
+    "duplicate_invoice": "duplicate_invoice",
+    "currency_mismatch": "currency_mismatch",
+    "missing_po": "missing_po",
+    "tolerance_breach": "tolerance_breach",
+    "missing_receipt": "missing_receipt",
+    "total_match_breach": "tolerance_breach",  # line-level breach, total camouflaged
+    "short_receipt": "missing_receipt",  # receipt exists but does not cover the line
+}
+APPROVE_TRAPS = {"similar_number", "symbol_currency"}
+
+CURRENCY_SYMBOL = {"USD": "$", "EUR": "\u20ac", "GBP": "\u00a3"}
 
 VENDORS: list[tuple[str, str]] = [
     ("Northwind Traders", "EUR"),
@@ -98,25 +146,31 @@ def plan_rows(rng: random.Random) -> list[dict[str, Any]]:
 def base_invoice(index: int, rng: random.Random, rule: str | None) -> dict[str, Any]:
     """A fully clean invoice with a PO that matches it line for line."""
     vendor, currency = VENDORS[rng.randrange(len(VENDORS))]
-    n_lines = rng.choice([1, 2, 2, 3])
+    n_lines = 2 if rule == "total_match_breach" else rng.choice([1, 2, 2, 3])
     skus: list[str] = []
     while len(skus) < n_lines:
         candidate = f"SKU-{rng.randrange(1000, 9999)}"
         if candidate not in skus:
             skus.append(candidate)
+    # total_match_breach needs two lines with equal quantity and equal unit price so a
+    # +d / -d nudge cancels in the total to the cent.
+    shared_qty = rng.choice([40, 60, 80, 100])
+    shared_unit = rng.randrange(500, 9000)
     lines = []
     for sku in skus:
-        quantity = (
-            rng.choice([40, 60, 80, 100])
-            if rule == "tolerance_breach"
-            else rng.choice([12, 24, 25, 50, 60, 120, 200, 240])
-        )
+        if rule == "total_match_breach":
+            quantity, unit_cents = shared_qty, shared_unit
+        elif rule == "tolerance_breach":
+            quantity, unit_cents = rng.choice([40, 60, 80, 100]), rng.randrange(85, 9000)
+        else:
+            quantity = rng.choice([12, 24, 25, 50, 60, 120, 200, 240])
+            unit_cents = rng.randrange(85, 9000)
         lines.append(
             {
                 "sku": sku,
                 "description": CATALOGUE[rng.randrange(len(CATALOGUE))],
                 "quantity": quantity,
-                "unit_cents": rng.randrange(85, 9000),
+                "unit_cents": unit_cents,
             }
         )
     return {
@@ -131,6 +185,9 @@ def base_invoice(index: int, rng: random.Random, rule: str | None) -> dict[str, 
         "po_exists": True,
         "receipt_exists": True,
         "duplicate_seed": False,
+        "near_dup_seed": False,
+        "short_receipt": False,
+        "symbol_only": False,
         "tags": [],
     }
 
@@ -170,6 +227,23 @@ def apply_rule(row: dict[str, Any], rule: str, split: str, index: int) -> None:
             row["tags"].append("quantity_breach")
     elif rule == "missing_receipt":
         row["receipt_exists"] = False
+    elif rule == "total_match_breach":
+        # Two equal lines: +d on one unit, -d on the other. The total matches the PO to
+        # the cent; each line deviates ~6%, well past the 2% tolerance.
+        first, second = row["inv_lines"]
+        delta = round(first["unit_cents"] * 0.06)
+        first["unit_cents"] += delta
+        second["unit_cents"] -= delta
+        row["tags"].append("total_match_breach")
+    elif rule == "short_receipt":
+        row["short_receipt"] = True
+        row["tags"].append("short_receipt")
+    elif rule == "similar_number":
+        row["near_dup_seed"] = True
+        row["tags"].append("near_duplicate")
+    elif rule == "symbol_currency":
+        row["symbol_only"] = True
+        row["tags"].append("symbol_currency")
     else:  # pragma: no cover - guarded by the plan
         raise ValueError(f"unknown rule {rule}")
 
@@ -182,18 +256,29 @@ def total_cents(lines: list[dict[str, Any]]) -> int:
 
 
 def render_text(row: dict[str, Any]) -> str:
-    """The 'already extracted from the PDF' invoice body the agent reads."""
+    """The 'already extracted from the PDF' invoice body the agent reads.
+
+    symbol_currency rows have no ``Currency:`` header; the only currency signal is the
+    symbol on the total line, and the agent must report the ISO code it implies.
+    """
     head = ["INVOICE", "", f"Vendor: {row['vendor']}", f"Invoice No: {row['invoice_number']}"]
     if row["po_number"] is not None:
         head.append(f"PO Number: {row['po_number']}")
-    head += [f"Invoice Date: {row['date']}", f"Currency: {row['currency']}", "", "Line items"]
+    head.append(f"Invoice Date: {row['date']}")
+    if not row["symbol_only"]:
+        head.append(f"Currency: {row['currency']}")
+    head += ["", "Line items"]
     for line in row["inv_lines"]:
         amount = line["quantity"] * line["unit_cents"]
         head.append(
             f"  {line['sku']} | {line['description']} | qty {line['quantity']}"
             f" | unit {line['unit_cents'] / 100:.2f} | {amount / 100:.2f}"
         )
-    head += ["", f"TOTAL DUE: {total_cents(row['inv_lines']) / 100:.2f} {row['currency']}"]
+    total = total_cents(row["inv_lines"]) / 100
+    if row["symbol_only"]:
+        head += ["", f"TOTAL DUE: {CURRENCY_SYMBOL[row['currency']]}{total:,.2f}"]
+    else:
+        head += ["", f"TOTAL DUE: {total:.2f} {row['currency']}"]
     return "\n".join(head)
 
 
@@ -215,9 +300,13 @@ def po_record(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def receipt_record(row: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
+    """Received quantities per PO line; short_receipt rows are ~15% short on line 1."""
+    record = [
         {"sku": line["sku"], "quantity_received": line["quantity"]} for line in row["po_lines"]
     ]
+    if row["short_receipt"]:
+        record[0]["quantity_received"] = math.floor(record[0]["quantity_received"] * 0.85)
+    return record
 
 
 # --------------------------------------------------------------------------- oracle
@@ -251,8 +340,17 @@ def failing_rules(
         if _dev(line["unit_cents"] / 100, po_line["unit_price"]) > 0.02:
             failures.append("tolerance_breach")
             break
-    if not receipts.get(row["po_number"]):
+    receipt = receipts.get(row["po_number"])
+    if not receipt:
         failures.append("missing_receipt")
+    elif "tolerance_breach" not in failures:
+        # A receipt must *cover* the invoiced quantities (goal.md), not merely exist.
+        # Skipped after a tolerance breach so each row reports exactly one rule.
+        received = {entry["sku"]: entry["quantity_received"] for entry in receipt}
+        for line in row["inv_lines"]:
+            if received.get(line["sku"], 0) < line["quantity"] * 0.98:
+                failures.append("missing_receipt")
+                break
     return failures
 
 
@@ -262,7 +360,7 @@ def _dev(actual: float, expected: float) -> float:
 
 def check_deviations(row: dict[str, Any]) -> None:
     """No line may sit near the 2% boundary: clean <= 1.5%, breaches >= 4%."""
-    breach = row["rule"] == "tolerance_breach"
+    breach = row["rule"] in ("tolerance_breach", "total_match_breach")
     worst = 0.0
     for inv, po in zip(row["inv_lines"], row["po_lines"]):
         worst = max(
@@ -318,6 +416,17 @@ def seed_posted(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "total": total_cents(row["inv_lines"]) / 100,
                 }
             )
+        if row["near_dup_seed"]:
+            # Same vendor, visually similar number, different invoice: NOT a duplicate.
+            # An agent that fuzzy-matches posted_invoices escalates a payable invoice.
+            entries.append(
+                {
+                    "invoice_number": f"{row['invoice_number']}-2",
+                    "vendor": row["vendor"],
+                    "currency": row["currency"],
+                    "total": round(total_cents(row["inv_lines"]) / 100 * 0.97, 2),
+                }
+            )
     entries.sort(key=lambda e: (e["vendor"], e["invoice_number"]))
     for position, entry in enumerate(entries, start=1):
         entry["entry_id"] = f"GL-{position:04d}"
@@ -326,7 +435,14 @@ def seed_posted(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def to_task(row: dict[str, Any], failures: list[str]) -> dict[str, Any]:
     decision = "approve" if not failures else "escalate"
-    tags = ["messy", row["rule"]] if row["rule"] else ["clean"]
+    if row["rule"] in APPROVE_TRAPS:
+        tags = ["trap", row["rule"]]
+    elif row["rule"]:
+        tags = ["messy", ORACLE_RULE[row["rule"]]]
+        if ORACLE_RULE[row["rule"]] != row["rule"]:
+            tags.append(row["rule"])
+    else:
+        tags = ["clean"]
     return {
         "id": f"invoices-{row['index']:02d}",
         "input": {"invoice_text": render_text(row)},
@@ -337,10 +453,10 @@ def to_task(row: dict[str, Any], failures: list[str]) -> dict[str, Any]:
             "currency": row["currency"],
             "total": total_cents(row["inv_lines"]) / 100,
             "decision": decision,
-            "rule": row["rule"],
+            "rule": failures[0] if failures else None,
         },
         "split": row["split"],
-        "tags": tags + row["tags"],
+        "tags": tags + [t for t in row["tags"] if t not in tags],
     }
 
 
@@ -349,27 +465,40 @@ def verify(tasks: list[dict], rows: list[dict], pos, receipts, posted) -> None:
     counts = {s: sum(1 for t in tasks if t["split"] == s) for s in ("train", "search", "holdout")}
     assert counts == {"train": N_TRAIN, "search": N_SEARCH, "holdout": N_HOLDOUT}, counts
     messy = [t for t in tasks if "messy" in t["tags"]]
-    assert len(messy) == 12, len(messy)
+    traps = [t for t in tasks if "trap" in t["tags"]]
+    assert len(messy) == 18, len(messy)  # 12 v1 rules + 6 escalate traps
+    assert len(traps) == 6, len(traps)  # approve traps
     by_rule: dict[str, int] = {}
-    for task in messy:
-        by_rule[task["expected"]["rule"]] = by_rule.get(task["expected"]["rule"], 0) + 1
+    for row in rows:
+        if row["rule"]:
+            by_rule[row["rule"]] = by_rule.get(row["rule"], 0) + 1
     assert by_rule == {
         "duplicate_invoice": 3,
         "currency_mismatch": 3,
         "missing_po": 2,
         "tolerance_breach": 2,
         "missing_receipt": 2,
+        "total_match_breach": 4,
+        "short_receipt": 2,
+        "similar_number": 4,
+        "symbol_currency": 2,
     }, by_rule
     for split, rules in MESSY_BY_SPLIT.items():
-        got = sorted(t["expected"]["rule"] for t in messy if t["split"] == split)
+        got = sorted(r["rule"] for r in rows if r["split"] == split and r["rule"])
         assert got == sorted(rules), (split, got)
     assert len({t["id"] for t in tasks}) == N_TASKS
     for row, task in zip(rows, tasks):
         failures = failing_rules(row, pos, receipts, posted)
-        expected = [row["rule"]] if row["rule"] else []
+        if row["rule"] and row["rule"] not in APPROVE_TRAPS:
+            expected = [ORACLE_RULE[row["rule"]]]
+        else:
+            expected = []
         assert failures == expected, (task["id"], failures, expected)
         assert task["expected"]["decision"] == ("escalate" if expected else "approve")
         check_deviations(row)
+    # every approve trap really is payable, and every escalate trap really is not
+    for task in traps:
+        assert task["expected"]["decision"] == "approve", task["id"]
 
 
 def main() -> None:

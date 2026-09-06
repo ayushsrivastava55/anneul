@@ -1,0 +1,41 @@
+id: cand-01-add_escalation_node-i1
+topology: single
+step_budget: 13
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: cheap
+  system_prompt_ref: anneal/airline/executor@v9
+  tools:
+  - calculate
+  - get_reservation_details
+  - get_user_details
+  - list_all_airports
+  - search_direct_flight
+  - search_onestop_flight
+  - transfer_to_human_agents
+  - book_reservation
+  - cancel_reservation
+  - send_certificate
+  - update_reservation_baggages
+  - update_reservation_flights
+  - update_reservation_passengers
+  max_steps: 12
+  schema_ref: null
+- name: escalate
+  role: escalate
+  model_tier: cheap
+  system_prompt_ref: anneal/airline/escalate@v3
+  tools: []
+  max_steps: 1
+  schema_ref: null
+lineage:
+  parent: cand-01
+  iteration: 2
+  operator: add_escalation_node
+  ledger_issue: L-0002
+tool_overrides: {}

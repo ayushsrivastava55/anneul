@@ -1,0 +1,53 @@
+[
+  {
+    "id": "L-0001",
+    "class": "loop_or_timeout",
+    "node": "executor",
+    "count": 10,
+    "evidence": [
+      "23389e2cfa87810267a91ee981719029",
+      "ca1af7c77d2200ada4d19b380c7e8c8c",
+      "9bc9e525ab7f1da36d4edf47762943ce",
+      "04c654ed04f830203d84dcb76af2e6c4",
+      "a8a4bf58024ee68b3ef60f7bd90c11ff"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "add_step_budget_and_critic",
+      "switch_topology"
+    ],
+    "fallback": false,
+    "confidence": 1.0,
+    "confidence_n": 10
+  },
+  {
+    "id": "L-0002",
+    "class": "missing_capability",
+    "node": "executor",
+    "count": 5,
+    "evidence": [
+      "386943c7b3e55dafe96ee82a858036f7",
+      "62509b0c1f890f32eb33efacefe6caa0",
+      "fb428bfe2c73f9f46eef9f3882f55901"
+    ],
+    "status": "open",
+    "operators_tried": [],
+    "fallback": false,
+    "confidence": 0.85,
+    "confidence_n": 5
+  },
+  {
+    "id": "L-0003",
+    "class": "missing_capability",
+    "node": "planner",
+    "count": 1,
+    "evidence": [
+      "fb428bfe2c73f9f46eef9f3882f55901"
+    ],
+    "status": "open",
+    "operators_tried": [],
+    "fallback": false,
+    "confidence": 0.85,
+    "confidence_n": 1
+  }
+]

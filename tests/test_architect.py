@@ -105,6 +105,20 @@ def test_node_tiers_and_tools(domain: FakeDomain, tmp_path: Path) -> None:
             assert node.tools == (all_tools if node.role == "executor" else [])
 
 
+def test_tier_cap_lowers_strong_defaults_and_leaves_weaker_ones_alone(
+    domain: FakeDomain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ANNEAL_TIER_CAP=cheap turns frontier/mid defaults into cheap; cheap stays cheap."""
+    monkeypatch.setenv(architect.TIER_CAP_ENV, "cheap")
+    specs = architect.propose(domain, 3, client=FakeClient(["prompt"]), prompts_root=tmp_path)
+    for s in specs:
+        for node in s.nodes:
+            assert node.model_tier == "cheap"
+    # garbage cap is ignored, defaults return
+    monkeypatch.setenv(architect.TIER_CAP_ENV, "not-a-tier")
+    assert architect.node_tier("planner") == "frontier"
+
+
 def test_prompts_written_once_per_node(domain: FakeDomain, tmp_path: Path) -> None:
     client = FakeClient([GOOD])
     specs = architect.propose(domain, 3, client=client, prompts_root=tmp_path)

@@ -1,0 +1,30 @@
+id: cand-01-switch_topology-i1
+topology: planner_executor
+step_budget: 14
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: flash
+  system_prompt_ref: anneal/bugfix/executor@v6
+  tools:
+  - read_file
+  - write_file
+  max_steps: 12
+  schema_ref: null
+- name: planner
+  role: planner
+  model_tier: mid
+  system_prompt_ref: anneal/bugfix/planner@v10
+  tools: []
+  max_steps: 2
+  schema_ref: null
+lineage:
+  parent: cand-01
+  iteration: 3
+  operator: switch_topology
+  ledger_issue: L-0002
+tool_overrides: {}

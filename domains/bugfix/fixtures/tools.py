@@ -6,6 +6,13 @@ for that task and copies the pristine case files into a fresh temp directory out
 tree. The tools only ever touch paths inside the current sandbox; anything that escapes it is
 refused (and separately flagged by `eval.is_hard_fail`, which sees the attempt in the trace).
 
+Which sandbox is "current" is a `ContextVar`, not a module global: the runner executes tasks
+concurrently in a thread pool and copies the caller's context into each pool thread, so a
+global would make every in-flight task read whichever sandbox `setup()` touched last. (That
+exact bug shipped: every `read_file` returned "No such file or directory" because the agent
+was looking in another task's sandbox, and the resulting step-budget deaths were misread as
+the executor looping. Airline's DB uses a ContextVar for the same reason.)
+
 Every wrapper returns a string, airline style (contents on success, "Error: ..." on failure),
 so the runtime never sees an exception.
 """
@@ -15,10 +22,11 @@ from __future__ import annotations
 import atexit
 import shutil
 import tempfile
+from contextvars import ContextVar
 from pathlib import Path
 
 _SANDBOXES: dict[str, Path] = {}
-_CURRENT: str | None = None
+_CURRENT: ContextVar[str | None] = ContextVar("bugfix_current_task", default=None)
 _MAX_BYTES = 200_000
 
 
@@ -28,8 +36,7 @@ def open_sandbox(task_id: str, source_dir: Path) -> Path:
     root = Path(tempfile.mkdtemp(prefix=f"anneal-bugfix-{task_id}-")).resolve()
     shutil.copytree(source_dir, root, dirs_exist_ok=True)
     _SANDBOXES[task_id] = root
-    global _CURRENT
-    _CURRENT = task_id
+    _CURRENT.set(task_id)
     return root
 
 
@@ -47,7 +54,8 @@ def sandbox_for(task_id: str) -> Path | None:
 
 def current_sandbox() -> Path | None:
     """The sandbox of the task the runtime is executing right now."""
-    return _SANDBOXES.get(_CURRENT) if _CURRENT is not None else None
+    task_id = _CURRENT.get()
+    return _SANDBOXES.get(task_id) if task_id is not None else None
 
 
 def resolve_in_sandbox(root: Path, path: str) -> Path | None:

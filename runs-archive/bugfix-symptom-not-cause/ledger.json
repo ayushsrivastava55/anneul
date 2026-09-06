@@ -1,0 +1,24 @@
+[
+  {
+    "id": "L-0001",
+    "class": "loop_or_timeout",
+    "node": "executor",
+    "count": 12,
+    "evidence": [
+      "f522452089fed6e13e3310af879a01df",
+      "be341c4231a694101e89177dd7f0dd41",
+      "66abb84c93106682743e8afd27740228",
+      "7b142032cdf610dee51569a9dabf15de",
+      "a87311ed5686f4e00b0388a8723a1d6c",
+      "b27348a8ef359d6709ea73c7e68960f4"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "add_step_budget_and_critic",
+      "switch_topology"
+    ],
+    "fallback": false,
+    "confidence": 1.0,
+    "confidence_n": 12
+  }
+]

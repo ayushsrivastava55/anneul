@@ -1,0 +1,80 @@
+{
+  "alpha": 0.1,
+  "candidate": {
+    "candidate_id": "cand-01-rewrite_tool_desc-i1",
+    "gen_gap": 0.20000000000000007,
+    "hard_fails": 0,
+    "mean_score": 0.7,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3": {
+      "bugfix_04": true,
+      "bugfix_08": false,
+      "bugfix_14": false,
+      "bugfix_18": false,
+      "bugfix_21": false,
+      "bugfix_24": false,
+      "bugfix_26": false,
+      "bugfix_29": false,
+      "bugfix_32": false,
+      "bugfix_35": false
+    },
+    "pass3_rate": 0.1,
+    "passes": {
+      "bugfix_04": 3,
+      "bugfix_08": 2,
+      "bugfix_14": 2,
+      "bugfix_18": 2,
+      "bugfix_21": 2,
+      "bugfix_24": 2,
+      "bugfix_26": 2,
+      "bugfix_29": 2,
+      "bugfix_32": 2,
+      "bugfix_35": 2
+    }
+  },
+  "decision": "reject",
+  "domain": "bugfix",
+  "incumbent": {
+    "candidate_id": "cand-01",
+    "gen_gap": null,
+    "hard_fails": 0,
+    "mean_score": 1.0,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3": {
+      "bugfix_04": true,
+      "bugfix_08": true,
+      "bugfix_14": true,
+      "bugfix_18": true,
+      "bugfix_21": true,
+      "bugfix_24": true,
+      "bugfix_26": true,
+      "bugfix_29": true,
+      "bugfix_32": true,
+      "bugfix_35": true
+    },
+    "pass3_rate": 1,
+    "passes": {
+      "bugfix_04": 3,
+      "bugfix_08": 3,
+      "bugfix_14": 3,
+      "bugfix_18": 3,
+      "bugfix_21": 3,
+      "bugfix_24": 3,
+      "bugfix_26": 3,
+      "bugfix_29": 3,
+      "bugfix_32": 3,
+      "bugfix_35": 3
+    }
+  },
+  "iteration": 1,
+  "losses": 9,
+  "min_discordant_to_promote": 4,
+  "p": 1.0,
+  "path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/bugfix/1/gate.json",
+  "promoted": false,
+  "reason": "pass3_rate 0.100 < incumbent 1.000",
+  "underpowered": false,
+  "wins": 0
+}

@@ -38,7 +38,7 @@ METRICS: tuple[tuple[str, str, str], ...] = (
     ("p95_latency_ms", "p95 latency (ms)", "{:.0f}"),
 )
 
-LEDGER_COLUMNS = ("id", "class", "node", "count", "status", "operators_tried")
+LEDGER_COLUMNS = ("domain", "id", "class", "node", "count", "status", "operators_tried")
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,14 @@ def _first(*values: float | None) -> float | None:
 
 
 def _read_json(path: Path) -> Any | None:
-    """Parse ``path``; malformed or unreadable JSON is skipped with a log line, never raised."""
+    """Parse ``path``; malformed or unreadable JSON is skipped with a log line, never raised.
+
+    A file that simply is not there yet is not a fault: every domain lacks a pareto.json
+    until the downshift stage runs for it, and warning about that on every page render makes
+    a normal dashboard look broken.
+    """
+    if not path.exists():
+        return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -159,6 +166,26 @@ def load_ledger(ledger_path: Path | str) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         return []
     return [row for row in data if isinstance(row, dict)]
+
+
+def load_ledgers(runs_dir: Path | str, ledger_path: Path | str) -> list[dict[str, Any]]:
+    """Every issue the optimiser knows about, stamped with its domain.
+
+    The run loop writes one ledger per domain at ``runs/<domain>/ledger.json`` (issue ids
+    are keyed on (class, node) and node names repeat across domains), so a dashboard that
+    reads only the ``--ledger`` file shows an empty table against a default run. An
+    explicit ``--ledger`` file still wins when it exists; otherwise the per-domain ledgers
+    under ``runs_dir`` are aggregated.
+    """
+    explicit = Path(ledger_path)
+    if explicit.is_file():
+        return [{"domain": explicit.parent.name, **row} for row in load_ledger(explicit)]
+    root = Path(runs_dir)
+    issues: list[dict[str, Any]] = []
+    if root.is_dir():
+        for path in sorted(root.glob("*/ledger.json")):
+            issues.extend({"domain": path.parent.name, **row} for row in load_ledger(path))
+    return issues
 
 
 def _pareto_point(row: dict[str, Any], front: Any) -> Point:
@@ -398,7 +425,7 @@ def render_page(app_state: AppState) -> str:
     fragments = (
         render_curves(summaries),
         render_pareto(load_pareto(app_state.runs_dir)),
-        render_ledger(load_ledger(app_state.ledger_path)),
+        render_ledger(load_ledgers(app_state.runs_dir, app_state.ledger_path)),
     )
     poll = 'hx-trigger="every 10s" hx-swap="outerHTML"'
     return (
@@ -428,13 +455,21 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
     def index() -> str:
         return render_page(state)
 
+    @app.get("/landing", response_class=HTMLResponse)
+    def landing() -> str:
+        """The product landing page (also openable directly from landing/index.html)."""
+        path = Path(__file__).resolve().parent.parent / "landing" / "index.html"
+        if not path.exists():
+            return "<html><body><p>landing/index.html is missing; see the repo.</p></body></html>"
+        return path.read_text(encoding="utf-8")
+
     @app.get("/fragments/curves", response_class=HTMLResponse)
     def curves() -> str:
         return render_curves(load_summaries(state.runs_dir))
 
     @app.get("/fragments/ledger", response_class=HTMLResponse)
     def ledger() -> str:
-        return render_ledger(load_ledger(state.ledger_path))
+        return render_ledger(load_ledgers(state.runs_dir, state.ledger_path))
 
     @app.get("/fragments/pareto", response_class=HTMLResponse)
     def pareto() -> str:

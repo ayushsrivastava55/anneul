@@ -78,23 +78,26 @@ def _neatlogs_enabled() -> bool:
 
 
 def _sync_to_neatlogs(name: str, version: int, text: str, label: str) -> None:
-    """Create the prompt on first save, else add a version; never raises."""
+    """Push ``text`` as the next registry version of ``name``; never raises.
+
+    ``create_prompt`` (POST /api/managed-prompts) creates a *version* -- calling it again
+    for an existing name appends v2, v3, ... (verified live, 2026-09-06). The nominally
+    correct ``save_as_version`` endpoint (POST /api/prompt-playground/save-as-version)
+    401s under an SDK API key even though the same key can create prompts, so it is
+    deliberately not used.
+    """
     if not _neatlogs_enabled():
         return
     try:
         import neatlogs
 
-        message = f"anneal: {name} v{version}"
-        try:
-            neatlogs.get_prompt(name)
-        except neatlogs.PromptNotFoundError:
-            neatlogs.create_prompt(
-                name=name, prompt=text, type="text", labels=[label], commit_message=message
-            )
-        else:
-            neatlogs.save_as_version(
-                prompt_name=name, content=text, labels=[label], commit_message=message
-            )
+        neatlogs.create_prompt(
+            name=name,
+            prompt=text,
+            type="text",
+            labels=[label],
+            commit_message=f"anneal: {name} v{version}",
+        )
     except Exception as exc:  # noqa: BLE001 - registry sync is best-effort
         logger.warning("neatlogs prompt sync failed for %s v%s: %s", name, version, exc)
 

@@ -1,0 +1,24 @@
+id: cand-01-synthesize_tool-i1
+topology: single
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: flash
+  system_prompt_ref: anneal/bugfix/executor@v6
+  tools:
+  - read_file
+  - write_file
+  - run_pytest
+  max_steps: 12
+  schema_ref: null
+lineage:
+  parent: cand-01
+  iteration: 0
+  operator: synthesize_tool
+  ledger_issue: L-0001
+tool_overrides: {}

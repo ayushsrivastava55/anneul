@@ -1,47 +1,57 @@
 # Model tiers used by Architect (initial assignment) and Anneal (downshift order).
-# This is the ONLY place model names live.
+# Keep this the ONLY place model names live.
 #
-# PROVENANCE OF THE NUMBERS BELOW — read before quoting any cost figure.
+# An all-local Ollama ladder (qwen2.5 3b/1.5b/0.5b, provider `ollama` below) also works if
+# no keys are available - see git history (fork lineage) for that exact config with price
+# provenance. This file ships the live five-tier ladder because every provider in it was
+# exercised end to end during the hackathon.
 #
-# Inference runs locally through Ollama's OpenAI-compatible endpoint, so the real
-# monetary cost of a run on this machine is $0. Tokens and latency in runs/*.jsonl are
-# genuinely MEASURED. The USD figures here are a documented reference rate used to turn
-# measured tokens into a comparable cost, so the anneal stage has a meaningful axis to
-# optimise. Each rate carries its source:
+# All three tiers are Anthropic, reached through its OpenAI-SDK compatibility layer
+# (FRONTIER_BASE_URL=https://api.anthropic.com/v1/), so anneal/llm.py needs no code change.
 #
-#   published — the provider's listed serverless rate for that exact model.
-#   scaled    — no public serverless rate exists for this size; scaled from the 7B
-#               published rate by parameter ratio. This is an ASSUMPTION, not a quote.
-#
-# Source: Together AI pricing page, Qwen2.5 7B Instruct Turbo at $0.30 / $0.30 per 1M
-# tokens (checked 6 Sep 2026, https://www.together.ai/pricing).
-#
-# If you swap in a hosted provider, replace these with that provider's real rates and
-# change price_source to "published".
-# Hardware note: this machine has 8.6 GB of RAM. A 7B model loads but spills to CPU and
-# returns empty completions once other models are resident, so the ladder is sized to fit
-# entirely in memory (3.3 GB across all three). One Qwen2.5 family, three sizes, so the
-# downshift compares like with like.
+# Prices are USD per 1M tokens, base input / output, from platform.claude.com/docs pricing
+# checked 6 Sep 2026. Note Sonnet 5 moved from $2/$10 to $3/$15 on 1 Sep 2026; the current
+# rate is used here. These numbers are what the reported $/task column is computed from, so
+# re-check them if the run happens after a price change.
 tiers:
   frontier:
-    provider: ollama
-    model: qwen2.5:3b-instruct
-    price_in: 0.13
-    price_out: 0.13
-    price_source: scaled           # 3/7 of the 7B published rate; no public rate at this size
+    provider: frontier
+    model: claude-opus-5
+    price_in: 5.0
+    price_out: 25.0
   mid:
-    provider: ollama
-    model: qwen2.5:1.5b-instruct
-    price_in: 0.06
-    price_out: 0.06
-    price_source: scaled           # 1.5/7 of the 7B published rate
+    provider: frontier
+    model: claude-sonnet-5
+    price_in: 3.0
+    price_out: 15.0
   cheap:
-    provider: ollama
-    model: qwen2.5:0.5b-instruct
-    price_in: 0.02
-    price_out: 0.02
-    price_source: scaled           # 0.5/7 of the 7B published rate
-downshift_order: [frontier, mid, cheap]
+    provider: frontier
+    model: claude-haiku-4-5-20251001
+    price_in: 1.0
+    price_out: 5.0
+  # --- sponsor-backed floor of the ladder -------------------------------------------------
+  # Architect never assigns these (architect.NODE_TIER only names frontier/mid/cheap); the
+  # downshift walks into them. Both are reasoning models that return content=None on a
+  # tool-call turn, which is fine: llm.complete drops None via model_dump(exclude_none=True)
+  # and we never set max_tokens, so reasoning cannot starve the visible answer.
+  #
+  # glm-4-7-flash is FREE on our TensorMux hackathon allocation (50M tokens). Pricing it at
+  # $0 would make it trivially dominate every Pareto front, so we price it at the third-party
+  # market rate for the same weights ($0.06/$0.40, Venice/OpenRouter/Cloudflare all agree,
+  # checked 6 Sep 2026). Reported $/task is therefore what this config WOULD cost anyone, not
+  # what we were charged. Said plainly in the README.
+  flash:
+    provider: tensormux
+    model: glm-4-7-flash
+    price_in: 0.06
+    price_out: 0.40
+  # gpt-5-nano via the AI Grants India key. Official OpenAI list price, checked 6 Sep 2026.
+  nano:
+    provider: aigi
+    model: gpt-5-nano
+    price_in: 0.05
+    price_out: 0.40
+downshift_order: [frontier, mid, cheap, flash, nano]
 providers:
   ollama:    {base_url_env: OLLAMA_BASE_URL,    api_key_env: OLLAMA_API_KEY}
   tensormux: {base_url_env: TENSORMUX_BASE_URL, api_key_env: TENSORMUX_API_KEY}

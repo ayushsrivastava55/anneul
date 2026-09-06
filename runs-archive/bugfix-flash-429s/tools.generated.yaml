@@ -1,0 +1,25 @@
+# Tools synthesised by anneal.mutate.synthesize_tool via an AO worker session.
+# Written by the machine; the human-written tools.yaml is never edited here.
+tools:
+- name: run_pytest
+  description: Runs pytest on a given test file (or directory) within the working
+    directory and returns whether the tests passed along with the captured stdout/stderr
+    output. Use this after editing a module to verify that the fix makes the target
+    test pass without needing manual reasoning about test results.
+  args:
+    type: object
+    properties:
+      path:
+        type: string
+        description: Relative path to the test file or directory to run, e.g. 'tests/test_bugfix_01.py'.
+      extra_args:
+        type: array
+        items:
+          type: string
+        description: Optional additional command-line arguments to pass to pytest,
+          e.g. ['-v'].
+        default: []
+    required:
+    - path
+  impl: python:domains.bugfix.generated_tools.run_pytest.run_pytest
+  mutates: false

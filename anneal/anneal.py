@@ -219,7 +219,7 @@ def downshift(
     spec: HarnessSpec,
     domain: Any,
     *,
-    peak_score: float,
+    peak_score: float | None = None,
     runs_dir: Path | str,
     iteration: int,
     run: RunFn | None = None,
@@ -232,6 +232,11 @@ def downshift(
     A configuration is kept when ``mean_score >= 0.95 * peak_score`` and its hard-fail count
     does not exceed that of the configuration it would replace. ``peak_score`` is the score
     the incumbent earned before annealing (the caller's gate result).
+
+    ``peak_score=None`` falls back to the score this spec earns in its own baseline
+    evaluation below. That is the case for a domain the optimiser never gated, e.g. one that
+    saturated at iteration 0 with no failures to diagnose: there is no earlier gate result to
+    quote, but the config still has a measured bar to hold while it gets cheaper.
     """
     run = run if run is not None else functools.partial(runner.run, runs_dir=runs_dir)
     order = downshift_order(models_path)
@@ -250,6 +255,8 @@ def downshift(
     base = ev(winner, kept=True)
     points = [base]
     best = base
+    if peak_score is None:
+        peak_score = base.score
 
     for name in node_order(spec, prior_rows):
         while (tier := next_tier(node_tiers(winner)[name], order)) is not None:
