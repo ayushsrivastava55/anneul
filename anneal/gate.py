@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -46,6 +46,8 @@ class SpecMetrics:
     pass3: dict[str, bool]
     n_tasks: int
     n_runs: int
+    passes: dict[str, int] = dataclasses.field(default_factory=dict)
+    """Per-task count of runs that cleared the threshold. The paired test's unit."""
 
 
 @dataclass(frozen=True)
@@ -97,13 +99,29 @@ class GateResult:
 # --- math -------------------------------------------------------------------------------
 
 
-def pass3_by_task(runs: list[Rows], threshold: float) -> dict[str, bool]:
-    """``pass3[task] = all(score >= threshold)`` across every run the task appears in."""
+def _scores_by_task(runs: list[Rows]) -> dict[str, list[float]]:
     scores: dict[str, list[float]] = {}
     for rows in runs:
         for row in rows:
             scores.setdefault(str(row["task_id"]), []).append(float(row["score"]))
-    return {task: all(s >= threshold for s in ss) for task, ss in scores.items()}
+    return scores
+
+
+def pass3_by_task(runs: list[Rows], threshold: float) -> dict[str, bool]:
+    """``pass3[task] = all(score >= threshold)`` across every run the task appears in."""
+    return {t: all(s >= threshold for s in ss) for t, ss in _scores_by_task(runs).items()}
+
+
+def passes_by_task(runs: list[Rows], threshold: float) -> dict[str, int]:
+    """``passes[task]`` = how many of the repeated runs cleared ``threshold``.
+
+    The paired test's unit. pass^3 stays the reported reliability metric, but as the
+    statistic being tested it is nearly blind: it is 1 only on a clean sweep, so a task
+    moving 0/3 -> 2/3 registers as no change and contributes no discordant pair. That is
+    literally what happened on bugfix, where candidate and incumbent both sat at a pass^3
+    rate of 0.1 and the test saw zero pairs and returned p=1.000 twice in a row.
+    """
+    return {t: sum(1 for s in ss if s >= threshold) for t, ss in _scores_by_task(runs).items()}
 
 
 def spec_metrics(
@@ -125,6 +143,7 @@ def spec_metrics(
         pass3=pass3,
         n_tasks=len(pass3),
         n_runs=len(runs),
+        passes=passes_by_task(runs, threshold),
     )
 
 
@@ -137,8 +156,10 @@ def _min_discordant_to_promote(alpha: float = 0.0) -> int:
     return n
 
 
-def paired_test(candidate: dict[str, bool], incumbent: dict[str, bool]) -> PairedResult:
-    """Exact ONE-sided binomial test on discordant per-task pass3 pairs (McNemar exact).
+def paired_test(
+    candidate: Mapping[str, bool | int], incumbent: Mapping[str, bool | int]
+) -> PairedResult:
+    """Exact ONE-sided sign test on per-task discordant pairs.
 
     One-sided is the correct test for a promotion gate: the question is only ever "is the
     candidate better", and ``decide`` has already refused anything with a worse pass3 rate
@@ -148,13 +169,15 @@ def paired_test(candidate: dict[str, bool], incumbent: dict[str, bool]) -> Paire
     loosening of the standard -- but it does double the per-test false-promotion rate to
     alpha, which is why we report that rate rather than bury it.
 
-    This is still a blunt instrument, and the honest reason is in the statistic, not the
-    test: collapsing 3 runs to a per-task pass^3 boolean throws away partial movement, so a
-    task going 0/3 -> 2/3 registers as no change and contributes no discordant pair at all.
+    Takes per-task pass COUNTS (see ``passes_by_task``); a task is a win when the candidate
+    cleared the threshold on strictly more runs than the incumbent. Booleans still work and
+    reduce to the old McNemar-exact behaviour, which keeps the existing tests meaningful.
+    Counting partial movement is where most of the recovered power comes from: it is the
+    difference between bugfix contributing zero pairs and contributing real ones.
     """
     tasks = set(candidate) | set(incumbent)
-    wins = sum(1 for t in tasks if candidate.get(t, False) and not incumbent.get(t, False))
-    losses = sum(1 for t in tasks if incumbent.get(t, False) and not candidate.get(t, False))
+    wins = sum(1 for t in tasks if int(candidate.get(t, 0)) > int(incumbent.get(t, 0)))
+    losses = sum(1 for t in tasks if int(incumbent.get(t, 0)) > int(candidate.get(t, 0)))
     floor = _min_discordant_to_promote()
     if wins + losses == 0:
         return PairedResult(wins, losses, 1.0, floor)
@@ -269,7 +292,8 @@ def gate(
     cand_runs = run_holdout(candidate, domain, iteration, run, n)
     inc = spec_metrics(inc_runs, threshold)
     cand = spec_metrics(cand_runs, threshold, search_rows)
-    pair = paired_test(cand.pass3, inc.pass3)
+    # Pass counts, not pass^3 booleans: partial movement is evidence and must count.
+    pair = paired_test(cand.passes or cand.pass3, inc.passes or inc.pass3)
     promoted, reason = decide(cand, inc, pair.p)
     path = Path(runs_dir) / domain.name / str(iteration) / "gate.json"
     result = GateResult(

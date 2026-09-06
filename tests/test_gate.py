@@ -117,6 +117,41 @@ def test_a_lone_clean_win_is_reported_as_underpowered_not_as_no_effect():
     assert not gate.underpowered(many)
 
 
+def test_pass_counts_see_partial_movement_that_pass3_booleans_hide():
+    """The bugfix regression, with its real shape: 3 runs, threshold 1.0, 4 tasks that moved.
+
+    Under pass^3 booleans none of these tasks changed state, so the test saw zero discordant
+    pairs and reported p=1.000 -- indistinguishable from "we have no data". Replayed on the
+    archived bugfix rows, this is exactly what happened twice, and the pass-count statistic
+    recovers 2-2 and 3-1 respectively. It must recover the pairs WITHOUT promoting: the
+    candidate here is a wash, and a wash has to stay rejected.
+    """
+    runs_inc = [
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 1.0}],
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 0.0}],
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 0.0}],
+    ]
+    runs_cand = [
+        [{"task_id": "a", "score": 1.0}, {"task_id": "b", "score": 0.0}],
+        [{"task_id": "a", "score": 1.0}, {"task_id": "b", "score": 0.0}],
+        [{"task_id": "a", "score": 0.0}, {"task_id": "b", "score": 0.0}],
+    ]
+    # Neither task is a clean sweep either side, so pass^3 calls both False: no pairs at all.
+    assert gate.pass3_by_task(runs_cand, 1.0) == {"a": False, "b": False}
+    assert gate.pass3_by_task(runs_inc, 1.0) == {"a": False, "b": False}
+    blind = gate.paired_test(gate.pass3_by_task(runs_cand, 1.0), gate.pass3_by_task(runs_inc, 1.0))
+    assert (blind.wins, blind.losses, blind.p) == (0, 0, 1.0)
+
+    # Pass counts see a moved 0->2 and b moved 1->0: one win, one loss. A wash, but visible.
+    assert gate.passes_by_task(runs_cand, 1.0) == {"a": 2, "b": 0}
+    assert gate.passes_by_task(runs_inc, 1.0) == {"a": 0, "b": 1}
+    seeing = gate.paired_test(
+        gate.passes_by_task(runs_cand, 1.0), gate.passes_by_task(runs_inc, 1.0)
+    )
+    assert (seeing.wins, seeing.losses) == (1, 1)
+    assert seeing.p >= gate.ALPHA, "a wash must still be rejected"
+
+
 def test_min_discordant_to_promote_matches_the_exact_binomial_floor():
     floor = gate._min_discordant_to_promote()
     assert 0.5**floor < gate.ALPHA <= 0.5 ** (floor - 1)
