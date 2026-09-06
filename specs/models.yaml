@@ -18,25 +18,29 @@
 #
 # If you swap in a hosted provider, replace these with that provider's real rates and
 # change price_source to "published".
+# Hardware note: this machine has 8.6 GB of RAM. A 7B model loads but spills to CPU and
+# returns empty completions once other models are resident, so the ladder is sized to fit
+# entirely in memory (3.3 GB across all three). One Qwen2.5 family, three sizes, so the
+# downshift compares like with like.
 tiers:
   frontier:
-    provider: ollama
-    model: qwen2.5:7b-instruct
-    price_in: 0.30
-    price_out: 0.30
-    price_source: published        # Together AI, Qwen2.5 7B Instruct Turbo
-  mid:
     provider: ollama
     model: qwen2.5:3b-instruct
     price_in: 0.13
     price_out: 0.13
-    price_source: scaled           # 3/7 of the 7B rate; no public rate for this size
-  cheap:
+    price_source: scaled           # 3/7 of the 7B published rate; no public rate at this size
+  mid:
     provider: ollama
     model: qwen2.5:1.5b-instruct
     price_in: 0.06
     price_out: 0.06
-    price_source: scaled           # 1.5/7 of the 7B rate; no public rate for this size
+    price_source: scaled           # 1.5/7 of the 7B published rate
+  cheap:
+    provider: ollama
+    model: qwen2.5:0.5b-instruct
+    price_in: 0.02
+    price_out: 0.02
+    price_source: scaled           # 0.5/7 of the 7B published rate
 downshift_order: [frontier, mid, cheap]
 providers:
   ollama:    {base_url_env: OLLAMA_BASE_URL,    api_key_env: OLLAMA_API_KEY}
