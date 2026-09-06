@@ -81,6 +81,8 @@ class GateResult:
     promoted: bool
     reason: str
     path: Path
+    escalated: bool = False
+    """True when the gate bought a second block of runs before deciding (see ``gate``)."""
 
     def to_dict(self) -> dict[str, Any]:
         data = dataclasses.asdict(self)
@@ -233,14 +235,19 @@ def _default_run() -> RunFn:
 
 
 def run_holdout(
-    spec: HarnessSpec, domain: Any, iteration: int, run: RunFn, n_runs: int = DEFAULT_RUNS
+    spec: HarnessSpec,
+    domain: Any,
+    iteration: int,
+    run: RunFn,
+    n_runs: int = DEFAULT_RUNS,
+    first_seed: int = 0,
 ) -> list[Rows]:
-    """Run ``spec`` ``n_runs`` times on holdout with seeds 0..n-1; one row list per run."""
+    """Run ``spec`` ``n_runs`` times on holdout, seeds ``first_seed``..; one row list per run."""
     runs: list[Rows] = []
     with tracing.run_context(
         candidate_id=spec.id, iteration=iteration, domain=domain.name, split=HOLDOUT_SPLIT
     ):
-        for seed in range(n_runs):
+        for seed in range(first_seed, first_seed + n_runs):
             runs.append(run(spec, domain, HOLDOUT_SPLIT, seed=seed, iteration=iteration))
     return runs
 
@@ -248,10 +255,18 @@ def run_holdout(
 def _incumbent_holdout(
     spec: HarnessSpec, domain: Any, iteration: int, run: RunFn, n_runs: int
 ) -> list[Rows]:
+    """The incumbent's first ``n_runs`` holdout runs, extending the cache when short.
+
+    The cache is a growing list per (domain, iteration, spec): an escalated gate asks for
+    more runs than the base block, and later candidates at the same iteration reuse both.
+    """
     key = (domain.name, iteration, spec.id)
-    if key not in _incumbent_cache:
-        _incumbent_cache[key] = run_holdout(spec, domain, iteration, run, n_runs)
-    return _incumbent_cache[key]
+    have = _incumbent_cache.setdefault(key, [])
+    if len(have) < n_runs:
+        have.extend(
+            run_holdout(spec, domain, iteration, run, n_runs - len(have), first_seed=len(have))
+        )
+    return have[:n_runs]
 
 
 def promote_prompts(spec: HarnessSpec) -> list[str]:
@@ -278,6 +293,24 @@ def _n_runs() -> int:
     return int(raw) if raw else DEFAULT_RUNS
 
 
+def _escalation_enabled() -> bool:
+    """On unless ``ANNEAL_GATE_ESCALATION=0`` (tests and cost-capped runs turn it off)."""
+    raw = (env("ANNEAL_GATE_ESCALATION") or "").strip()
+    return raw not in {"0", "false", "off"}
+
+
+def _should_escalate(promoted: bool, reason: str, pair: PairedResult) -> bool:
+    """Buy a second block only when the p-value is the sole objection and the sign is right.
+
+    A pass^3 or hard-fail regression is a verdict, not a power problem; equal or losing
+    discordant counts give no reason to expect more data to flip the sign. What remains is
+    a candidate that is strictly ahead on discordant tasks and failed only ``p < alpha``.
+    """
+    if promoted or not _escalation_enabled():
+        return False
+    return reason.startswith("p ") and pair.wins > pair.losses
+
+
 def gate(
     incumbent: HarnessSpec,
     candidate: HarnessSpec,
@@ -300,10 +333,28 @@ def gate(
     # Pass counts, not pass^3 booleans: partial movement is evidence and must count.
     pair = paired_test(cand.passes or cand.pass3, inc.passes or inc.pass3)
     promoted, reason = decide(cand, inc, pair.p)
+    escalated = False
+    if _should_escalate(promoted, reason, pair):
+        # The candidate is ahead but the block was too small for any verdict. Rejecting now
+        # publishes "no effect" about a sample size, not about the change - so the gate buys
+        # one more block of runs (seeds n..2n-1, incumbent extended too) and re-decides on
+        # all 2n. One planned extension is a two-stage group-sequential design; the worst
+        # case type-I inflation is bounded and it is disclosed per-gate as `escalated`.
+        escalated = True
+        log.info(json.dumps({
+            "event": "gate_escalated", "wins": pair.wins, "losses": pair.losses, "p": pair.p,
+        }))
+        inc_runs = _incumbent_holdout(incumbent, domain, iteration, run, 2 * n)
+        cand_runs += run_holdout(candidate, domain, iteration, run, n, first_seed=n)
+        inc = spec_metrics(inc_runs, threshold)
+        cand = spec_metrics(cand_runs, threshold, search_rows)
+        pair = paired_test(cand.passes or cand.pass3, inc.passes or inc.pass3)
+        promoted, reason = decide(cand, inc, pair.p)
     path = Path(runs_dir) / domain.name / str(iteration) / "gate.json"
     result = GateResult(
         domain=domain.name, iteration=iteration, incumbent=inc, candidate=cand,
         wins=pair.wins, losses=pair.losses, p=pair.p, promoted=promoted, reason=reason, path=path,
+        escalated=escalated,
     )
     if promoted:
         promote_prompts(candidate)

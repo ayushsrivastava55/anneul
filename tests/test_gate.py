@@ -233,6 +233,65 @@ def test_gate_promote_path_writes_gate_json_and_flips_labels(tmp_path: Path, mon
     assert sorted(c[2] for c in runner.calls if c[0] == "cand") == [0, 1, 2]
 
 
+def test_underpowered_but_winning_candidate_earns_a_second_block_and_promotes(
+    tmp_path: Path, monkeypatch
+):
+    """2-0 in the first block cannot clear alpha (floor is 4); the escalated gate can.
+
+    Six seeds are scripted around a flaky incumbent: in the first block only t1/t2 are
+    discordant (2-0, no verdict reachable), and the extension surfaces the incumbent's
+    flakiness on t3/t4, ending 4-0 with p=0.0625 < 0.1. The gate must buy the second
+    block itself, extend the incumbent too, and record `escalated`.
+    """
+    inc_scores = {
+        "t1": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "t2": [1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        "t3": [1.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+        "t4": [1.0, 1.0, 1.0, 1.0, 0.0, 1.0],
+    }
+    cand_scores = {t: [1.0] * 6 for t in inc_scores}
+    runner = FakeRunner({"inc": _rows(inc_scores), "cand": _rows(cand_scores)})
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=0, runs_dir=tmp_path, run=runner
+    )
+    assert result.escalated
+    assert result.promoted, result.reason
+    assert (result.wins, result.losses) == (4, 0)
+    assert result.p == pytest.approx(0.0625)
+    data = json.loads((tmp_path / "synthetic" / "0" / "gate.json").read_text())
+    assert data["escalated"] is True
+    # both specs ran seeds 0..5 on holdout
+    assert sorted(c[2] for c in runner.calls if c[0] == "cand") == [0, 1, 2, 3, 4, 5]
+    assert sorted(c[2] for c in runner.calls if c[0] == "inc") == [0, 1, 2, 3, 4, 5]
+
+
+def test_a_regression_rejection_never_escalates(tmp_path: Path, monkeypatch):
+    """pass^3 or hard-fail regressions are verdicts; more data is not bought for them."""
+    scen = _scenario()
+    scen["cand"], scen["inc"] = scen["inc"], scen["cand"]  # candidate is the worse one
+    runner = FakeRunner(scen)
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=0, runs_dir=tmp_path, run=runner
+    )
+    assert not result.promoted and not result.escalated
+    assert max(c[2] for c in runner.calls) == 2  # never went past the first block
+
+
+def test_escalation_can_be_disabled_by_env(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ANNEAL_GATE_ESCALATION", "0")
+    inc_scores = {"t1": [0.0] * 3, "t2": [0.0] * 3, "t3": [1.0] * 3, "t4": [1.0] * 3}
+    cand_scores = {"t1": [1.0] * 3, "t2": [1.0] * 3, "t3": [1.0] * 3, "t4": [1.0] * 3}
+    runner = FakeRunner({"inc": _rows(inc_scores), "cand": _rows(cand_scores)})
+    monkeypatch.setattr(gate, "promote_prompts", lambda spec: [])
+    result = gate.gate(
+        _spec("inc"), _spec("cand"), _domain(), iteration=0, runs_dir=tmp_path, run=runner
+    )
+    assert not result.promoted and not result.escalated
+    assert max(c[2] for c in runner.calls) == 2
+
+
 def test_gate_reject_does_not_flip_labels(tmp_path: Path, monkeypatch):
     scen = _scenario()
     scen["cand"], scen["inc"] = scen["inc"], scen["cand"]  # candidate is the worse one

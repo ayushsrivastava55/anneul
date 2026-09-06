@@ -1,0 +1,149 @@
+{
+  "budget_usd": 30.0,
+  "candidate": {
+    "candidate_id": "cand-02-add_escalation_node-i1",
+    "gen_gap": -0.09999999999999998,
+    "hard_fails": 13,
+    "mean_score": 0.6,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 0.6,
+    "passes": {
+      "airline-06": 0,
+      "airline-08": 0,
+      "airline-13": 3,
+      "airline-18": 3,
+      "airline-22": 0,
+      "airline-29": 3,
+      "airline-35": 3,
+      "airline-37": 3,
+      "airline-44": 3,
+      "airline-45": 0
+    }
+  },
+  "candidate_id": "cand-02-add_escalation_node-i1",
+  "cost_usd": 0.11722,
+  "decision": "reject",
+  "domain": "airline",
+  "domain_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/domains/airline",
+  "gate_path": "runs-learning-nano/airline/0/gate.json",
+  "gen_gap": -0.09999999999999998,
+  "hard_fails": 13,
+  "incumbent": {
+    "candidate_id": "cand-02",
+    "gen_gap": null,
+    "hard_fails": 6,
+    "mean_score": 0.6,
+    "n_runs": 3,
+    "n_tasks": 10,
+    "pass3_rate": 0.5,
+    "passes": {
+      "airline-06": 1,
+      "airline-08": 0,
+      "airline-13": 3,
+      "airline-18": 3,
+      "airline-22": 0,
+      "airline-29": 3,
+      "airline-35": 3,
+      "airline-37": 2,
+      "airline-44": 3,
+      "airline-45": 0
+    }
+  },
+  "incumbent_id": "cand-02",
+  "issue": {
+    "class": "unsafe_action",
+    "id": "L-0002",
+    "node": "executor"
+  },
+  "iteration": 0,
+  "ledger": {
+    "by_class": {
+      "policy_misread": 2,
+      "unsafe_action": 1
+    },
+    "by_status": {
+      "open": 3
+    },
+    "issues": 3,
+    "observations": 7,
+    "operators_tried": 1
+  },
+  "mean_score": 0.6,
+  "operator": "add_escalation_node",
+  "p95_latency_ms": 190457.1,
+  "p_value": 0.75,
+  "pass3_rate": 0.6,
+  "reason": "hard_fails 13 > incumbent 6",
+  "search": {
+    "cand-01": {
+      "cost_by_node": {
+        "executor": 0.049917
+      },
+      "cost_per_task": 0.004992,
+      "cost_usd": 0.049917,
+      "hard_fails": 5,
+      "mean_score": 0.3,
+      "n_tasks": 10,
+      "p95_latency_ms": 102124.8,
+      "pass_rate": 0.3,
+      "tokens_in": 218638,
+      "tokens_out": 97463
+    },
+    "cand-02": {
+      "cost_by_node": {
+        "executor": 0.070389,
+        "planner": 0.040145
+      },
+      "cost_per_task": 0.011053,
+      "cost_usd": 0.110534,
+      "hard_fails": 4,
+      "mean_score": 0.5,
+      "n_tasks": 10,
+      "p95_latency_ms": 222347.8,
+      "pass_rate": 0.5,
+      "tokens_in": 548537,
+      "tokens_out": 207768
+    },
+    "cand-02-add_escalation_node-i1": {
+      "cost_by_node": {
+        "executor": 0.07669,
+        "planner": 0.04053
+      },
+      "cost_per_task": 0.011722,
+      "cost_usd": 0.11722,
+      "hard_fails": 6,
+      "mean_score": 0.5,
+      "n_tasks": 10,
+      "p95_latency_ms": 190457.1,
+      "pass_rate": 0.5,
+      "tokens_in": 645416,
+      "tokens_out": 212374
+    },
+    "cand-03": {
+      "cost_by_node": {
+        "critic": 0.013995,
+        "executor": 0.069878
+      },
+      "cost_per_task": 0.008387,
+      "cost_usd": 0.083873,
+      "hard_fails": 5,
+      "mean_score": 0.3,
+      "n_tasks": 10,
+      "p95_latency_ms": 192067.6,
+      "pass_rate": 0.3,
+      "tokens_in": 372347,
+      "tokens_out": 163141
+    }
+  },
+  "specs": {
+    "cand-01": "runs-learning-nano/airline/0/cand-01.yaml",
+    "cand-02": "runs-learning-nano/airline/0/cand-02.yaml",
+    "cand-02-add_escalation_node-i1": "runs-learning-nano/airline/0/cand-02-add_escalation_node-i1.yaml",
+    "cand-03": "runs-learning-nano/airline/0/cand-03.yaml"
+  },
+  "spend_usd": 0.906204,
+  "stop_reason": null,
+  "underpowered": true,
+  "winner_id": "cand-02"
+}

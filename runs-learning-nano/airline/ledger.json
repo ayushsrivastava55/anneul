@@ -1,0 +1,51 @@
+[
+  {
+    "id": "L-0001",
+    "class": "policy_misread",
+    "node": "planner",
+    "count": 4,
+    "evidence": [
+      "20167904e8a432996157847f3fb10768",
+      "660d8910729877574b95d27c14d0f615"
+    ],
+    "status": "open",
+    "operators_tried": [],
+    "fallback": false,
+    "confidence": 0.735,
+    "confidence_n": 4
+  },
+  {
+    "id": "L-0002",
+    "class": "unsafe_action",
+    "node": "executor",
+    "count": 8,
+    "evidence": [
+      "54880ea5006c7cd5a537a99a04aaa86b",
+      "423713f88c126625f2b7a85ec15e2844",
+      "0ccb551def0dcfbf98e2209c5318e8a2",
+      "1cd777ed0a6196337df518a60bd15cf9"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "add_escalation_node",
+      "add_validator_node"
+    ],
+    "fallback": false,
+    "confidence": 1.0,
+    "confidence_n": 8
+  },
+  {
+    "id": "L-0003",
+    "class": "policy_misread",
+    "node": "executor",
+    "count": 2,
+    "evidence": [
+      "06e8c4cbd0b05d21cc549ae9cba6678c"
+    ],
+    "status": "open",
+    "operators_tried": [],
+    "fallback": false,
+    "confidence": 0.8,
+    "confidence_n": 2
+  }
+]
