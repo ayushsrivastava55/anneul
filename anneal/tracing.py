@@ -439,6 +439,11 @@ def tool_span(name: str, tags: list[str] | None = None) -> Callable[[Callable[..
     return _make_decorator(name, "TOOL", tags, via_trace=False)
 
 
+def mcp_span(name: str, tags: list[str] | None = None) -> Callable[[Callable[..., Any]], Any]:
+    """Trace a call to a third-party MCP server tool as an MCP_TOOL span."""
+    return _make_decorator(name, "MCP_TOOL", tags, via_trace=False)
+
+
 def llm_span(name: str, tags: list[str] | None = None) -> Callable[[Callable[..., Any]], Any]:
     """Trace an LLM call site as an LLM span (parent of the wrapped-client request span)."""
     return _make_decorator(name, "LLM", tags, via_trace=True)

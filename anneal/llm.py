@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 from openai import OpenAI
 
@@ -106,6 +107,26 @@ def resolve_model(tier: str, path: Path | str | None = None) -> str:
     return str(_tier(tier, path)["model"])
 
 
+def _client_timeout() -> httpx.Timeout:
+    """Connect generously; a local server swapping models takes far longer than to connect.
+
+    The SDK default connect timeout is 5 s, which a memory-constrained Ollama exceeds while it
+    evicts one model and loads another, surfacing as ``APITimeoutError`` mid-run. Both halves
+    are overridable via ``ANNEAL_CONNECT_TIMEOUT`` / ``ANNEAL_READ_TIMEOUT`` (seconds).
+    """
+
+    def _secs(name: str, default: float) -> float:
+        try:
+            value = float(_config.env(name) or default)
+        except ValueError:
+            return default
+        return value if value > 0 else default
+
+    return httpx.Timeout(
+        _secs("ANNEAL_READ_TIMEOUT", 600.0), connect=_secs("ANNEAL_CONNECT_TIMEOUT", 60.0)
+    )
+
+
 @lru_cache(maxsize=16)
 def get_client(tier: str = "mid", path: Path | str | None = None) -> OpenAI:
     """OpenAI-compatible client for the provider backing ``tier``, wrapped for tracing.
@@ -129,7 +150,12 @@ def get_client(tier: str = "mid", path: Path | str | None = None) -> OpenAI:
     if provider_name not in providers:
         raise KeyError(f"tier {tier!r} names unknown provider {provider_name!r}")
     provider = providers[provider_name]
-    client = OpenAI(base_url=_env(provider["base_url_env"]), api_key=_env(provider["api_key_env"]))
+    client = OpenAI(
+        base_url=_env(provider["base_url_env"]),
+        api_key=_env(provider["api_key_env"]),
+        timeout=_client_timeout(),
+        max_retries=int(_config.env("ANNEAL_LLM_RETRIES") or 2),
+    )
     from anneal.tracing import wrap_client
 
     return wrap_client(client)

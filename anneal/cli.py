@@ -4,6 +4,13 @@ The loop here is pure wiring. Every decision is made by the module that owns it
 (``architect``, ``runner``, ``diagnose``, ``mutate``, ``gate``); this file only sequences
 them, tracks spend against ``--budget`` and writes ``runs/<domain>/<iter>/summary.json``.
 The reserved evaluation split is never named here -- only ``anneal.gate`` may touch it.
+
+Episodic memory (``anneal.memory``) is opened once per ``anneal run`` and stays active for
+the whole loop, so ``anneal.runtime`` can recall at task time. Around each search run the
+loop clears the injection log, credits the entries the finished rows used, reflects on that
+run (rules from what failed, procedures from what succeeded), retires the losing entries and
+saves the store. The counts land in summary.json as ``memory_entries``, ``memory_by_kind``
+and ``memory_injected``.
 """
 
 from __future__ import annotations
@@ -19,8 +26,9 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec
+from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec, tracing
 from anneal import anneal as anneal_stage
+from anneal import memory as memory_mod
 from anneal.domain import load_domain
 from anneal.spec import HarnessSpec
 
@@ -29,7 +37,7 @@ logger = logging.getLogger("anneal.cli")
 COMMANDS: dict[str, str] = {
     "run": "generate, run, diagnose, mutate and gate candidates for a domain",
     "gate": "re-run the held-out gate on the incumbent",
-    "report": "print the markdown results row(s) from runs/<domain>/<iter>/summary.json",
+    "report": "render the README results block from runs/<domain>/<iter>/summary.json",
     "anneal": "downshift node models along the cost/latency Pareto front",
     "dashboard": "serve the runs/ dashboard on http://localhost:8000",
 }
@@ -68,6 +76,12 @@ class Loop:
     rejects: int = 0
     search: dict[str, dict[str, Any]] = field(default_factory=dict)
     specs: dict[str, str] = field(default_factory=dict)
+    # episodic memory store shared by every run of this loop (None disables it entirely)
+    memory: Any | None = None
+    # client for the reflection call; tests inject a fake, live runs use the gateway
+    memory_client: Any | None = None
+    # distinct memory entries injected during the most recent search run
+    injected: int = 0
 
 
 # --- running with a budget ---------------------------------------------------------------
@@ -172,13 +186,42 @@ def _run_search(
 ) -> tuple[HarnessSpec, list[dict]]:
     """Run one spec on the search split, persist its yaml and record its search metrics."""
     candidate = _persist(loop, candidate, iteration)
+    if loop.memory is not None:
+        loop.memory.begin_run()
     rows = _budgeted_run(loop)(
         candidate, loop.domain, SEARCH_SPLIT, iteration=iteration, seed=loop.seed
     )
+    if loop.memory is not None:
+        loop.memory.credit_run(rows, _threshold(loop.domain))
+        loop.injected = len(loop.memory.injected_ids())
+        _learn(loop, candidate, rows, iteration)
     metrics = _summarize(loop, candidate, rows)
     metrics["n_tasks"] = len(rows)
     loop.search[candidate.id] = metrics
     return candidate, rows
+
+
+def _learn(loop: Loop, candidate: Any, rows: list[dict], iteration: int) -> None:
+    """Reflect on this run's failures, retire losing rules and persist the store.
+
+    Called immediately after the run that produced ``rows``, so the tool results the store
+    recorded still belong to ``candidate`` and the rules it learns cite that candidate's own
+    traces. Reflection reads only search rows, is tagged with the same run context as those
+    rows so Neatlogs joins the failing trace to the rule learned from it, and never raises:
+    an unreachable gateway costs new rules, not the run.
+    """
+    if loop.memory is None:
+        return
+    with tracing.run_context(
+        candidate_id=candidate.id, iteration=iteration,
+        domain=loop.domain.name, split=SEARCH_SPLIT,
+    ):
+        loop.memory.reflect(
+            rows, loop.domain, client=loop.memory_client, iteration=iteration,
+            threshold=_threshold(loop.domain),
+        )
+        loop.memory.prune()
+        loop.memory.save()
 
 
 # --- one iteration -----------------------------------------------------------------------
@@ -262,6 +305,10 @@ def _summary(loop: Loop, iteration: int, inc: Any, **kw: Any) -> dict[str, Any]:
         "specs": dict(loop.specs),
         # what the optimiser has learned so far: the judges' "memory growing" series
         "ledger": diagnose.ledger_stats(diagnose.load_ledger(loop.ledger)),
+        # episodic memory: what the agent has learned, and how much of it this run used
+        "memory_entries": len(loop.memory.active) if loop.memory is not None else 0,
+        "memory_by_kind": loop.memory.by_kind() if loop.memory is not None else {},
+        "memory_injected": loop.injected,
     }
     body.update(kw)
     return body
@@ -390,12 +437,34 @@ def cmd_run(args: argparse.Namespace, console: Console) -> int:
         seed=args.seed,
         candidates=args.candidates,
         models_path=args.models,
+        memory=_open_memory(runs_dir, domain.name, enabled=not args.no_memory),
     )
     loop.ledger.parent.mkdir(parents=True, exist_ok=True)
     gate.clear_cache()
     console.print(f"[bold]anneal run[/bold] {loop.domain.name} "
                   f"iterations={args.iterations} budget=${loop.budget:.2f}")
     written: list[dict[str, Any]] = []
+    with memory_mod.activate(loop.memory):
+        status = _run_loop(loop, args, console, written)
+    _progress(console, written)
+    console.print(f"summaries in {loop.runs_dir / loop.domain.name}")
+    if loop.memory is not None:
+        kinds = ", ".join(f"{n} {kind}s" for kind, n in loop.memory.by_kind().items())
+        console.print(f"memory: {kinds} in {loop.memory.db_path}")
+    return status
+
+
+def _open_memory(runs_dir: Path, domain_name: str, *, enabled: bool) -> Any | None:
+    """The domain's episodic store, carried over from every previous run, or None."""
+    if not enabled:
+        return None
+    return memory_mod.Memory.load(memory_mod.memory_path(runs_dir, domain_name))
+
+
+def _run_loop(
+    loop: Loop, args: argparse.Namespace, console: Console, written: list[dict[str, Any]]
+) -> int:
+    """The iteration loop itself, run with the episodic memory store active."""
     incumbent: Any = None
     status = 0
     try:
@@ -415,8 +484,6 @@ def cmd_run(args: argparse.Namespace, console: Console) -> int:
         written.append(body)
         _write_summary(loop, body)
         console.print(f"[red]{exc}[/red]")
-    _progress(console, written)
-    console.print(f"summaries in {loop.runs_dir / loop.domain.name}")
     return status
 
 
@@ -462,21 +529,29 @@ def _regate(bodies: Any, args: argparse.Namespace, console: Console) -> None:
             budget=float(args.budget), concurrency=args.concurrency, seed=0,
             models_path=args.models,
         )
-        result = gate.gate(
-            spec.load_spec(specs[body["incumbent_id"]]),
-            spec.load_spec(specs[body["candidate_id"]]),
-            domain, body["iteration"], Path(args.runs_dir), run=_budgeted_run(loop),
-        )
+        loop.memory = _open_memory(loop.runs_dir, domain.name, enabled=True)
+        with memory_mod.activate(loop.memory):
+            result = _regate_one(loop, body, specs, args)
         console.print(f"{body['domain']} i{body['iteration']}: "
                       f"{result.reason} (p={result.p:.3f})")
+
+
+def _regate_one(loop: Loop, body: dict[str, Any], specs: dict[str, str],
+                args: argparse.Namespace) -> Any:
+    """One gate re-run for ``body``; memory is read here and never written."""
+    return gate.gate(
+        spec.load_spec(specs[body["incumbent_id"]]),
+        spec.load_spec(specs[body["candidate_id"]]),
+        loop.domain, body["iteration"], Path(args.runs_dir), run=_budgeted_run(loop),
+    )
 
 
 # --- `anneal anneal` and `anneal dashboard` ----------------------------------------------
 
 
-def _peak_score(summaries: list[dict[str, Any]]) -> float | None:
+def _peak_score(runs_dir: Path, summaries: list[dict[str, Any]]) -> float | None:
     """The winner's held-out mean score, which is the bar the downshift has to hold 95% of."""
-    block, _ = _winner_block(summaries)
+    block = _winner_block(runs_dir, summaries)
     score = block.get("mean_score")
     return None if score is None else float(score)
 
@@ -492,7 +567,7 @@ def _anneal_domain(summaries: list[dict[str, Any]], args: argparse.Namespace,
         return 1
     # None when the optimiser never gated this domain (it saturated at iteration 0 with no
     # failures to diagnose). downshift then measures its own baseline to hold against.
-    peak = _peak_score(summaries)
+    peak = _peak_score(Path(args.runs_dir), summaries)
     if peak is None:
         console.print(
             f"[dim]{name}: no gate result for {winner_id}; "
@@ -567,29 +642,83 @@ def _num(value: Any, digits: int = 3) -> str:
     return DASH if value is None else f"{float(value):.{digits}f}"
 
 
+def _usd(value: Any) -> str:
+    """A cost in dollars at three significant figures -- never a non-zero cost as ``0.000``.
+
+    Local runs cost fractions of a cent per task ($0.000169 is a real figure from the first
+    invoices run), so fixed decimals silently report them as free. ``%g`` keeps three real
+    digits wherever the magnitude lands and switches to exponent notation below 1e-4.
+    """
+    if value is None:
+        return DASH
+    number = float(value)
+    return "0" if number == 0 else f"{number:.3g}"
+
+
+def _secs(ms: Any) -> str:
+    """A latency in seconds with one decimal; 148281 ms is not a number anyone can read."""
+    return DASH if ms is None else f"{float(ms) / 1000:.1f}"
+
+
+def _gate_json(runs_dir: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """The gate.json this iteration wrote, or {} when no gate ran.
+
+    Resolved under ``runs_dir`` rather than from ``body["gate_path"]``: that path is absolute
+    on the machine that produced the run and means nothing anywhere else.
+    """
+    path = Path(runs_dir) / str(body["domain"]) / str(body["iteration"]) / "gate.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _p_value(body: dict[str, Any], gate_json: dict[str, Any]) -> Any:
+    """The exact binomial p of the gate run at this iteration, from summary or gate.json."""
+    p = body.get("p_value")
+    return gate_json.get("p") if p is None else p
+
+
+def _gen_gap(block: dict[str, Any], search: dict[str, Any]) -> Any:
+    """search mean - reserved-split mean, exactly as ``gate.spec_metrics`` defines it.
+
+    The gate only computes a gen_gap for the candidate, so the incumbent's is null in both
+    summary.json and gate.json. Both terms are still on record, so recompute rather than
+    print an em-dash: the gated mean from the gate block, the search mean from summary.
+    """
+    if block.get("gen_gap") is not None:
+        return block["gen_gap"]
+    gated, searched = block.get("mean_score"), search.get("mean_score")
+    if gated is None or searched is None:
+        return None
+    return float(searched) - float(gated)
+
+
 def _row(domain: str, stage: str, block: dict[str, Any], search: dict[str, Any], p: Any) -> str:
     cells = [
         domain, stage, _num(block.get("mean_score")), _num(block.get("pass3_rate")),
-        _num(block.get("gen_gap")),
+        _num(_gen_gap(block, search)),
         DASH if block.get("hard_fails") is None else str(block["hard_fails"]),
-        _num(search.get("cost_per_task")), _num(search.get("p95_latency_ms"), 0), _num(p),
+        _usd(search.get("cost_per_task")), _secs(search.get("p95_latency_ms")), _num(p),
     ]
     return "| " + " | ".join(cells) + " |"
 
 
-def _winner_block(summaries: list[dict[str, Any]]) -> tuple[dict[str, Any], Any]:
-    """Metrics of the spec that survived the last iteration, plus its gate p-value.
+def _winner_block(runs_dir: Path, summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Metrics of the spec that survived the last iteration.
 
     The final iteration may have halted before the gate ran (budget, no operator left), so
-    walk backwards to the most recent summary that actually scored the winning spec.
+    walk backwards to the most recent iteration that actually scored the winning spec, taking
+    the metrics from that summary or, when it recorded none, from the gate.json beside it.
     """
     winner = summaries[-1]["winner_id"]
     for body in reversed(summaries):
+        gate_json = _gate_json(runs_dir, body)
         for key in ("candidate", "incumbent"):
-            block = body.get(key) or {}
+            block = _blocks(body, gate_json, key)
             if block.get("candidate_id") == winner:
-                return block, (body.get("p_value") if key == "candidate" else None)
-    return {}, None
+                return block
+    return {}
 
 
 def _annealed_row(runs_dir: Path, domain: str) -> str | None:
@@ -618,30 +747,123 @@ def _annealed_row(runs_dir: Path, domain: str) -> str | None:
     return _row(domain, "annealed", block, search, None)
 
 
-def _report_rows(summaries: list[dict[str, Any]], runs_dir: Path) -> list[str]:
+def _blocks(body: dict[str, Any], gate_json: dict[str, Any], key: str) -> dict[str, Any]:
+    """The summary's ``incumbent``/``candidate`` metrics, falling back to the gate's own copy."""
+    return body.get(key) or gate_json.get(key) or {}
+
+
+def _last_p(runs_dir: Path, bodies: list[dict[str, Any]]) -> Any:
+    """The p-value of the most recent iteration whose gate produced one, else None."""
+    for body in reversed(bodies):
+        p = _p_value(body, _gate_json(runs_dir, body))
+        if p is not None:
+            return p
+    return None
+
+
+def _report_rows(runs_dir: Path, summaries: list[dict[str, Any]]) -> list[str]:
+    """Per domain: the iteration-0 baseline, whatever survived the last gate, and - when the
+    downshift stage has run - the annealed configuration that holds the score for less."""
     rows: list[str] = []
     for name in dict.fromkeys(b["domain"] for b in summaries):
         got = [b for b in summaries if b["domain"] == name]
         first, last = got[0], got[-1]
-        rows.append(
-            _row(name, "iteration 0", first.get("incumbent") or {},
-                 first["search"].get(first["incumbent_id"], {}), None)
-        )
-        block, p = _winner_block(got)
-        rows.append(_row(name, "final", block, last["search"].get(last["winner_id"], {}), p))
+        first_gate = _gate_json(runs_dir, first)
+        rows.append(_row(
+            name, "iteration 0", _blocks(first, first_gate, "incumbent"),
+            first["search"].get(first["incumbent_id"], {}), _p_value(first, first_gate),
+        ))
+        rows.append(_row(
+            name, "final", _winner_block(runs_dir, got),
+            last["search"].get(last["winner_id"], {}), _last_p(runs_dir, got),
+        ))
         annealed = _annealed_row(runs_dir, name)
         if annealed is not None:
             rows.append(annealed)
     return rows
 
 
+def _rejected_rows(summaries: list[dict[str, Any]], runs_dir: Path) -> list[str]:
+    """One row per mutation the gate refused, naming the condition that failed."""
+    rows = []
+    for body in summaries:
+        gate_json = _gate_json(runs_dir, body)
+        decision = body.get("decision") or gate_json.get("decision")
+        if decision != "reject":
+            continue
+        reason = body.get("reason") or gate_json.get("reason") or DASH
+        rows.append(
+            f"| {body['domain']} | {body['iteration']} | "
+            f"{body.get('operator') or DASH} | {reason} |"
+        )
+    return rows
+
+
+HEADER = (
+    "| Domain | Stage | Holdout acc | pass^3 | Gen gap | Hard fails | $/task | p95 s | p (gate) |"
+    "\n|---|---|---|---|---|---|---|---|---|"
+)
+REJECT_HEADER = (
+    "**Rejected mutations** — the gate refusing to promote, and which condition failed.\n\n"
+    "| Domain | Iteration | Operator | Gate condition that failed |\n|---|---|---|---|"
+)
+NO_REJECTS = "**Rejected mutations** — no rejected mutations in these runs."
+FOOTNOTE = f"""\
+`{DASH}` means the value does not exist in the runs (no gate ran at that iteration, or the
+spec was never scored on that split) — it is never a zero and never a rounded-away number.
+Holdout accuracy, pass^3, hard fails and p come from the gate's `gate.json`; `$/task` and p95
+are measured on the search split. Gen gap is the search mean minus the gated mean, recomputed
+from those two recorded means when the gate stored it only for the candidate.
+
+Inference is **local** (Ollama, qwen2.5 3b / 1.5b / 0.5b), so these runs cost $0 in real money.
+Tokens and latency are measured. USD is those measured tokens priced at the reference rates in
+`specs/models.yaml`, where each tier carries a `price_source` (`published` or `scaled`); the
+sub-7B rates are scaled from a published 7B rate, not quoted. Do not read `$/task` as the cost
+of a hosted provider."""
+
+
+def render_block(runs_dir: Path | str, summaries: list[dict[str, Any]]) -> str:
+    """The markdown that goes between the README result markers. Every cell comes from runs/."""
+    runs_dir = Path(runs_dir)
+    rejected = _rejected_rows(summaries, runs_dir)
+    parts = [
+        HEADER + "\n" + "\n".join(_report_rows(runs_dir, summaries)),
+        ("\n".join([REJECT_HEADER, *rejected]) if rejected else NO_REJECTS),
+        FOOTNOTE,
+    ]
+    return "\n\n".join(parts) + "\n"
+
+
+RESULTS_START = "<!-- results:start -->"
+RESULTS_END = "<!-- results:end -->"
+
+
+def write_readme(path: Path, block: str) -> None:
+    """Replace the marked results block in ``path`` and touch nothing else."""
+    text = path.read_text(encoding="utf-8")
+    head, marker, rest = text.partition(RESULTS_START)
+    body, end, tail = rest.partition(RESULTS_END)
+    if not marker or not end:
+        raise ValueError(f"{path} has no {RESULTS_START} / {RESULTS_END} block")
+    path.write_text(f"{head}{marker}\n{block}{end}{tail}", encoding="utf-8")
+
+
 def cmd_report(args: argparse.Namespace, console: Console) -> int:
-    summaries = _summaries(Path(args.runs_dir))
+    runs_dir = Path(args.runs_dir)
+    summaries = _summaries(runs_dir)
     if not summaries:
         console.print(f"[red]no summary.json under {args.runs_dir}[/red]")
         return 1
-    for line in _report_rows(summaries, Path(args.runs_dir)):
-        print(line)
+    block = render_block(runs_dir, summaries)
+    if args.write_readme:
+        try:
+            write_readme(Path(args.write_readme), block)
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return 1
+        # stdout stays exactly the block, so `anneal report --write-readme` stays pipeable
+        Console(stderr=True).print(f"[green]wrote[/green] {args.write_readme}")
+    print(block, end="")
     return 0
 
 
@@ -665,6 +887,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--runs-dir", default=str(runner.RUNS_DIR))
     run.add_argument("--ledger", default=None, help="issue ledger path")
     run.add_argument("--models", default=None, help="price table (default specs/models.yaml)")
+    run.add_argument("--no-memory", action="store_true",
+                     help="disable episodic memory (no recall, no reflection)")
 
     for name in ("gate", "report", "anneal"):
         sub.choices[name].add_argument("runs_dir", help="runs/ directory to read")
@@ -679,6 +903,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--domain", action="append", metavar="NAME",
         help="only anneal this domain (repeatable); default is every domain in runs_dir",
     )
+
+    report = sub.choices["report"]
+    report.add_argument("--markdown", action="store_true",
+                        help="print the README results block (the default output)")
+    report.add_argument("--write-readme", nargs="?", const="README.md", default=None,
+                        metavar="PATH",
+                        help="replace the <!-- results --> block in PATH (default README.md)")
 
     dash = sub.choices["dashboard"]
     dash.add_argument("--runs-dir", default=str(runner.RUNS_DIR))

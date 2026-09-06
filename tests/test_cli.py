@@ -326,6 +326,12 @@ def test_budget_message_is_explicit(loop, tmp_path, monkeypatch, capsys):
 # --- report ------------------------------------------------------------------------------
 
 
+def stage_rows(out: str) -> list[str]:
+    """The two results rows of the report block, ignoring its headers and the reject table."""
+    stages = (" | iteration 0 | ", " | final | ")
+    return [ln for ln in out.splitlines() if any(stage in ln for stage in stages)]
+
+
 def write_summary(root: Path, iteration: int, **kw: Any) -> None:
     body: dict[str, Any] = {
         "domain": "airline", "iteration": iteration,
@@ -358,13 +364,13 @@ def test_report_renders_iteration_zero_and_final_rows(tmp_path, capsys):
     write_summary(root, 0)
     write_summary(root, 1)
     assert cli.main(["report", str(root)]) == 0
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    lines = stage_rows(capsys.readouterr().out)
     assert len(lines) == 2
     assert lines[0].split("|")[1:4] == [" airline ", " iteration 0 ", " 0.500 "]
     assert lines[1].split("|")[2].strip() == "final"
     assert " 0.900 " in lines[1]
-    assert " 0.010 " in lines[0]  # $/task from the search block
-    assert lines[0].split("|")[9].strip() == "—"  # no gate p-value for iteration 0
+    assert " 0.01 " in lines[0]  # $/task from the search block, three significant figures
+    assert lines[0].split("|")[9].strip() == "0.010"  # the gate p-value of that iteration
 
 
 def write_pareto(root: Path, **point: Any) -> None:
@@ -386,11 +392,12 @@ def test_report_adds_an_annealed_row_when_the_downshift_has_run(tmp_path, capsys
     write_pareto(root)
     assert cli.main(["report", str(root)]) == 0
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
-    assert [ln.split("|")[2].strip() for ln in lines] == ["iteration 0", "final", "annealed"]
-    annealed = lines[2].split("|")
+    stages = [ln.split("|")[2].strip() for ln in lines[2:]]  # skip header + separator
+    assert stages == ["iteration 0", "final", "annealed"]
+    annealed = lines[4].split("|")
     assert annealed[3].strip() == "0.880"
     assert annealed[7].strip() == "0.004"  # cheaper $/task than the search rows above
-    assert annealed[8].strip() == "700"
+    assert annealed[8].strip() == "0.7"  # p95 is reported in seconds
 
 
 def test_report_omits_the_annealed_row_before_the_downshift_runs(tmp_path, capsys):
@@ -398,7 +405,7 @@ def test_report_omits_the_annealed_row_before_the_downshift_runs(tmp_path, capsy
     write_summary(root, 0)
     assert cli.main(["report", str(root)]) == 0
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
-    assert [ln.split("|")[2].strip() for ln in lines] == ["iteration 0", "final"]
+    assert [ln.split("|")[2].strip() for ln in lines[2:]] == ["iteration 0", "final"]
 
 
 def test_report_final_row_is_the_last_winner(tmp_path, capsys):
@@ -406,14 +413,14 @@ def test_report_final_row_is_the_last_winner(tmp_path, capsys):
     write_summary(root, 0)
     write_summary(root, 1, decision="reject", winner_id="cand-1", reason="p 0.9 >= alpha 0.1")
     cli.main(["report", str(root)])
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    lines = stage_rows(capsys.readouterr().out)
     assert lines[1].split("|")[3].strip() == "0.500"  # winner fell back to the incumbent
 
 
 def test_report_renders_rows_generated_by_a_real_run(loop, tmp_path, capsys):
     run_cli(tmp_path, "--iterations", "1")
     assert cli.main(["report", str(tmp_path / "runs")]) == 0
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    lines = stage_rows(capsys.readouterr().out)
     assert [ln.split("|")[2].strip() for ln in lines] == ["iteration 0", "final"]
 
 
@@ -423,7 +430,7 @@ def test_report_final_row_survives_a_halted_last_iteration(loop, tmp_path, capsy
     run_cli(tmp_path, "--iterations", "5")
     assert summaries(tmp_path)[-1]["decision"] == "no_candidate"
     cli.main(["report", str(tmp_path / "runs")])
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    lines = stage_rows(capsys.readouterr().out)
     assert lines[1].split("|")[3].strip() == "0.900"
 
 

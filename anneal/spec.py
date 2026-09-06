@@ -45,6 +45,9 @@ class Node(BaseModel):
     tools: list[str] = Field(default_factory=list)
     max_steps: int = Field(default=1, ge=1)
     schema_ref: str | None = None
+    # How this node's prompt was produced by the architect: "template" (deterministic only),
+    # "elaborated" or "elaborated_retry". Provenance for the report; nothing reads it at runtime.
+    prompt_source: str | None = None
 
 
 class Lineage(BaseModel):
@@ -116,11 +119,14 @@ class ToolSpec(BaseModel):
 
 
 class ToolsManifest(BaseModel):
-    """The whole tools.yaml file."""
+    """The whole tools.yaml file: the tool list plus any MCP servers the tools live on."""
 
     model_config = ConfigDict(extra="forbid")
 
     tools: list[ToolSpec] = Field(default_factory=list)
+    # MCP server definitions for `impl: mcp:<server>/<tool>` entries. Opaque here; parsed by
+    # anneal.mcp.parse_servers into stdio ({command,args,env,cwd}) or http ({url,api_key_env}).
+    servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_unique(self) -> ToolsManifest:

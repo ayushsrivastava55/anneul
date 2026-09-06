@@ -139,6 +139,32 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - [x] orchestrator: tau-bench airline env vendored (MIT) into domains/airline/fixtures/tau_airline
 - [x] 0.4 anneal-8 - anneal/tracing.py: init_tracing (once, no-op without key), wrap_client, node_span/tool_span/llm_span (sync+async, offline pass-through), run-context tags via contextvar, flush/shutdown, current_trace_id; tests/test_tracing.py (15 tests); smoke `uv run python -m anneal.tracing`
 
+## Judging realignment (Track 1 description, read 6 Sep)
+Judges ask specifically about: the learning loop, tool-usage learning over time, THIRD-PARTY
+app/MCP access, self-reflection with MEMORY GROWING, applying learned context in later runs,
+and cost/speed balance. Audit against that:
+- Cost/speed balance: covered by anneal.py Pareto downshift. Strong.
+- Tool-usage learning: covered by rewrite_tool_desc + synthesize_tool. Strong.
+- Self-reflection: covered by diagnose reading our own traces. Strong.
+- Third-party tools: WAS MISSING. Now real — anneal/mcp.py dispatches to actual MCP servers;
+  domains/filesystem is served by @modelcontextprotocol/server-filesystem via npx, verified
+  running on this machine (14 tools discovered from the server, real calls, evaluator scored 1.0).
+- Memory growing: WAS FAKE (a flag runtime never read). anneal-33 is building a real store:
+  SQLite FTS5 recall, rules AND procedures, reflect on successes as well as failures, with
+  credit/retire so bad memories are unlearned. Prior art: Nous Research Hermes.
+
+## Inference is now real
+No API key was available, so inference runs on local models via Ollama's OpenAI-compatible
+endpoint. Tiers: qwen2.5 7b / 3b / 1.5b (a genuine size ladder for the downshift story).
+Tokens and latency are MEASURED. USD uses a documented reference rate; specs/models.yaml
+records price_source per tier (published vs scaled) so no cost figure is unattributable.
+
+## Machine constraints (drive every remaining decision)
+8.6 GB RAM total. An earlier run was OOM-killed with three qwen models resident plus pytest.
+Ollama now runs with OLLAMA_MAX_LOADED_MODELS=1, NUM_PARALLEL=1, KEEP_ALIVE=30s, and idle AO
+sessions are killed before any run. Runs are sequential, never parallel across domains.
+p95 latency ~148 s/task on the 3b, so a 2-iteration run on the largest domain is ~1 hour.
+
 ## Blockers
 - ~~THE blocker: the system has never run against a real model.~~ **Cleared 6 Sep**: all
   five tiers live (`.env` filled, `specs/models.yaml` real), `runs/` holds completed
@@ -281,6 +307,30 @@ Live results (README table is generated from `runs/` by the AO-built splicer):
 - **runs-learning-flash/airline** (flash, escalating gate): final promotion attempt, in
   flight at freeze time - GLM struggles on tau-bench, which is exactly the headroom the
   typed operators need.
+
+## From the fork lineage (Ayush's line, merged 6 Sep night)
+### First real run (invoices, local qwen2.5 3b, 6 Sep)
+The loop ran end to end on a real model and produced real artifacts in runs/invoices/.
+Iteration 0: cand-01 search mean 0.40 (1 hard fail), cand-02 0.20, mutant 0.03.
+Gate REJECTED the rewrite_tool_desc mutant (p=1.0). The gate working is real evidence.
+
+BUT the run exposed two blocking defects in our own system:
+1. The architect trusted the LLM to write node prompts. On a small model it emitted 172 bytes
+   of bare JSON schema with no instructions and no mention of tools. Result: 15/15 tasks made
+   ZERO tool calls and 11/15 returned prose. The 0.40 came from lucky extraction, not from
+   doing the task.
+2. The architect never sets schema_ref, so runtime's schema_error can never fire, so
+   output_format failures are invisible and diagnose logs them as wrong_tool (18 counts).
+   The wrong operator is then applied and correctly rejected - which is why nothing is ever
+   promoted.
+Full run completed: iteration 1 (add_fewshots) also rejected, hard_fails 2 > incumbent 1;
+stopped on plateau. Hard fails did fall 3 -> 1 across the run, a real reliability gain.
+Fixes in flight: anneal-37 (architect-fix), anneal-38 (readme-final, incl. $/task printing as
+0.000 when the real value is 0.000169). Until anneal-37 lands, no score here is a capability
+claim - the agent was never calling tools.
+
+### Latest numbers
+main: 412 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none

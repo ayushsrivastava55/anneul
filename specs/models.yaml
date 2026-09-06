@@ -1,6 +1,11 @@
 # Model tiers used by Architect (initial assignment) and Anneal (downshift order).
 # Keep this the ONLY place model names live.
 #
+# An all-local Ollama ladder (qwen2.5 3b/1.5b/0.5b, provider `ollama` below) also works if
+# no keys are available - see git history (fork lineage) for that exact config with price
+# provenance. This file ships the live five-tier ladder because every provider in it was
+# exercised end to end during the hackathon.
+#
 # All three tiers are Anthropic, reached through its OpenAI-SDK compatibility layer
 # (FRONTIER_BASE_URL=https://api.anthropic.com/v1/), so anneal/llm.py needs no code change.
 #
@@ -48,6 +53,7 @@ tiers:
     price_out: 0.40
 downshift_order: [frontier, mid, cheap, flash, nano]
 providers:
+  ollama:    {base_url_env: OLLAMA_BASE_URL,    api_key_env: OLLAMA_API_KEY}
   tensormux: {base_url_env: TENSORMUX_BASE_URL, api_key_env: TENSORMUX_API_KEY}
   frontier:  {base_url_env: FRONTIER_BASE_URL,  api_key_env: FRONTIER_API_KEY}
   aigi:      {base_url_env: AIGI_BASE_URL,      api_key_env: AIGI_API_KEY}

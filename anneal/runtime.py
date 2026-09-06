@@ -34,10 +34,23 @@ required/type check, ``schema_error`` is set.
 A node's tool schema uses ``spec.tool_overrides[name]`` as the description when the spec
 carries one (written by ``mutate.rewrite_tool_desc``), else the tools.yaml text.
 
+Episodic memory: when ``spec.memory.enabled`` and ``spec.memory.kind == "episodic"`` and a
+store is active (``anneal.memory.activate``, set by the CLI loop), the runtime recalls the
+top ``spec.memory.top_k`` learned rules for the task once and prepends them to every node's
+system prompt under a "Learned from previous runs" heading, before the first LLM call. The
+recalled ids come back on ``TaskResult.memory_ids`` so the loop can credit them, and each
+task's tool results are handed to the store so the next reflection can be grounded in them.
+With no active store the runtime behaves exactly as it did without memory.
+
 Tool dispatch: ``python:<module>.<fn>`` via ``importlib.import_module`` on the dotted module
-path; ``mcp:`` raises ``NotImplementedError`` for now. Arguments get a shallow
-required/type check against the JSON schema in tools.yaml (``jsonschema`` is not a
-dependency). Every node is a ``tracing.node_span``, every tool call a ``tracing.tool_span``
+path; ``mcp:<server>/<tool>`` through :mod:`anneal.mcp`, where ``<server>`` names an entry of
+the ``servers:`` block in the domain's tools.yaml. MCP connections are pooled for the run and
+closed at exit; a server that will not start degrades to an ``Error: ...`` tool result rather
+than killing the run. An MCP tool's description and argument schema come from the server's own
+``tools/list`` (cached per run) so the model discovers the third party's real schemas, with the
+tools.yaml text as the offline fallback. Arguments get a shallow required/type check against
+that schema (``jsonschema`` is not a dependency). Every node is a ``tracing.node_span``, every
+tool call a ``tracing.tool_span``, every MCP call a ``tracing.mcp_span`` (kind ``MCP_TOOL``)
 and every LLM call an ``tracing.llm_span``.
 """
 
@@ -51,7 +64,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from anneal import llm, tracing
+from anneal import llm, mcp, tracing
+from anneal import memory as memory_mod
 from anneal.domain import Domain, ensure_repo_root_on_path
 from anneal.spec import HarnessSpec, Node, ToolSpec
 
@@ -106,6 +120,8 @@ class TaskResult:
     schema_error: bool
     trace_id: str | None
     latency_ms: float
+    # ids of the episodic-memory entries injected into this run's prompts (see anneal.memory)
+    memory_ids: list[str] = field(default_factory=list)
 
 
 class StepBudgetExceeded(Exception):
@@ -178,13 +194,30 @@ def _resolve_python_impl(impl: str) -> Callable[..., Any]:
     return getattr(module, fn_name)
 
 
-def invoke_tool(tool: ToolSpec, args: dict[str, Any]) -> str:
-    """Validate ``args`` against ``tool.args`` and run the impl. Errors come back as text."""
-    problem = shallow_check(args, tool.args or {"type": "object"})
+def invoke_tool(
+    tool: ToolSpec,
+    args: dict[str, Any],
+    *,
+    pool: mcp.Pool | None = None,
+    schema: dict[str, Any] | None = None,
+) -> str:
+    """Validate ``args`` and run the impl (``python:`` locally, ``mcp:`` via ``pool``).
+
+    ``schema`` overrides ``tool.args`` for the argument check -- the runtime passes the live
+    ``inputSchema`` from the MCP server's ``tools/list``. Every failure is returned as text so
+    the model can react to it; nothing here raises.
+    """
+    problem = shallow_check(args, schema or tool.args or {"type": "object"})
     if problem is not None:
         return f"Error: invalid arguments for {tool.name}: {problem}"
-    if tool.impl.startswith("mcp:"):
-        raise NotImplementedError(f"mcp tools are not supported yet ({tool.impl})")
+    if tool.impl.startswith(mcp.IMPL_PREFIX):
+        if pool is None:
+            return f"Error: {tool.name}: no MCP server pool for this run"
+        try:
+            server, remote = mcp.split_impl(tool.impl)
+        except ValueError as exc:
+            return f"Error: {tool.name}: {exc}"
+        return pool.call(server, remote, args)
     fn = _resolve_python_impl(tool.impl)
     try:
         result = fn(**args)
@@ -193,14 +226,22 @@ def invoke_tool(tool: ToolSpec, args: dict[str, Any]) -> str:
     return result if isinstance(result, str) else json.dumps(result, default=str)
 
 
-def _openai_tool(tool: ToolSpec, description: str | None = None) -> dict[str, Any]:
-    """Tool schema for the model. ``description`` overrides the manifest text when given."""
+def _openai_tool(
+    tool: ToolSpec,
+    description: str | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Tool schema for the model.
+
+    ``description`` overrides the manifest text (``spec.tool_overrides``); ``parameters``
+    overrides the manifest argument schema (the live MCP ``inputSchema``).
+    """
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": description or tool.description,
-            "parameters": tool.args or {"type": "object", "properties": {}},
+            "parameters": parameters or tool.args or {"type": "object", "properties": {}},
         },
     }
 
@@ -305,9 +346,23 @@ class _Run:
     _last_exec: tuple[Node, list[dict[str, Any]]] | None = None
     # set by critic_loop when it gives up; turned into an escalation by ``execute``
     _escalate_reason: str | None = None
+    # episodic memory recalled once per task and injected into every node's system prompt
+    memory_ids: list[str] = field(default_factory=list)
+    _memory_block: str | None = None
 
     def __post_init__(self) -> None:
         self.tools_by_name = {t.name: t for t in self.domain.tools.tools}
+        self.mcp_pool = mcp.get_pool(mcp.parse_servers(self.domain.tools.servers))
+
+    def _mcp_info(self, tool: ToolSpec) -> mcp.ToolInfo | None:
+        """Live ``tools/list`` entry for an ``mcp:`` tool, or None (not MCP / server down)."""
+        if not tool.impl.startswith(mcp.IMPL_PREFIX):
+            return None
+        try:
+            server, remote = mcp.split_impl(tool.impl)
+        except ValueError:
+            return None
+        return self.mcp_pool.tool_info(server, remote)
 
     def node(self, role: str) -> Node:
         for node in self.spec.nodes:
@@ -318,6 +373,27 @@ class _Run:
     def optional_node(self, role: str) -> Node | None:
         """The first node with ``role``, or None when the spec has none."""
         return next((n for n in self.spec.nodes if n.role == role), None)
+
+    def system_prompt(self, node: Node, task: Any) -> str:
+        """``_system_prompt`` plus, when the spec asks for it, the recalled memory block.
+
+        Recall happens once per task (the block is cached on the run) so every node of a
+        topology sees the same rules and the entry ids are credited once.
+        """
+        base = _system_prompt(node, self.domain)
+        if self._memory_block is None:
+            self._memory_block = self._recall(task)
+        return f"{base}\n\n{self._memory_block}".strip() if self._memory_block else base
+
+    def _recall(self, task: Any) -> str:
+        """Learned rules for ``task``, or '' when memory is off or no store is active."""
+        cfg = self.spec.memory
+        store = memory_mod.active()
+        if store is None or not cfg.enabled or cfg.kind != "episodic":
+            return ""
+        entries = store.recall(task, cfg.top_k)
+        self.memory_ids = [e.id for e in entries]
+        return store.prompt_block(entries)
 
     def _client(self, tier: str) -> Any:
         if tier not in self._clients:
@@ -330,7 +406,7 @@ class _Run:
             self.hit_step_budget = True
             raise StepBudgetExceeded(node.name)
         tools = [
-            _openai_tool(self.tools_by_name[n], self.spec.tool_overrides.get(n))
+            self._tool_schema(self.tools_by_name[n], self.spec.tool_overrides.get(n))
             for n in node.tools
             if n in self.tools_by_name
         ]
@@ -340,6 +416,17 @@ class _Run:
         self._account(node.name, usage)
         messages.append(message)
         return message
+
+    def _tool_schema(self, tool: ToolSpec, override: str | None) -> dict[str, Any]:
+        """Schema shown to the model: the MCP server's own listing when we can reach it.
+
+        ``spec.tool_overrides`` still wins on the description -- that is a deliberate mutation
+        -- but the argument schema always comes from the third party when it is available.
+        """
+        info = self._mcp_info(tool)
+        if info is None:
+            return _openai_tool(tool, override)
+        return _openai_tool(tool, override or info.description, info.input_schema or None)
 
     def _complete(
         self, tier: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
@@ -367,7 +454,14 @@ class _Run:
         elif tool is None:
             result = f"Error: unknown tool {name!r}"
         else:
-            result = tracing.tool_span(f"tool.{name}")(invoke_tool)(tool, args)
+            # MCP calls carry their own MCP_TOOL span inside the pool; local impls get a
+            # TOOL span here.
+            is_mcp = tool.impl.startswith(mcp.IMPL_PREFIX)
+            info = self._mcp_info(tool)
+            impl = invoke_tool if is_mcp else tracing.tool_span(f"tool.{name}")(invoke_tool)
+            result = impl(
+                tool, args, pool=self.mcp_pool, schema=info.input_schema if info else None
+            )
         self.trace.append({"tool": name, "args": args, "result": result})
         return {"role": "tool", "tool_call_id": call.get("id", ""), "content": result}
 
@@ -393,7 +487,7 @@ class _Run:
     def run_single(self, task: Any) -> str | None:
         node = self.node("executor")
         messages = [
-            {"role": "system", "content": _system_prompt(node, self.domain)},
+            {"role": "system", "content": self.system_prompt(node, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         return self.run_node(node, self.react, node, messages)
@@ -401,11 +495,11 @@ class _Run:
     def run_planner_executor(self, task: Any) -> str | None:
         planner, executor = self.node("planner"), self.node("executor")
         plan_msgs = [
-            {"role": "system", "content": _system_prompt(planner, self.domain)},
+            {"role": "system", "content": self.system_prompt(planner, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         exec_msgs = [
-            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "system", "content": self.system_prompt(executor, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         plan = self.run_node(planner, self.call_llm, planner, plan_msgs).get("content") or ""
@@ -431,11 +525,11 @@ class _Run:
     def run_critic_loop(self, task: Any) -> str | None:
         executor, critic = self.node("executor"), self.node("critic")
         exec_msgs = [
-            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "system", "content": self.system_prompt(executor, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         critic_msgs = [
-            {"role": "system", "content": _system_prompt(critic, self.domain)},
+            {"role": "system", "content": self.system_prompt(critic, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         seen = 0  # trace entries already shown to the critic
@@ -483,7 +577,7 @@ class _Run:
             messages = self._exec_messages(executor, task)
             return self.run_node(executor, self.react, executor, messages)
         route_msgs = [
-            {"role": "system", "content": _system_prompt(router, self.domain)},
+            {"role": "system", "content": self.system_prompt(router, task)},
             {
                 "role": "user",
                 "content": (
@@ -499,7 +593,7 @@ class _Run:
 
     def _exec_messages(self, executor: Node, task: Any) -> list[dict[str, Any]]:
         return [
-            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "system", "content": self.system_prompt(executor, task)},
             {"role": "user", "content": _task_message(task)},
         ]
 
@@ -641,6 +735,10 @@ def _run_traced(run: _Run, task: Any, seed: int) -> TaskResult:
     text = run.execute(task)
     latency_ms = round((time.perf_counter() - start) * 1000, 1)
     output = parse_output(text)
+    store = memory_mod.active()
+    if store is not None:
+        # what this task's tools actually returned; anneal.memory.reflect grounds rules on it
+        store.observe(memory_mod.task_id_of(task), run.trace, output)
     return TaskResult(
         output=output,
         trace=run.trace,
@@ -650,4 +748,5 @@ def _run_traced(run: _Run, task: Any, seed: int) -> TaskResult:
         schema_error=_schema_error(run.spec, run.domain, output),
         trace_id=tracing.current_trace_id(),
         latency_ms=latency_ms,
+        memory_ids=list(run.memory_ids),
     )

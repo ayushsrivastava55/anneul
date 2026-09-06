@@ -1,0 +1,113 @@
+# Filesystem domain tools. These are NOT ours: every entry is served by the official
+# third-party MCP server `@modelcontextprotocol/server-filesystem`, launched over stdio by
+# anneal/mcp.py. The descriptions and `args` schemas below are only the offline fallback --
+# at run time the runtime replaces both with the server's own `tools/list` output, so the
+# agent sees exactly the schemas the third party publishes.
+#
+# ${ANNEAL_FS_SANDBOX} is the sandbox root; eval.py sets it (os.environ.setdefault) when the
+# domain is loaded, and each task works inside <root>/<task_id>. The server refuses any path
+# outside the directory it is given, so the sandbox is enforced by the third party too.
+servers:
+  fs:
+    command: npx
+    args:
+    - -y
+    - '@modelcontextprotocol/server-filesystem'
+    - ${ANNEAL_FS_SANDBOX}
+tools:
+- name: read_text_file
+  description: Read the complete contents of a file from the file system as text.
+  args:
+    type: object
+    properties:
+      path:
+        type: string
+        description: Absolute path of the file to read.
+    required:
+    - path
+  impl: mcp:fs/read_text_file
+  mutates: false
+- name: list_directory
+  description: List the files and directories directly inside a directory.
+  args:
+    type: object
+    properties:
+      path:
+        type: string
+        description: Absolute path of the directory to list.
+    required:
+    - path
+  impl: mcp:fs/list_directory
+  mutates: false
+- name: get_file_info
+  description: Retrieve metadata (size, timestamps, type) about a file or directory.
+  args:
+    type: object
+    properties:
+      path:
+        type: string
+        description: Absolute path to inspect.
+    required:
+    - path
+  impl: mcp:fs/get_file_info
+  mutates: false
+- name: write_file
+  description: Create a new file or completely overwrite an existing file with new content.
+  args:
+    type: object
+    properties:
+      path:
+        type: string
+        description: Absolute path of the file to write.
+      content:
+        type: string
+        description: The full contents to write.
+    required:
+    - path
+    - content
+  impl: mcp:fs/write_file
+  mutates: true
+- name: edit_file
+  description: Make line-based edits to a text file, replacing exact text with new text.
+  args:
+    type: object
+    properties:
+      path:
+        type: string
+        description: Absolute path of the file to edit.
+      edits:
+        type: array
+        description: List of {oldText, newText} replacements to apply in order.
+    required:
+    - path
+    - edits
+  impl: mcp:fs/edit_file
+  mutates: true
+- name: create_directory
+  description: Create a directory, including any missing parent directories.
+  args:
+    type: object
+    properties:
+      path:
+        type: string
+        description: Absolute path of the directory to create.
+    required:
+    - path
+  impl: mcp:fs/create_directory
+  mutates: true
+- name: move_file
+  description: Move or rename a file or directory.
+  args:
+    type: object
+    properties:
+      source:
+        type: string
+        description: Absolute path of the file or directory to move.
+      destination:
+        type: string
+        description: Absolute destination path. Its parent directory must already exist.
+    required:
+    - source
+    - destination
+  impl: mcp:fs/move_file
+  mutates: true

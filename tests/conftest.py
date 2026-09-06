@@ -14,6 +14,11 @@ whether the machine running it happens to be configured.
 
 So: strip sponsor credentials for every test. A test that wants the live path can set the
 var itself with monkeypatch, which is explicit and local.
+
+Also registers the ``integration`` marker used by tests that need a real external process
+(currently ``tests/test_mcp.py``, which launches a third-party MCP server over stdio).
+Those tests skip themselves when the binary is unavailable; the marker exists so a run can
+also deselect them up front with ``-m "not integration"``.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ LIVE_KEYS = (
     "DODO_CUSTOMER_EMAIL",
     "AO_AGENT",
     "ANNEAL_TIER_CAP",
+    "ANNEAL_GATE_ESCALATION",
 )
 
 
@@ -45,3 +51,9 @@ def _offline_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove sponsor credentials so no test silently goes live."""
     for key in LIVE_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "integration: needs a real external process (skips when unavailable)"
+    )
