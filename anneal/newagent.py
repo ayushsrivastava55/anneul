@@ -51,7 +51,11 @@ class Submission:
         answers.append(self.success)
         for given, expected in self.examples:
             answers += [given, expected]
-        answers.append("")  # a blank input ends the examples loop
+        # Two blanks, not one. The interview treats a first blank below the minimum as a nudge
+        # and asks once more; a single blank would exhaust the queue there and report "scripted
+        # answers exhausted" instead of the reason a person can act on, which is that they gave
+        # too few examples.
+        answers += ["", ""]
         return answers
 
 

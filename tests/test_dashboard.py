@@ -315,12 +315,17 @@ def test_the_agents_index_lists_every_agent_with_a_way_into_it(tmp_path: Path) -
     assert "Design" in body  # the step this fixture's loop is on, named as the flow names it
 
 
-def test_the_agents_index_with_no_runs_says_how_to_make_one(tmp_path: Path) -> None:
+def test_the_agents_index_with_nothing_at_all_says_how_to_make_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Empty means no agents on disk, not merely none that have produced numbers yet."""
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", tmp_path / "domains")
     runs = tmp_path / "runs"
     runs.mkdir()
     body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/agents").text
     assert "No agents yet" in body
-    assert "anneal init" in body
+    assert 'href="/new"' in body  # the way out is a page, not a command
+    assert "anneal init" in body  # the terminal is still offered
 
 
 # --- the step timeline ------------------------------------------------------------------

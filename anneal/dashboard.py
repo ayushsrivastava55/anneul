@@ -20,9 +20,9 @@ from typing import Any
 
 import yaml
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from anneal import newagent, onboard, vocab
+from anneal import launcher, newagent, onboard, vocab
 
 log = logging.getLogger("anneal.dashboard")
 
@@ -1349,6 +1349,16 @@ def render_topbar(
 
 CSS = """
 
+.agent { grid-template-columns:minmax(180px,2fr) repeat(4, minmax(0,1fr)) auto; }
+.aopen { color:var(--ink); text-decoration:none; }
+.arun { padding:8px 14px; font:inherit; font-size:13px; background:var(--panel);
+  color:var(--ink); border:1px solid var(--ink); cursor:pointer; }
+.arun:hover { background:var(--ink); color:var(--panel); }
+.arun:active { transform:translateY(1px); }
+.agoing, .running { color:var(--orange); }
+.failed { color:var(--clay); }
+.afield.right { text-align:right; }
+
 /* --- the new-agent form ---------------------------------------------------------------
    Label above the control, helper text below it, errors above the form and in words. No
    placeholder-as-label anywhere: a placeholder disappears the moment someone starts typing. */
@@ -1660,6 +1670,8 @@ class AppState:
 
     runs_dir: Path
     ledger_path: Path
+    launcher: Any = None
+    """Runs this server started from the browser. None when nothing can be launched."""
 
 
 def _selected(state: AppState, domain: str | None) -> tuple[str | None, list[str]]:
@@ -1821,6 +1833,65 @@ def page(title: str, active: str, body: str, level: str = "plain") -> str:
     )
 
 
+def known_agents(state: AppState) -> list[str]:
+    """Every agent that exists, whether or not it has ever run.
+
+    ``list_domains`` reads the runs directory, so an agent created a minute ago was invisible
+    here: the page that is supposed to say "what do I have" could only see what had already
+    produced numbers. An agent is a directory under ``domains/``; having run is a property of
+    one, not the definition.
+    """
+    on_disk = []
+    if DOMAINS_DIR.is_dir():
+        on_disk = [
+            d.name for d in sorted(DOMAINS_DIR.iterdir())
+            if d.is_dir() and not d.name.startswith(("_", "."))
+            and (d / "goal.md").is_file()
+        ]
+    with_runs = list_domains(state.runs_dir)
+    return list(dict.fromkeys([*on_disk, *with_runs]))
+
+
+def _agent_row(state: AppState, name: str, titles: dict[str, str],
+               summaries: dict[str, list[Point]]) -> str:
+    """One row of the index: what it is, where it got to, and what you can do about it."""
+    points = summaries.get(name) or []
+    latest = points[-1] if points else None
+    status = state.launcher.status(name) if state.launcher else None
+    if status == "running":
+        where = '<span class="running">Running now</span>'
+    elif not points:
+        where = "Never run" if status != "failed" else '<span class="failed">Run failed</span>'
+    else:
+        it = load_iteration(state.runs_dir, name)
+        stages = pipeline_stages(it, _issues(state, name))
+        where = escape(next(
+            (label for (_, label, _), (_, st, _) in zip(STEP_META, stages, strict=True)
+             if st == "active"),
+            STEP_META[-1][1],
+        ))
+    action = (
+        '<span class="agoing">working</span>' if status == "running" else
+        f'<button class="arun" type="submit" formaction="/agents/{escape(name)}/run">'
+        f'{"Run again" if points else "Run it"}</button>'
+    )
+    return (
+        f'<div class="agent"><a class="aopen" href="/console?domain={escape(name)}">'
+        f'<span class="aname">{escape(titles.get(name) or name)}'
+        f'<span class="dslug mono">{escape(name)}</span></span></a>'
+        f'<span class="afield"><span class="ak">rounds</span>'
+        f'<span class="av mono">{len(points)}</span></span>'
+        f'<span class="afield"><span class="ak">how often it is right</span>'
+        f'<span class="av mono">{num(latest.score if latest else None)}</span></span>'
+        f'<span class="afield"><span class="ak">cost per task</span>'
+        f'<span class="av mono">'
+        f'{num(latest.cost_per_task if latest else None, "${:.4f}")}</span></span>'
+        f'<span class="afield"><span class="ak">state</span>'
+        f'<span class="av">{where}</span></span>'
+        f'<span class="afield right">{action}</span></div>'
+    )
+
+
 def render_agents(state: AppState, level: str = "plain") -> str:
     """The agents index: every agent that has run, what it does, and where it got to.
 
@@ -1828,34 +1899,10 @@ def render_agents(state: AppState, level: str = "plain") -> str:
     which one needs me", which the console cannot answer because the console is always looking
     at exactly one agent.
     """
-    domains = list_domains(state.runs_dir)
+    domains = known_agents(state)
     titles = agent_titles(state.runs_dir, domains)
     summaries = load_summaries(state.runs_dir)
-    rows = []
-    for name in domains:
-        points = summaries.get(name) or []
-        latest = points[-1] if points else None
-        it = load_iteration(state.runs_dir, name)
-        stages = pipeline_stages(it, _issues(state, name))
-        step_now = next(
-            (label for (_, label, _), (_, st, _) in zip(STEP_META, stages, strict=True)
-             if st == "active"),
-            STEP_META[-1][1],
-        )
-        rows.append(
-            f'<a class="agent" href="/console?domain={escape(name)}">'
-            f'<span class="aname">{escape(titles.get(name) or name)}'
-            f'<span class="dslug mono">{escape(name)}</span></span>'
-            f'<span class="afield"><span class="ak">rounds</span>'
-            f'<span class="av mono">{len(points)}</span></span>'
-            f'<span class="afield"><span class="ak">how often it is right</span>'
-            f'<span class="av mono">{num(latest.score if latest else None)}</span></span>'
-            f'<span class="afield"><span class="ak">cost per task</span>'
-            f'<span class="av mono">'
-            f'{num(latest.cost_per_task if latest else None, "${:.4f}")}</span></span>'
-            f'<span class="afield"><span class="ak">now on</span>'
-            f'<span class="av">{escape(step_now)}</span></span></a>'
-        )
+    rows = [_agent_row(state, name, titles, summaries) for name in domains]
     body = "".join(rows) or _note(
         'No agents yet. <a href="/new">Answer five questions</a> and Anneal writes one, '
         "or run <code>uv run anneal init</code> in a terminal."
@@ -1866,14 +1913,19 @@ def render_agents(state: AppState, level: str = "plain") -> str:
         '<p>Each one was built from a goal, a set of tools and a way to score it. '
         "Open one to watch the round it is on.</p>"
         '<a class="fsubmit link" href="/new">New agent</a></div>'
-        f'<div class="agents">{body}</div>',
+        f'<form method="post" class="agents">{body}</form>'
+        '<p class="note">A run takes a few minutes. This page refreshes itself.</p>'
+        '<script>setTimeout(()=>location.reload(),10000)</script>',
         level,
     )
 
 
 def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.json") -> FastAPI:
     """FastAPI app serving the console plus one endpoint per region."""
-    state = AppState(Path(runs_dir), Path(ledger_path))
+    state = AppState(
+        Path(runs_dir), Path(ledger_path),
+        launcher=launcher.Launcher(Path(runs_dir), DOMAINS_DIR),
+    )
     app = FastAPI(title="Anneal dashboard")
     app.state.anneal = state
 
@@ -1882,6 +1934,16 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
         if not path.exists():
             return "<html><body><p>landing/index.html is missing; see the repo.</p></body></html>"
         return path.read_text(encoding="utf-8")
+
+    @app.exception_handler(404)
+    async def not_found(request: Request, exc: Exception) -> HTMLResponse:
+        """A page, not FastAPI's JSON. Someone who mistypes a URL is still a reader."""
+        body = (
+            '<div class="pagehead"><h1>No such page</h1>'
+            "<p>That address does not exist here.</p>"
+            '<a class="fsubmit link" href="/agents">Go to your agents</a></div>'
+        )
+        return HTMLResponse(page("Anneal - not found", "", body), status_code=404)
 
     @app.get("/", response_class=HTMLResponse)
     def home() -> str:
@@ -1896,6 +1958,24 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
     @app.get("/agents", response_class=HTMLResponse)
     def agents(detail: str | None = None) -> str:
         return render_agents(state, detail_level(detail))
+
+    @app.post("/agents/{domain}/run")
+    def start_run(domain: str) -> RedirectResponse:
+        """Start the loop for one agent and come straight back to the index.
+
+        A redirect rather than a rendered page so a refresh does not start a second run, and
+        so the index's own ten-second refresh is what reports progress.
+        """
+        try:
+            state.launcher.start(domain)
+        except (RuntimeError, FileNotFoundError, OSError) as exc:
+            log.warning("could not start %s: %s", domain, exc)
+        return RedirectResponse("/agents", status_code=303)
+
+    @app.post("/agents/{domain}/stop")
+    def stop_run(domain: str) -> RedirectResponse:
+        state.launcher.stop(domain)
+        return RedirectResponse("/agents", status_code=303)
 
     @app.get("/new", response_class=HTMLResponse)
     def new_agent(detail: str | None = None) -> str:
