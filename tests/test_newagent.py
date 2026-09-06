@@ -161,3 +161,22 @@ def test_the_launcher_picks_the_local_ladder_without_a_key(monkeypatch) -> None:
     assert launcher_mod.default_ladder() == launcher_mod.LOCAL_LADDER
     monkeypatch.setattr(config, "env", lambda name, default=None: "sk-real-key")
     assert launcher_mod.default_ladder() == launcher_mod.HOSTED_LADDER
+
+
+def test_no_em_dash_reaches_a_reader() -> None:
+    """The em-dash is our writing tic, and it shows up in product copy as an AI tell.
+
+    Docstrings and comments are ours to write however we like. Anything a person reads on a
+    page is not: every question the interview asks, every choice label, every helper line.
+    """
+    from anneal import vocab
+
+    strings: list[str] = []
+    for question in onboard.SCRIPT:
+        strings += [question.prompt, question.help, *(label for _, label in question.choices)]
+    strings += [name for name, _ in vocab.STEPS.values()]
+    strings += list(vocab.TOPOLOGIES.values()) + list(vocab.ROLES.values())
+    strings += list(vocab.OPERATORS.values()) + list(vocab.DECISIONS.values())
+    strings.append(newagent.form_body())
+    for text in strings:
+        assert "\u2014" not in text and "\u2013" not in text, text[:80]

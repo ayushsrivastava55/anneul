@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from anneal import launcher, newagent, onboard, vocab
 
@@ -1949,6 +1949,14 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
     def home() -> str:
         """The front door. The console used to live here, which made it the whole product."""
         return _landing()
+
+    @app.get("/landing/img/{name}")
+    def landing_image(name: str) -> FileResponse:
+        """Serve the landing page's own images. The name is a filename, never a path."""
+        path = (Path(__file__).resolve().parent.parent / "landing" / "img" / Path(name).name)
+        if not path.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(path)
 
     @app.get("/landing", response_class=HTMLResponse)
     def landing() -> str:

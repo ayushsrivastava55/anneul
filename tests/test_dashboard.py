@@ -284,7 +284,9 @@ def test_landing_page_is_served_and_names_the_product(client: TestClient) -> Non
     assert response.status_code == 200
     assert "Anneal" in response.text
     # the page leads with what it does for the reader, not with a description of itself
-    assert "anneal builds the agent" in response.text.lower()
+    assert "anneal builds it" in response.text.lower()
+    # the front door leads to the thing the reader came to do
+    assert 'href="/new"' in response.text
     # and it is a front door: both other surfaces are reachable from it
     assert 'href="/agents"' in response.text
     assert 'href="/console"' in response.text

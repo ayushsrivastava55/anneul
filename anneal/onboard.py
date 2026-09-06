@@ -139,7 +139,7 @@ SCRIPT: list[Question] = [
         id="name",
         step="NAME",
         prompt="Name this domain.",
-        help="It becomes domains/<name>/. Letters, numbers and spaces.",
+        help="Letters, numbers and spaces. It becomes the folder your agent lives in.",
     ),
     Question(
         id="job",
@@ -155,7 +155,7 @@ SCRIPT: list[Question] = [
         choices=(
             ("mcp", "An MCP server"),
             ("python", "Python functions in a module"),
-            ("none", "Nothing yet — the agent works from the task text alone"),
+            ("none", "Nothing yet. It works from the task text alone"),
         ),
     ),
     Question(
