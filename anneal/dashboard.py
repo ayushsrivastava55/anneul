@@ -326,15 +326,23 @@ def pending_iterations(runs_dir: Path | str, domain: str) -> tuple[str, ...]:
 
 LIVE_KEYS = (
     "task_id", "score", "hard_fail", "hit_step_budget", "schema_error", "latency_ms", "trace_id",
+    "output",
 )
+
+
+# How much of an agent's answer is held in memory per task. Enough to read what it
+# said, far short of the megabytes a full trace runs to.
+OUTPUT_CLIP = 400
 
 
 def load_live_rows(iter_dir: Path, candidate_id: str | None) -> tuple[str | None, list[dict]]:
     """Per-task rows for one candidate's search run: ``(candidate_id, rows)``.
 
     Only the ``search`` split is ever opened here; the reserved split belongs to the gate and
-    this module must never read it. ``output`` and ``trace`` are dropped on the way in — the
-    console shows a score, a latency and a status, and those payloads are megabytes.
+    this module must never read it. ``trace`` is dropped on the way in because a trace payload
+    is megabytes; ``output`` is kept but clipped to :data:`OUTPUT_CLIP`, because the answer the
+    agent actually gave is the one thing on this page a person who will never open a trace file
+    can read, and dropping it left that column permanently empty.
     """
     files = sorted(iter_dir.glob(f"{candidate_id}.search.s*.jsonl")) if candidate_id else []
     if not files:
@@ -358,7 +366,11 @@ def load_live_rows(iter_dir: Path, candidate_id: str | None) -> tuple[str | None
             log.warning(json.dumps({"event": "dashboard_bad_jsonl_row", "path": str(path)}))
             continue
         if isinstance(row, dict):
-            rows.append({key: row.get(key) for key in LIVE_KEYS})
+            kept = {key: row.get(key) for key in LIVE_KEYS}
+            output = kept.get("output")
+            if isinstance(output, str) and len(output) > OUTPUT_CLIP:
+                kept["output"] = output[:OUTPUT_CLIP]
+            rows.append(kept)
     return path.name.split(".search.")[0], rows
 
 
@@ -578,7 +590,7 @@ def pareto_chart(points: list[Point]) -> str:
     if not usable:
         return (
             '<div class="chart empty"><h4>Pareto</h4>'
-            '<p class="note">No pareto.json yet — run <code>anneal anneal</code> to cool the '
+            '<p class="note">Nothing has been made cheaper yet. Run <code>anneal anneal</code> to '
             "winner down a model tier at a time.</p></div>"
         )
     w, h, pad = 720.0, 260.0, 44.0
@@ -606,7 +618,7 @@ def pareto_chart(points: list[Point]) -> str:
         pts = " ".join(f"{x:.1f},{y:.1f}" for _, x, y in sorted(front_xy))
         line = f'<polyline points="{pts}" class="front-line"/>'
     return (
-        '<div class="chart wide"><h4>score vs $/task &mdash; point size is p95, '
+        '<div class="chart wide"><h4>score against cost, point size is the slowest run, '
         "filled points are the front</h4>"
         f'<svg viewBox="0 0 {w:.0f} {h:.0f}" role="img" aria-label="Pareto scatter">'
         f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad}" y2="{h - pad}" class="axis"/>'
@@ -886,7 +898,7 @@ def render_specs(it: Iteration) -> str:
     ids = sorted(it.search) or sorted(it.specs)
     if not ids:
         return _note(
-            "No candidate specs on disk for this iteration — "
+            "No designs for this round yet. "
             "<code>uv run anneal run domains/&lt;name&gt;</code> writes them here."
         )
     rows = "".join(
@@ -939,6 +951,47 @@ def _secs(value: Any) -> str:
     return f"{seconds:.2f}s" if seconds < 1 else f"{seconds:.1f}s"
 
 
+SAID_LIMIT = 160
+
+
+def _plain_answer(output: Any) -> str:
+    """The answer itself, without the container the evaluator needed it in.
+
+    A structured domain asks its agent for an object, so the recorded answer is
+    ``{'label': 'manager'}``. The reader wants "manager". A single field is shown as its
+    value alone; several fields are shown as "field: value" pairs; anything that is not an
+    object is shown as it was written.
+    """
+    if isinstance(output, str):
+        stripped = output.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                output = json.loads(stripped)
+            except ValueError:
+                return " ".join(stripped.split())
+        else:
+            return " ".join(stripped.split())
+    if isinstance(output, dict):
+        if len(output) == 1:
+            return " ".join(str(next(iter(output.values()))).split())
+        return ", ".join(f"{key}: {value}" for key, value in output.items())
+    return " ".join(str(output or "").split())
+
+
+def _said(row: dict[str, Any]) -> str:
+    """What the agent actually replied on this task.
+
+    Every other column is a measurement of the answer. This is the answer, and for someone who
+    is not going to open a trace file it is the only place the agent's own words appear. Long
+    replies are clipped in the cell and kept whole in the tooltip rather than dropped.
+    """
+    text = _plain_answer(row.get("output"))
+    if not text:
+        return f'<span class="mono absent">{DASH}</span>'
+    shown = text if len(text) <= SAID_LIMIT else f"{text[:SAID_LIMIT].rstrip()}..."
+    return f'<span title="{escape(text)}">{escape(shown)}</span>'
+
+
 def render_run(it: Iteration) -> str:
     """Run's artefact: what each candidate scored, then the task rows behind that score."""
     scores = "".join(
@@ -956,7 +1009,7 @@ def render_run(it: Iteration) -> str:
     )
     if not scores and not it.live:
         return _note(
-            "No scored tasks for this iteration yet — the runner appends one line per task "
+            "No scored tasks for this round yet. One line appears per task "
             "as it finishes."
         )
     table = (
@@ -973,6 +1026,7 @@ def render_run(it: Iteration) -> str:
     rows = "".join(
         f'<tr class="lrow{" bad" if row.get("hard_fail") else ""}" style="--i:{i}">'
         f'<td class="mono">{txt(row.get("task_id"))}</td>'
+        f'<td class="said">{_said(row)}</td>'
         f"<td>{_pips(row.get('score'))}</td>"
         f'<td class="mono num">{num(row.get("score"))}</td>'
         f'<td class="mono num">{_secs(row.get("latency_ms"))}</td>'
@@ -984,13 +1038,14 @@ def render_run(it: Iteration) -> str:
 
     design = vocab.design_name(it.live_candidate) if it.live_candidate else DASH
     label = (
-        f'<div class="sublabel">Each task, for {escape(design)} &mdash; '
+        f'<div class="sublabel">Each task, for {escape(design)}. '
         f"{escape(plural(len(it.live), 'task'))}, "
         f"{escape(plural(hard, 'serious mistake'))}</div>"
     )
     return (
         table + label + '<div class="scroll"><table class="tbl"><thead><tr><th>task</th>'
-        "<th>how well it did</th><th></th><th>took</th><th>status</th></tr></thead>"
+        "<th>what it answered</th><th>how well it did</th><th></th>"
+        "<th>took</th><th>status</th></tr></thead>"
         f"<tbody>{rows}</tbody></table></div>"
     )
 
@@ -1039,7 +1094,7 @@ def _tried(row: dict[str, Any]) -> str:
 def render_ledger(ledger: list[dict[str, Any]]) -> str:
     """Diagnose's artefact: failure classes ranked by severity x count, with the next operator."""
     if not ledger:
-        return _note("Ledger is empty — no failures have been diagnosed from traces yet.")
+        return _note("Nothing has gone wrong yet, so there is nothing to fix.")
     ranked = sorted(ledger, key=_rank, reverse=True)
     head = "".join(f"<th>{escape(c)}</th>" for c in LEDGER_COLUMNS[2:])
     rows = "".join(
@@ -1096,7 +1151,7 @@ def render_mutation(it: Iteration) -> str:
     child_id = it.summary.get("candidate_id")
     if not operator or not child_id:
         return _note(
-            "No mutation this iteration — Mutate runs once the ledger names an issue with an "
+            "No repair this round. One is made as soon as a fault names an operator that has "
             "operator left to try."
         )
     child = it.specs.get(str(child_id)) or {}
@@ -1223,7 +1278,7 @@ def _gate_reason(gate: dict[str, Any]) -> str:
 def render_gate(gate: dict[str, Any]) -> str:
     """Gate's artefact: the verdict, the paired-test grid, and the line it wrote to explain it."""
     if not gate:
-        return _note("No gate.json for this iteration — the gate runs once a challenger exists.")
+        return _note("Nothing to judge this round. This step runs once a repair has been made.")
     decision = str(gate.get("decision") or "")
     cls = {"promote": "verdict ok", "reject": "verdict bad"}.get(decision, "verdict")
     candidate, incumbent = _gate_side(gate, "candidate"), _gate_side(gate, "incumbent")
@@ -1256,7 +1311,7 @@ def render_pareto(fronts: dict[str, list[Point]]) -> str:
     """Anneal's artefact: the cost/score front the downshift search produced."""
     if not fronts:
         return _note(
-            "No pareto.json yet — <code>anneal anneal</code> walks the winner down the model "
+            "Nothing made cheaper yet. <code>anneal anneal</code> walks the winner down the model "
             "ladder and writes the front here."
         )
     blocks = []
@@ -1561,6 +1616,7 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
 @keyframes cascade { from { opacity:0; transform:translateY(4px); } to { opacity:1; } }
 
 .tblwrap { overflow-x:auto; }
+.said { font-size:12px; color:var(--graphite); max-width:34ch; }
 .tbl { border-collapse:collapse; width:100%; min-width:480px; table-layout:auto; }
 .tbl th { text-align:left; font-weight:400; font-size:10px; text-transform:uppercase;
   letter-spacing:0.1em; color:var(--ash); padding:0 8px 8px;

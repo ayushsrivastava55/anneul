@@ -124,8 +124,8 @@ def test_empty_runs_directory_renders_friendly_empty_state(tmp_path: Path) -> No
     assert "No runs yet" in response.text
     # the console opens one step at a time, so the ledger and pareto empty states live on
     # their own fragments rather than all on the page at once
-    assert "Ledger is empty" in client.get("/fragments/ledger").text
-    assert "No pareto.json yet" in client.get("/fragments/pareto").text
+    assert "nothing to fix" in client.get("/fragments/ledger").text
+    assert "Nothing made cheaper yet" in client.get("/fragments/pareto").text
 
 
 def test_missing_runs_directory_does_not_traceback(tmp_path: Path) -> None:
@@ -145,8 +145,8 @@ def test_malformed_json_is_skipped_not_fatal(tmp_path: Path) -> None:
     response = client.get("/console")
     assert response.status_code == 200
     assert "0.734" in response.text
-    assert "Ledger is empty" in client.get("/fragments/ledger").text
-    assert "No pareto.json yet" in client.get("/fragments/pareto").text
+    assert "nothing to fix" in client.get("/fragments/ledger").text
+    assert "Nothing made cheaper yet" in client.get("/fragments/pareto").text
     assert len(dashboard.load_summaries(runs)["airline"]) == len(SUMMARIES)
 
 
@@ -526,7 +526,7 @@ STEP_MARKERS = {
     "diagnose": "Not a real class",
     "mutate": "NODES ADDED",
     "gate": "wins needed to pass",
-    "anneal": "No pareto.json yet",
+    "anneal": "Nothing made cheaper yet",
 }
 
 
@@ -611,7 +611,7 @@ def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
 
 def test_gate_step_without_gate_json_says_so_and_invents_nothing(tmp_path: Path) -> None:
     body = console(tmp_path, gate=False).get("/console?domain=airline&step=gate").text
-    assert "No gate.json" in body
+    assert "Nothing to judge this round" in body
     # scoped to the panel: the header strip reports the summary's own decision on every page,
     # and the point here is that the gate panel invents no verdict of its own.
     panel = body.split('class="detail"')[1]
@@ -649,7 +649,11 @@ def test_run_step_reads_the_search_jsonl_and_flags_hard_fails(tmp_path: Path) ->
         assert text in body, text
     assert 'class="lrow bad"' in body       # the hard-fail row is flagged
     assert "trace_payload_marker" not in body  # traces are dropped on the way in
-    assert "xxxxx" not in body                 # so is the model output
+    # The answer is not dropped with them. It used to be, which left the one column a reader
+    # who will never open a trace file can actually read permanently empty. It is clipped
+    # instead, so the size problem that justified dropping it is still solved.
+    assert 'class="said"' in body
+    assert body.count("x") < 5000
 
 
 def test_run_step_never_opens_the_reserved_split(tmp_path: Path) -> None:
@@ -781,3 +785,56 @@ def test_the_contract_rows_say_what_they_mean_before_naming_the_file(tmp_path: P
     # the loop's own names for the three files survive, as secondary text
     for technical in ("GOAL", "TOOLS", "SCORER"):
         assert f'class="dslug mono">{technical}<' in body, technical
+
+
+def test_no_em_dash_is_used_as_punctuation_on_any_page(tmp_path: Path) -> None:
+    """Two reached readers as &mdash; inside sentences, which the source-level guard missed.
+
+    ``DASH`` itself stays. A lone em-dash standing in for a value that does not exist is a
+    table convention, it is documented in the README's results block, and it is the opposite
+    of the thing being guarded against here: an em-dash used as prose punctuation, which is
+    the writing tic that makes copy read as machine-written.
+    """
+    import re
+
+    runs, ledger = write_fixture(tmp_path)
+    client = TestClient(dashboard.create_app(runs, ledger))
+    pages = ["/agents", "/new", "/console?domain=airline"]
+    pages += [f"/console?domain=airline&step={key}" for key in dashboard.vocab.STEPS]
+    for path in pages:
+        body = client.get(path).text
+        assert "&mdash;" not in body and "&ndash;" not in body, path
+        # a dash with a word on either side of it is punctuation, not a missing value
+        assert not re.search(r"\w\s*[\u2013\u2014]\s*\w", body), path
+
+
+def test_the_run_panel_shows_what_the_agent_actually_answered(tmp_path: Path) -> None:
+    """Every other column measures the answer. This column is the answer.
+
+    It was permanently empty at first: load_live_rows dropped ``output`` alongside ``trace``,
+    which is right for a trace payload and wrong for one line of text.
+    """
+    body = console(tmp_path).get("/console?domain=airline&step=run").text
+    assert "what it answered" in body
+    assert 'class="said"' in body
+
+
+def test_an_answer_is_shown_without_the_container_the_evaluator_wanted_it_in() -> None:
+    """A structured domain records {"label": "manager"}. The reader wants "manager"."""
+    assert dashboard._plain_answer('{"label": "manager"}') == "manager"
+    assert dashboard._plain_answer({"label": "pay"}) == "pay"
+    assert dashboard._plain_answer({"team": "network", "why": "vpn"}) == "team: network, why: vpn"
+    assert dashboard._plain_answer("just words") == "just words"
+    assert dashboard._plain_answer("{not json") == "{not json"
+    assert dashboard._plain_answer(None) == ""
+
+
+def test_a_long_answer_is_clipped_in_memory_not_only_on_screen(tmp_path: Path) -> None:
+    """The reason output was dropped was size; clipping is what makes keeping it safe."""
+    runs = tmp_path / "runs" / "d" / "0"
+    runs.mkdir(parents=True)
+    row = {"task_id": "t-1", "score": 1.0, "output": "x" * 5000, "trace": ["huge"] * 1000}
+    (runs / "cand-01.search.s0.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    _, rows = dashboard.load_live_rows(runs, "cand-01")
+    assert len(rows[0]["output"]) == dashboard.OUTPUT_CLIP
+    assert "trace" not in rows[0]

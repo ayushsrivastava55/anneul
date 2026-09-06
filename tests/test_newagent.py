@@ -178,5 +178,11 @@ def test_no_em_dash_reaches_a_reader() -> None:
     strings += list(vocab.TOPOLOGIES.values()) + list(vocab.ROLES.values())
     strings += list(vocab.OPERATORS.values()) + list(vocab.DECISIONS.values())
     strings.append(newagent.form_body())
+    # and the console's own rendered pages, which is where two slipped through as &mdash;
+    from anneal import dashboard
+
+    strings += [dashboard.CSS, *[b for _, b in vocab.STEPS.values()]]
+    strings = [t.replace(dashboard.DASH, "") for t in strings]  # the missing-value glyph stays
     for text in strings:
         assert "\u2014" not in text and "\u2013" not in text, text[:80]
+        assert "&mdash;" not in text and "&ndash;" not in text, text[:80]
