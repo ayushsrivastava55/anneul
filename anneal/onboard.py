@@ -79,8 +79,11 @@ WRITE_HINTS = (
     "put", "move", "edit", "append", "book", "cancel", "pay", "submit", "add", "upload",
 )
 
+# Python type (or the name of one, since annotations are strings under
+# `from __future__ import annotations`) -> the JSON-schema type name.
 _JSON_TYPES: dict[Any, str] = {str: "string", int: "integer", float: "number", bool: "boolean",
                                list: "array", dict: "object"}
+_JSON_TYPE_NAMES: dict[str, str] = {t.__name__: name for t, name in _JSON_TYPES.items()}
 
 
 class OnboardError(RuntimeError):
@@ -193,15 +196,22 @@ class RichTransport:
         if question.help:
             self.console.print(f"[dim]{question.help}[/dim]")
         if question.kind != "choice":
-            return str(self.console.input("[green]> [/green]")).strip()
+            return self._input().strip()
         for i, (_value, label) in enumerate(question.choices, start=1):
             self.console.print(f"  [cyan]{i}[/cyan]. {label}")
         return self._choose(question)
 
+    def _input(self) -> str:
+        """One line. Piped input that runs out is an answer we are missing, not a traceback."""
+        try:
+            return str(self.console.input("[green]> [/green]"))
+        except EOFError as exc:
+            raise OnboardError("ran out of input before the interview finished") from exc
+
     def _choose(self, question: Question) -> str:
         values = [value for value, _label in question.choices]
         while True:
-            raw = str(self.console.input("[green]> [/green]")).strip().lower()
+            raw = self._input().strip().lower()
             if raw.isdigit() and 1 <= int(raw) <= len(values):
                 return values[int(raw) - 1]
             if raw in values:
@@ -308,16 +318,24 @@ def discover_mcp(
 
 
 def _param_schema(parameter: inspect.Parameter) -> dict[str, Any]:
+    """One parameter's JSON type. Unannotated or exotic parameters fall back to a string."""
     annotation = parameter.annotation
+    if isinstance(annotation, str):  # `from __future__ import annotations` in the tool module
+        return {"type": _JSON_TYPE_NAMES.get(annotation, "string")}
     return {"type": _JSON_TYPES.get(annotation, "string")}
 
 
 def _signature_schema(func: Any) -> dict[str, Any]:
     """A JSON-schema ``args`` block from a Python signature."""
     try:
-        signature = inspect.signature(func)
-    except (TypeError, ValueError):
-        return {"type": "object", "properties": {}}
+        # eval_str resolves the string annotations a module with `from __future__ import
+        # annotations` produces; a name it cannot resolve falls back to the raw signature.
+        signature = inspect.signature(func, eval_str=True)
+    except (TypeError, ValueError, NameError, AttributeError):
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return {"type": "object", "properties": {}}
     properties, required = {}, []
     for name, parameter in signature.parameters.items():
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
@@ -920,23 +938,42 @@ TOO_FEW_WARNING = (
 )
 
 
-def _output_schema(fields: tuple[str, ...]) -> dict[str, Any]:
+def _field_type(values: list[Any]) -> dict[str, Any]:
+    """The JSON type every observed value agrees on, or no type at all when they disagree.
+
+    The runtime type-checks this schema one level deep (``runtime.shallow_check``), so a
+    field the user demonstrated as a number must not be declared a string: a correct answer
+    would be recorded as a schema error.
+    """
+    seen = {_JSON_TYPES.get(type(v)) for v in values if v is not None}
+    seen.discard(None)
+    return {"type": next(iter(seen))} if len(seen) == 1 else {}
+
+
+def _output_schema(
+    fields: tuple[str, ...], expecteds: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """The answer shape, read by ``architect.find_output_schema`` off the eval module."""
+    rows = expecteds or []
     return {
         "type": "object",
-        "properties": {name: {"type": "string"} for name in fields},
+        "properties": {
+            name: _field_type([row.get(name) for row in rows if name in row]) for name in fields
+        },
         "required": list(fields),
     }
 
 
-def eval_constants(kind: str, fields: tuple[str, ...]) -> str:
+def eval_constants(
+    kind: str, fields: tuple[str, ...], expecteds: list[dict[str, Any]] | None = None
+) -> str:
     """The kind-specific constants block of the generated evaluator."""
     if kind == "fields":
-        schema = json.dumps(_output_schema(fields), indent=4)
+        schema = json.dumps(_output_schema(fields, expecteds), indent=4)
         return f"# The keys every example agreed on.\nFIELDS = {fields!r}\nOUTPUT_SCHEMA = {schema}"
     if kind == "label":
         label = fields[0] if fields else "label"
-        schema = json.dumps(_output_schema((label,)), indent=4)
+        schema = json.dumps(_output_schema((label,), expecteds), indent=4)
         return (
             f"# The one key that carries the decision.\nLABEL_FIELD = {label!r}\n"
             f"OUTPUT_SCHEMA = {schema}"
@@ -946,7 +983,14 @@ def eval_constants(kind: str, fields: tuple[str, ...]) -> str:
     return "# State scoring compares expected['state'] with read_state() below."
 
 
-def render_eval(slug: str, kind: str, fields: tuple[str, ...], *, warning: str = "") -> str:
+def render_eval(
+    slug: str,
+    kind: str,
+    fields: tuple[str, ...],
+    *,
+    expecteds: list[dict[str, Any]] | None = None,
+    warning: str = "",
+) -> str:
     """The generated evaluator, from the one template and the score body for ``kind``."""
     kind = kind if kind in SCORE_BODIES else "examples"
     text = EVAL_TEMPLATE
@@ -957,7 +1001,7 @@ def render_eval(slug: str, kind: str, fields: tuple[str, ...], *, warning: str =
         ("@@SETUP_DOC@@", "    setup(task)                     reset the system before the run\n"
                           if kind == "state" else ""),
         ("@@THRESHOLD@@", "1.0"),
-        ("@@CONSTANTS@@", eval_constants(kind, fields)),
+        ("@@CONSTANTS@@", eval_constants(kind, fields, expecteds)),
         ("@@SCORE@@", SCORE_BODIES[kind]),
         ("@@SETUP@@", SETUP_STATE if kind == "state" else ""),
         ("@@WARNING@@", warning),
@@ -1047,7 +1091,9 @@ def generate_domain(
     (path / "goal.md").write_text(goal, encoding="utf-8")
     (path / "tools.yaml").write_text(render_tools(interview, manifest), encoding="utf-8")
     (path / "eval.py").write_text(
-        render_eval(slug, interview.success, fields, warning=warning), encoding="utf-8"
+        render_eval(slug, interview.success, fields,
+                    expecteds=[t["expected"] for t in tasks], warning=warning),
+        encoding="utf-8",
     )
     (path / "tasks.jsonl").write_text(
         "".join(json.dumps(task, ensure_ascii=False, sort_keys=True) + "\n" for task in tasks),

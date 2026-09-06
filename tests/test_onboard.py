@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from anneal import cli, mcp, onboard
+from anneal import cli, mcp, onboard, runtime
 from anneal.domain import load_domain
 from tests.fakes import DEFAULT_BACKEND, FakeClient, FakeRawResponse, build_completion
 
@@ -165,6 +165,18 @@ def test_mcp_discovery_uses_the_servers_own_schemas(tmp_path: Path) -> None:
     assert tools.servers["notes"]["command"] == "npx"
 
 
+def test_running_out_of_piped_input_is_a_message_not_a_traceback() -> None:
+    class DeadConsole:
+        def print(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+        def input(self, *_a: Any, **_kw: Any) -> str:
+            raise EOFError
+
+    with pytest.raises(onboard.OnboardError, match="ran out of input"):
+        onboard.RichTransport(DeadConsole()).ask(onboard.SCRIPT[0])
+
+
 def test_mcp_url_target_becomes_a_url_server() -> None:
     assert onboard.server_block("https://host/mcp") == {"url": "https://host/mcp"}
 
@@ -219,6 +231,24 @@ def test_python_discovery_introspects_public_functions(
     assert by_name["post_order"].mutates is True
 
 
+def test_python_discovery_resolves_string_annotations(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tool module with `from __future__ import annotations` still gets real JSON types.
+
+    Under that import every annotation arrives as a string, so a naive lookup types every
+    argument as `string` and the model is told a float field is text.
+    """
+    source = "from __future__ import annotations\n" + MODULE_SOURCE.replace(
+        "verbose: bool = False", "amount: float = 0.0"
+    )
+    (tmp_path / "onboard_future_tools.py").write_text(source)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    tools, error = onboard.discover_python("onboard_future_tools")
+    assert error is None
+    args = next(t for t in tools if t.name == "lookup_order").args
+    assert args["properties"] == {"order_id": {"type": "string"}, "amount": {"type": "number"}}
+
+
 def test_python_discovery_reports_a_bad_module_instead_of_crashing() -> None:
     tools, error = onboard.discover_python("no.such.module.anywhere")
     assert tools == []
@@ -270,6 +300,23 @@ def test_each_eval_template_scores_good_1_and_bad_0(
     assert evaluator.THRESHOLD == 1.0
     assert evaluator.is_hard_fail(task, [{"tool": "anything", "args": {}}]) is False
     assert (kind == "state") == hasattr(evaluator, "setup")
+
+
+def test_output_schema_types_come_from_the_examples(tmp_path: Path) -> None:
+    """`runtime.shallow_check` type-checks OUTPUT_SCHEMA, so a numeric field must say so.
+
+    Typing every field `string` would record a correct numeric answer as a schema error.
+    """
+    examples = [
+        ('Order 1001, 42.50', '{"order": "1001", "total": 42.5}'),
+        ('Order 1002, 10.00', '{"order": "1002", "total": 10.0}'),
+        ('Order 1003, 99.99', '{"order": "1003", "total": 99.99}'),
+    ]
+    evaluator = load_domain(generate(tmp_path, name="totals", examples=examples)).eval
+    assert evaluator.OUTPUT_SCHEMA["properties"]["total"] == {"type": "number"}
+    assert evaluator.OUTPUT_SCHEMA["properties"]["order"] == {"type": "string"}
+    task = next(t for t in evaluator.load_tasks() if t.id == "totals-00")
+    assert runtime.shallow_check(task.expected, evaluator.OUTPUT_SCHEMA) is None
 
 
 def test_no_generated_evaluator_ever_calls_a_model(tmp_path: Path) -> None:
