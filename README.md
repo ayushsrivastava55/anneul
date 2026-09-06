@@ -84,6 +84,12 @@ worktree. A rejected branch leaves the candidate spec untouched and marks the le
 attempted. This path is verified end to end: `uv run python -m anneal.ao --selftest` spawned a
 real session that wrote a tool, committed it, and passed the gate.
 
+This is not hypothetical: in a live bugfix run the loop diagnosed `missing_capability` (the
+domain deliberately withholds `run_tests`), spawned session `tool-run_pytest-9b51`, and the
+worker wrote `run_pytest.py` with its test, which the gate then evaluated on the reserved
+split like any other mutation. A separate worker session (`readme-results`) built the README
+results splicer used below — the optimiser and its own build pipeline share the same executor.
+
 Two things we learned about AO and worked around, both documented in `anneal/ao.py`: `ao spawn`
 has no `--json` flag despite what the architecture notes assumed, so the REST body was recovered
 by probing; and a project needs a remote with a resolved default branch before it will create
@@ -93,8 +99,8 @@ worktrees.
 
 - **AO**: build orchestration for every task, and the executor for code-level mutations via the daemon API.
 - **Neatlogs**: spans for every node/tool/LLM call; MCP trace reads drive Diagnose; prompt registry versions every mutation (`staging` → `production`); detections flag token spikes.
-- **TensorMux**: single OpenAI-compatible endpoint; Anneal's downshift is a config change; per-request backend and latency give the cost/speed metrics.
-- **AI Grants India**: the cheap tier behind TensorMux.
+- **TensorMux**: the `flash` tier (glm-4-7-flash) reached by the downshift; per-request backend and latency give the cost/speed metrics. Its 60 RPM cap is survived with exponential backoff.
+- **AI Grants India**: the `nano` tier (gpt-5-nano) — the cheapest rung on the ladder, and on invoices it holds a perfect score at ~29× below the mid tier's cost.
 - **Dodo Payments**: credit ledger debited per run (budget-aware optimisation, `balance_low` halts); shipped agents get a usage meter.
 - **Maximor**: the invoices domain, with escalation on low confidence and an audit trail of every change the optimiser made.
 
