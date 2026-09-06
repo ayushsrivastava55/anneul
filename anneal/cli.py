@@ -19,6 +19,8 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1053,6 +1055,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@contextmanager
+def _selected_ladder(models: str | None) -> Iterator[None]:
+    """Apply ``--models`` for the length of one command, then put the default back.
+
+    One ladder per process is the rule (docs/ARCHITECTURE.md, "Configuration") so architect,
+    diagnose and mutate can never resolve a different file than runner does. But the scope of
+    that choice is the *invocation*, not the interpreter: ``main`` is an ordinary function that
+    tests and future callers invoke many times in one process, and a run pointed at a temporary
+    ladder was leaving it installed for everything that came after -- which is precisely how a
+    tmp-dir models.yaml ended up rendering in a later README block.
+    """
+    if not models:
+        yield
+        return
+    previous = llm.MODELS_PATH
+    llm.set_default_models_path(models)
+    try:
+        yield
+    finally:
+        llm.set_default_models_path(previous)
+
+
 def main(argv: list[str] | None = None) -> int:
     console = Console()
     args = build_parser().parse_args(argv)
@@ -1062,28 +1086,25 @@ def main(argv: list[str] | None = None) -> int:
         for name, help_text in COMMANDS.items():
             console.print(f"  [cyan]{name:<10}[/cyan] {help_text}")
         return 0
-    if getattr(args, "models", None):
-        # One ladder per process. The flag drives the same default that ANNEAL_MODELS_PATH
-        # seeds, so architect, diagnose and mutate can never resolve a different file than
-        # runner does (docs/ARCHITECTURE.md, "Configuration").
-        llm.set_default_models_path(args.models)
     handler = {
         "init": cmd_init, "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
         "anneal": cmd_anneal, "dashboard": cmd_dashboard,
     }[args.command]
-    # Nothing on the run path used to call this -- only mutate.py did, for the prompt
-    # registry -- so a fully configured Neatlogs project still received zero traces, and
-    # Diagnose would ask the MCP for spans that were never sent. No-op without a key.
-    if args.command in ("run", "gate", "anneal"):
-        from anneal.tracing import init_tracing, shutdown
+    with _selected_ladder(getattr(args, "models", None)):
+        # Nothing on the run path used to call this -- only mutate.py did, for the prompt
+        # registry -- so a fully configured Neatlogs project still received zero traces, and
+        # Diagnose would ask the MCP for spans that were never sent. No-op without a key.
+        if args.command in ("run", "gate", "anneal"):
+            from anneal.tracing import init_tracing, shutdown
 
-        init_tracing()
-        try:
-            return handler(args, console)
-        finally:
-            # Traces are batched; without this the last iteration's spans die with the process.
-            shutdown()
-    return handler(args, console)
+            init_tracing()
+            try:
+                return handler(args, console)
+            finally:
+                # Traces are batched; without this the last iteration's spans die with the
+                # process.
+                shutdown()
+        return handler(args, console)
 
 
 if __name__ == "__main__":

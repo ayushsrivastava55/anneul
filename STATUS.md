@@ -1,5 +1,26 @@
 # STATUS
 
+_Last updated 7 Sep. Below the fold is the running engineering log; this header is the
+current state._
+
+**Where the project is.** The loop runs end to end on four domains (airline, bugfix,
+invoices, filesystem) with no domain-specific code in `anneal/`. `runs/final` is the
+reported set and `README.md`'s table is generated from it, guarded by
+`tests/test_report.py::test_the_repo_readme_block_is_what_the_tool_emits`. 584 tests pass.
+Two model ladders ship: `specs/models.yaml` (hosted, five tiers, real spend) and
+`specs/models.local.yaml` (Ollama, no key), selected per command with `--models`.
+`anneal init` interviews a non-developer and writes a runnable domain. The console at
+`anneal dashboard` renders the contract, the measurements and the six-step flow.
+
+**What the results actually say.** Cost and latency fell materially on every domain that
+annealed. Accuracy moved in both directions; the gate refused several challengers, and
+every refusal is listed under the results table. `runs/final/PROVENANCE.md` records that the
+set was assembled from two runs on two ladders and must not be compared across domains.
+
+**Not done.** Demo video, Devpost submission.
+
+---
+
 Phase: core loop live on all three domains with real models. All sponsor surfaces
 functioning: Anthropic + TensorMux + AIGI tiers, Neatlogs tracing + prompt registry,
 AO worker spawn/accept verified end to end (session anneal-1, branch ao/selftest-5989c5).

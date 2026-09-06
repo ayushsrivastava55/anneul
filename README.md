@@ -77,21 +77,27 @@ Details: `docs/ARCHITECTURE.md`. Failure classes and operators: `specs/failure_t
 
 ## Run it
 
-No API key is required. Inference runs locally.
+Two ladders ship with the repo and `--models` chooses between them. `specs/models.local.yaml`
+is three local Ollama models and needs no key; `specs/models.yaml` is the hosted ladder and
+needs the provider keys in `.env`. Everything below uses the local one, so it runs on a clean
+clone with no account anywhere.
 
 ```
 uv sync
-cp .env.example .env            # every key may stay empty; see Sponsor usage
+cp .env.example .env            # every key may stay empty on the local ladder
 
 brew install ollama && ollama serve &
 ollama pull qwen2.5:3b-instruct
 ollama pull qwen2.5:1.5b-instruct
 ollama pull qwen2.5:0.5b-instruct
 
-uv run anneal run domains/invoices --iterations 2 --budget 2.00
-uv run anneal report runs                 # the results table, straight from runs/
-uv run anneal dashboard                   # http://localhost:8000
+uv run anneal run domains/invoices --models specs/models.local.yaml --iterations 2 --budget 2.00
+uv run anneal report runs/final           # the results table below, straight from the runs
+uv run anneal dashboard --runs-dir runs/final  # http://localhost:8000
 ```
+
+Drop `--models` to use the hosted ladder instead; then `FRONTIER_API_KEY` and its siblings in
+`.env` must be set, or the run stops on the first call with an unset-key error.
 
 On a machine with 8 GB of RAM, hold one model in memory at a time or the run will be
 OOM-killed: `OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_NUM_PARALLEL=1 ollama serve`. Point the tiers at
@@ -190,4 +196,4 @@ not claim otherwise.
 
 ## Team
 
-_Names here._
+Ayush Srivastava · Tanush Singhal

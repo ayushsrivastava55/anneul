@@ -22,6 +22,8 @@ import yaml
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
+from anneal import vocab
+
 log = logging.getLogger("anneal.dashboard")
 
 # summary.json / pareto.json field aliases, most specific first. cli.py writes mean_score /
@@ -33,17 +35,25 @@ PASS3_KEYS = ("pass3", "pass3_rate", "pass_cubed", "pass^3")
 COST_KEYS = ("cost_per_task", "usd_per_task", "dollars_per_task", "cost_usd_per_task")
 P95_KEYS = ("p95_latency_ms", "latency_p95_ms", "p95_ms", "p95")
 
+# The four things the loop is trying to move, named the way the person paying for it would
+# name them. "pass^3" and "p95" are the statistics; what they answer is whether the agent is
+# dependable and whether a slow day is still bearable, so that is what the chart is titled.
 METRICS: tuple[tuple[str, str, str], ...] = (
-    ("score", "score", "{:.3f}"),
-    ("pass3", "pass^3", "{:.3f}"),
-    ("cost_per_task", "$/task", "${:.4f}"),
-    ("p95_latency_ms", "p95 latency (ms)", "{:.0f}"),
+    ("score", "how often it is right", "{:.3f}"),
+    ("pass3", "right 3 times running", "{:.3f}"),
+    ("cost_per_task", "cost per task", "${:.4f}"),
+    ("p95_latency_ms", "slowest runs (ms)", "{:.0f}"),
 )
 
 # Ledger table: the class, how bad it is, how often it fired, and the operator Mutate would
 # reach for next. Severity and the operator ladder come from specs/failure_taxonomy.yaml.
+# "operator" is one column, not two: it shows the repair the loop will try next and, beneath
+# it, the ones already spent on this issue. Seven columns did not fit the detail panel, and
+# splitting next-from-tried put the loop's memory in the column that got clipped.
+# The first two are keys the console never prints; the rest are the column headings a reader
+# sees, so they are phrased as questions about the agent rather than as field names.
 LEDGER_COLUMNS = (
-    "domain", "id", "class", "node", "severity", "count", "status", "next operator", "tried",
+    "domain", "id", "what went wrong", "where", "severity", "times", "status", "fix to try",
 )
 
 TAXONOMY_PATH = Path(__file__).resolve().parent.parent / "specs" / "failure_taxonomy.yaml"
@@ -428,17 +438,26 @@ def pipeline_stages(
     # rows, but a stage that says "done" must point at an artefact in this domain's directory.
     mine = [row for row in issues if row.get("domain") in (None, it.domain)]
     issue = it.summary.get("issue")
-    diagnosed = f"{len(mine)} issues" if mine else (
-        str(issue.get("class")) if isinstance(issue, dict) and issue.get("class") else DASH
+    def plural(n: int, word: str) -> str:
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    diagnosed = plural(len(mine), "fault") if mine else (
+        vocab.failure(issue.get("class"))
+        if isinstance(issue, dict) and issue.get("class") else DASH
     )
     search = it.search
+    operator = it.summary.get("operator")
+    decision = (it.gate or {}).get("decision")
+    # Each stage's one-line status is what the reader sees beside it in the flow, so it says
+    # what happened rather than naming the file or the function that made it happen.
     facts: list[tuple[str, bool, str]] = [
-        ("Architect", specs_on_disk > 0, f"{specs_on_disk} specs" if specs_on_disk else DASH),
-        ("Run", bool(search), f"{len(search)} candidates" if search else DASH),
+        ("Architect", specs_on_disk > 0,
+         plural(specs_on_disk, "design") if specs_on_disk else DASH),
+        ("Run", bool(search), plural(len(search), "design") + " scored" if search else DASH),
         ("Diagnose", diagnosed != DASH, diagnosed),
-        ("Mutate", bool(it.summary.get("operator")), str(it.summary.get("operator") or DASH)),
-        ("Gate", bool(it.gate), str(it.gate.get("decision") or DASH) if it.gate else DASH),
-        ("Anneal", it.has_pareto, "pareto.json" if it.has_pareto else DASH),
+        ("Mutate", bool(operator), vocab.operator(operator) if operator else DASH),
+        ("Gate", bool(it.gate), vocab.decision(decision) if decision else DASH),
+        ("Anneal", it.has_pareto, "cheaper mixes found" if it.has_pareto else DASH),
     ]
     stages: list[tuple[str, str, str]] = []
     active_taken = False
@@ -543,7 +562,8 @@ def line_chart(
         f'<text x="{pad}" y="{pad / 2 - 2}" class="tick">{escape(fmt.format(hi))}</text>'
         f'<text x="{pad}" y="{h - pad + 12}" class="tick">{escape(fmt.format(lo))}</text>'
         f"</svg>"
-        f'<p class="latest">latest <b class="mono">{escape(fmt.format(known[-1][1]))}</b> @ iter '
+        f'<p class="latest">now <b class="mono">{escape(fmt.format(known[-1][1]))}</b>'
+        f", after round "
         f'<b class="mono">{escape(known[-1][0])}</b></p></div>'
     )
 
@@ -654,17 +674,56 @@ def _scorer_line(path: Path) -> str | None:
     return "eval.py"
 
 
+def vocab_strip_goal(line: str | None) -> str | None:
+    """Drop a leading "Goal:" from goal.md's heading; the row already says GOAL."""
+    if not line:
+        return line
+    lowered = line.lower()
+    for prefix in vocab.GOAL_PREFIXES:
+        if lowered.startswith(prefix):
+            return line[len(prefix):].strip() or line
+    return line
+
+
 def load_contract(runs_dir: Path | str, domain: str, summary: dict[str, Any]) -> dict[str, str]:
     """``{GOAL, TOOLS, SCORER}``; anything not on disk stays absent and renders em-dashed."""
     root = _domain_dir(runs_dir, domain, summary)
     if root is None:
         return {}
     found = {
-        "goal": _goal_line(root / "goal.md"),
+        # the heading in goal.md reads "# Goal: <thing>"; the row is already labelled GOAL, so
+        # printing the prefix again would show "GOAL  Goal: airline customer support agent"
+        "goal": vocab_strip_goal(_goal_line(root / "goal.md")),
         "tools": _tools_line(root / "tools.yaml"),
         "scorer": _scorer_line(root / "eval.py"),
     }
     return {k: v for k, v in found.items() if v}
+
+
+def agent_title(runs_dir: Path | str, domain: str, summary: dict[str, Any]) -> str:
+    """What this agent is *for*, in plain English, for a reader who has never seen the repo.
+
+    A directory name like ``airline`` or ``invoices`` means nothing to someone arriving at the
+    console; it is a CLI argument, not a description. Every goal.md opens with a title line
+    ("# Goal: AP invoice triage"), including the ones ``anneal init`` writes from the user's own
+    answer, so that line is the name the console shows. The slug stays visible beside it because
+    it is what you type to run the thing; it is just no longer the only label.
+    """
+    root = _domain_dir(runs_dir, domain, summary)
+    line = _goal_line(root / "goal.md") if root else None
+    if not line:
+        return domain.replace("_", " ").replace("-", " ")
+    lowered = line.lower()
+    for prefix in vocab.GOAL_PREFIXES:
+        if lowered.startswith(prefix):
+            line = line[len(prefix):].strip()
+            break
+    return line[:60] or domain
+
+
+def agent_titles(runs_dir: Path | str, domains: list[str]) -> dict[str, str]:
+    """``{slug: plain-English name}`` for every domain the switcher offers."""
+    return {d: agent_title(runs_dir, d, {}) for d in domains}
 
 
 CONTRACT_ROWS = (
@@ -674,7 +733,9 @@ CONTRACT_ROWS = (
 )
 
 
-def render_contract(contract: dict[str, str], domain: str | None) -> str:
+def render_contract(
+    contract: dict[str, str], domain: str | None, title: str | None = None
+) -> str:
     """The three inputs, always visible: mono label left, value right."""
     rows = "".join(
         f'<div class="drow"><span class="dk mono">{escape(label)}</span>'
@@ -682,19 +743,20 @@ def render_contract(contract: dict[str, str], domain: str | None) -> str:
         f'<span class="dh">{escape(hint)}</span></div>'
         for key, label, hint in CONTRACT_ROWS
     )
-    meta = escape(domain) if domain else DASH
-    return f'<div id="contract" class="contract"><div class="meta mono">{meta}</div>{rows}</div>'
+    name = escape(title or domain or DASH)
+    slug = f'<span class="dslug mono">{escape(domain)}</span>' if domain else ""
+    return (
+        f'<div id="contract" class="contract"><div class="cname">{name}{slug}</div>'
+        f"{rows}</div>"
+    )
 
 
 # --- the step timeline ----------------------------------------------------------------------
 
-STEP_META: tuple[tuple[str, str, str], ...] = (
-    ("architect", "Architect", "Turns the goal and the tool list into candidate specs."),
-    ("run", "Run", "Scores every candidate on the search split, task by task."),
-    ("diagnose", "Diagnose", "Reads the failing traces into a ledger of failure classes."),
-    ("mutate", "Mutate", "Applies the operator that class maps to, producing a challenger."),
-    ("gate", "Gate", "Re-runs challenger and incumbent on reserved tasks and decides."),
-    ("anneal", "Anneal", "Walks the winner down the model ladder while the score holds."),
+# The stage keys are the loop's own and stay in URLs and run files. What the reader sees is
+# vocab.STEPS, so the console's wording changes in one file rather than in string literals here.
+STEP_META: tuple[tuple[str, str, str], ...] = tuple(
+    (key, name, blurb) for key, (name, blurb) in vocab.STEPS.items()
 )
 
 CHEVRON = (
@@ -713,7 +775,10 @@ def default_step(stages: list[tuple[str, str, str]]) -> str:
 
 def _step_row(key: str, name: str, desc: str, state: str, status: str, index: int,
               domain: str | None, open_key: str) -> str:
-    href = f"?step={key}" + (f"&amp;domain={escape(domain)}" if domain else "")
+    # The flow sits well down the page, so a bare "?step=" link would reload to the top and
+    # lose the reader's place. The fragment lands them back on the flow; .flow's
+    # scroll-margin-top keeps the header from covering it.
+    href = f"?step={key}" + (f"&amp;domain={escape(domain)}" if domain else "") + "#flow"
     is_open = "true" if key == open_key else "false"
     return (
         f'<li class="step" data-state="{state}" data-open="{is_open}" style="--i:{index}">'
@@ -742,10 +807,10 @@ def render_timeline(
     title = next(name for key, name, _ in STEP_META if key == open_key)
     detail = step_detail(open_key, it, issues, fronts)
     return (
-        f'<div id="timeline" class="flow"><ol class="steps">{rows}</ol>'
+        f'<div id="timeline" class="flow" tabindex="-1"><ol class="steps">{rows}</ol>'
         f'<section class="detail" data-step="{escape(open_key)}">'
         f'<header class="ph"><h2>{escape(title)}</h2>'
-        f'<span class="meta mono">{escape(it.domain)} · iter {escape(it.label)}</span></header>'
+        f'<span class="meta">round {escape(it.label)}</span></header>'
         f"{detail}</section></div>"
     )
 
@@ -779,10 +844,11 @@ def _node_pills(spec: dict[str, Any] | None) -> str:
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        name = txt(node.get("name") or node.get("role"))
+        name = escape(vocab.role(node.get("role") or node.get("name")))
         tier = node.get("model_tier")
         cls = "tier" if tier else "tier absent"
-        pills.append(f'<span class="pill mono">{name}<b class="{cls}">{txt(tier)}</b></span>')
+        badge = escape(vocab.tier(tier)) if tier else DASH
+        pills.append(f'<span class="pill">{name}<b class="{cls}">{badge}</b></span>')
     return '<span class="pills">' + '<i class="link"></i>'.join(pills) + "</span>"
 
 
@@ -790,13 +856,13 @@ def _roles(it: Iteration, cid: str) -> str:
     summary = it.summary
     chips = []
     if cid == summary.get("incumbent_id"):
-        chips.append('<span class="chip">incumbent</span>')
+        chips.append('<span class="chip">current best</span>')
     if cid == summary.get("candidate_id"):
         decision = str(summary.get("decision") or "")
         cls = {"promote": "chip ok", "reject": "chip bad"}.get(decision, "chip")
-        chips.append('<span class="chip">challenger</span>')
+        chips.append('<span class="chip">this round\'s try</span>')
         if decision:
-            chips.append(f'<span class="{cls}">{escape(decision)}</span>')
+            chips.append(f'<span class="{cls}">{escape(vocab.decision(decision))}</span>')
     if cid == summary.get("winner_id"):
         chips.append('<span class="chip ok">winner</span>')
     return "".join(chips)
@@ -811,16 +877,20 @@ def render_specs(it: Iteration) -> str:
             "<code>uv run anneal run domains/&lt;name&gt;</code> writes them here."
         )
     rows = "".join(
-        f'<tr style="--i:{i}"><td class="mono id">{escape(cid)}{_roles(it, cid)}</td>'
-        f'<td class="mono">{txt((it.specs.get(cid) or {}).get("topology"))}</td>'
-        f"<td>{_node_pills(it.specs.get(cid))}</td>"
+        f'<tr style="--i:{i}"><td>{escape(vocab.design_name(cid))}'
+        f'<span class="cid mono">{escape(cid)}</span>{_roles(it, cid)}</td>'
+        f'<td>{escape(vocab.topology((it.specs.get(cid) or {}).get("topology")))}'
+        f"{_node_pills(it.specs.get(cid))}</td>"
         f'<td class="mono num">{num((it.specs.get(cid) or {}).get("step_budget"), "{:.0f}")}</td>'
         "</tr>"
         for i, cid in enumerate(ids)
     )
+    # Three columns, not four: how an agent is wired and the parts it is wired from are one
+    # idea, and four columns of identifiers overflowed the panel and were clipped on the right.
     return (
-        '<table class="tbl"><thead><tr><th>candidate</th><th>topology</th><th>nodes</th>'
-        f"<th>steps</th></tr></thead><tbody>{rows}</tbody></table>"
+        '<div class="tblwrap"><table class="tbl"><thead><tr><th>design</th>'
+        "<th>how it is wired</th><th>step limit</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table></div>"
     )
 
 
@@ -904,7 +974,7 @@ def _next_operator(row: dict[str, Any]) -> str:
     if not isinstance(operators, list) or not operators:
         return DASH  # a class the taxonomy does not carry; guessing an operator would be a lie
     remaining = [op for op in operators if op not in tried]
-    return escape(str(remaining[0])) if remaining else "all tried"
+    return escape(vocab.operator(remaining[0])) if remaining else "every repair tried"
 
 
 def _severity(row: dict[str, Any]) -> Any:
@@ -920,6 +990,18 @@ def _rank(row: dict[str, Any]) -> float:
     return severity * count
 
 
+def _tried(row: dict[str, Any]) -> str:
+    """The operators already spent on this issue, under the one coming next.
+
+    This is the visible evidence that the loop does not retry what it has already tried, so it
+    belongs beside the next operator rather than in a column of its own.
+    """
+    tried = [vocab.operator(o) for o in row.get("operators_tried") or []]
+    if not tried:
+        return ""
+    return f'<span class="tried">already tried: {escape("; ".join(tried))}</span>'
+
+
 def render_ledger(ledger: list[dict[str, Any]]) -> str:
     """Diagnose's artefact: failure classes ranked by severity x count, with the next operator."""
     if not ledger:
@@ -929,17 +1011,21 @@ def render_ledger(ledger: list[dict[str, Any]]) -> str:
     rows = "".join(
         f'<tr class="lgrow" style="--i:{i}" title="{escape(str(row.get("id") or ""))} · '
         f'{escape(str(row.get("domain") or ""))}">'
-        f'<td class="mono cls">{txt(row.get("class"))}</td>'
-        f'<td class="mono">{txt(row.get("node"))}</td>'
+        f'<td class="cls">{escape(vocab.failure(row.get("class")))}'
+        f'<span class="dslug mono">{txt(row.get("class"))}</span></td>'
+        f"<td>{escape(vocab.role(row.get('node')))}</td>"
         f'<td class="mono num">{num(_severity(row), "{:.0f}")}</td>'
         f'<td class="mono num">{txt(row.get("count"))}</td>'
         f'<td class="mono">{txt(row.get("status"))}</td>'
-        f'<td class="mono op">&rarr; {_next_operator(row)}</td>'
-        f'<td class="mono tried">{txt(", ".join(str(o) for o in row.get("operators_tried") or []))}'
-        f"</td></tr>"
+        f'<td class="op">{_next_operator(row)}{_tried(row)}</td></tr>'
         for i, row in enumerate(ranked)
     )
-    return f'<table class="tbl"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table>'
+    # A wide table scrolls inside its own panel rather than pushing the page sideways
+    # (DESIGN.md 5): the rightmost column is "operators tried", which grows every iteration.
+    return (
+        f'<div class="tblwrap"><table class="tbl"><thead><tr>{head}</tr></thead>'
+        f"<tbody>{rows}</tbody></table></div>"
+    )
 
 
 def _node_names(spec: dict[str, Any] | None) -> list[str]:
@@ -1006,10 +1092,10 @@ def render_mutation(it: Iteration) -> str:
 
 
 GATE_SIDES = (
-    ("mean_score", "score", "{:.3f}"),
-    ("pass3_rate", "pass^3", "{:.3f}"),
-    ("hard_fails", "hard fails", "{:.0f}"),
-    ("gen_gap", "gen gap", "{:+.3f}"),
+    ("mean_score", "how often it is right", "{:.3f}"),
+    ("pass3_rate", "right 3 times running", "{:.3f}"),
+    ("hard_fails", "serious mistakes", "{:.0f}"),
+    ("gen_gap", "worse on unseen tasks by", "{:+.3f}"),
 )
 
 GATE_STATS = (
@@ -1083,6 +1169,11 @@ def _curves_for(domain: str, points: list[Point], pending: tuple[str, ...]) -> s
     )
 
 
+def plural_rounds(n: int) -> str:
+    """"1 round" / "4 rounds": the loop's iterations, counted the way a reader counts."""
+    return f"{n} round" if n == 1 else f"{n} rounds"
+
+
 def render_curves(
     summaries: dict[str, list[Point]], pending: dict[str, tuple[str, ...]] | None = None
 ) -> str:
@@ -1101,7 +1192,7 @@ def render_curves(
         _curves_for(d, pts, pending.get(d, ())) for d, pts in summaries.items()
     )
     iters = sum(len(pts) for pts in summaries.values())
-    return _panel("curves", "Measurements", body, f"{iters} iterations measured")
+    return _panel("curves", "Measurements", body, f"{plural_rounds(iters)} so far")
 
 
 def render_balance(balance: float | None) -> str:
@@ -1113,16 +1204,23 @@ def render_balance(balance: float | None) -> str:
     )
 
 
-def render_topbar(domain: str | None, domains: list[str], it: Iteration | None) -> str:
-    """Wordmark, the domains present in runs/, the budget meter and the credit balance."""
+def render_topbar(
+    domain: str | None,
+    domains: list[str],
+    it: Iteration | None,
+    titles: dict[str, str] | None = None,
+) -> str:
+    """Wordmark, the agents present in runs/, the budget meter and the credit balance."""
+    titles = titles or {}
     if domains:
         links = "".join(
-            f'<a class="dom mono{" on" if d == domain else ""}" href="?domain={escape(d)}">'
-            f"{escape(d)}</a>"
+            f'<a class="dom{" on" if d == domain else ""}" href="?domain={escape(d)}">'
+            f'<span class="dname">{escape(titles.get(d) or d)}</span>'
+            f'<span class="dslug mono">{escape(d)}</span></a>'
             for d in domains
         )
     else:
-        links = f'<span class="dom mono absent">{DASH}</span>'
+        links = f'<span class="dom absent mono">{DASH}</span>'
     summary = it.summary if it else {}
     spend, budget = summary.get("spend_usd"), summary.get("budget_usd")
     used = 0.0
@@ -1151,6 +1249,7 @@ body { margin:0; background:var(--paper); color:var(--ink);
 .mono, .mono * { font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
   font-variant-numeric:tabular-nums; letter-spacing:0; }
 .wrap { max-width:1440px; margin:0 auto; padding:0 48px 64px; }
+#flow { scroll-margin-top:72px; }
 a { color:inherit; text-decoration:none; }
 .absent { color:var(--ash); }
 code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
@@ -1158,9 +1257,21 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
 .topbar { display:flex; align-items:center; gap:32px; height:72px; }
 .mark { font-weight:600; letter-spacing:0.2em; font-size:13px; }
 .doms { display:flex; gap:4px; flex:1; }
-.dom { padding:5px 10px; color:var(--ash); border:1px solid transparent; font-size:12px; }
-.dom:hover { color:var(--ink); }
-.dom.on { color:var(--ink); border-color:var(--rule); background:var(--panel); }
+.dom { display:flex; flex-direction:column; gap:1px; padding:5px 10px;
+  border:1px solid transparent; }
+/* The agent's plain-English name leads; the slug under it is what you type on the CLI. */
+.dname { font-size:12px; color:var(--ash); line-height:1.25; }
+.dslug { font-size:10px; color:var(--ash); opacity:.7; }
+.dom:hover .dname { color:var(--ink); }
+.dom.on { border-color:var(--rule); background:var(--panel); }
+.dom.on .dname { color:var(--ink); }
+.cname { display:flex; align-items:baseline; gap:8px; font-size:15px; color:var(--ink);
+  margin-bottom:16px; }
+.cname .dslug { font-size:10px; text-transform:uppercase; letter-spacing:0.12em; }
+/* An internal id is never what you read first. It sits under the phrase it belongs to, small
+   and grey, because it is still what you type on the command line. */
+.cid { display:block; font-size:10px; color:var(--ash); }
+.cls .dslug { display:block; font-size:10px; margin-top:2px; }
 .meters { display:flex; gap:28px; align-items:center; }
 .meter { display:flex; align-items:center; gap:8px; font-size:10px; color:var(--ash);
   text-transform:uppercase; letter-spacing:0.12em;
@@ -1232,7 +1343,8 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
   50% { transform:scale(1.65); opacity:.5; } }
 @keyframes cascade { from { opacity:0; transform:translateY(4px); } to { opacity:1; } }
 
-.tbl { border-collapse:collapse; width:100%; }
+.tblwrap { overflow-x:auto; }
+.tbl { border-collapse:collapse; width:100%; min-width:480px; table-layout:auto; }
 .tbl th { text-align:left; font-weight:400; font-size:10px; text-transform:uppercase;
   letter-spacing:0.1em; color:var(--ash); padding:0 8px 8px;
   font-family:"Geist Mono",ui-monospace,monospace; }
@@ -1250,7 +1362,7 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
 .chip.bad { border-color:var(--clay); color:var(--clay); }
 .chip.warn { border-color:var(--ash); color:var(--graphite); }
 .st .chip { margin-left:0; margin-right:4px; }
-.pills { display:inline-flex; align-items:center; flex-wrap:wrap; }
+.pills { display:flex; align-items:center; flex-wrap:wrap; gap:2px; margin-top:6px; }
 .pill { border:1px solid var(--rule); padding:2px 6px; font-size:10px; color:var(--ink);
   white-space:nowrap; }
 .pill .tier { margin-left:6px; font-weight:400; color:var(--ash); }
@@ -1263,7 +1375,12 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
 .pips i.on { background:var(--ink); }
 .scroll { max-height:380px; overflow:auto; }
 .op { color:var(--ink); }
-.tried { color:var(--ash); font-size:11px; }
+.tried { display:block; color:var(--ash); font-size:11px; margin-top:3px;
+  overflow-wrap:anywhere; }
+/* The two operator columns carry the longest strings in the console. Letting them wrap
+   keeps all seven columns inside the panel at the width the flow leaves them; .tblwrap
+   still scrolls on a genuinely narrow viewport. */
+.op { overflow-wrap:anywhere; }
 
 .verdict { margin:0 0 16px; font-size:28px; font-weight:600; letter-spacing:-0.03em;
   color:var(--ink); }
@@ -1352,6 +1469,25 @@ def _issues(state: AppState, domain: str | None) -> list[dict[str, Any]]:
     return mine or rows
 
 
+def _curve_data(
+    state: AppState, domain: str | None
+) -> tuple[dict[str, list[Point]], dict[str, tuple[str, ...]]]:
+    """Measured points for the selected domain, and which of its iterations are still pending.
+
+    The page and the ``/fragments/curves`` refresh must narrow to the *same* domain. They used
+    to disagree: the page resolved a default domain through ``_selected`` while the fragment
+    only filtered when a ``?domain=`` was present, so opening ``/`` showed one domain's charts
+    and then the ten-second refresh silently replaced them with all four stacked. Resolving the
+    selection in one place is what keeps the switcher meaning what it says.
+    """
+    summaries = load_summaries(state.runs_dir)
+    pending = {d: pending_iterations(state.runs_dir, d) for d in summaries}
+    selected, _ = _selected(state, domain)
+    if selected in summaries:
+        summaries = {selected: summaries[selected]}
+    return summaries, pending
+
+
 def _blank(domain: str | None) -> Iteration:
     return Iteration(domain or DASH, None, DASH, {}, {}, {}, None, [], False)
 
@@ -1372,9 +1508,10 @@ def _strip(it: Iteration) -> str:
     """The panel's header strip: the artefact path on the left, the run's state on the right."""
     decision = str(it.summary.get("decision") or "")
     dot = {"promote": "sdot ok", "reject": "sdot bad"}.get(decision, "sdot")
+    word = escape(vocab.decision(decision)) if decision else DASH
     return (
-        f'<div class="strip"><span>{escape(str(it.path)) if it.path else DASH}</span>'
-        f'<span class="right"><span>{txt(decision)}</span><span class="{dot}"></span></span></div>'
+        f'<div class="strip"><span class="mono">{escape(str(it.path)) if it.path else DASH}</span>'
+        f'<span class="right"><span>{word}</span><span class="{dot}"></span></span></div>'
     )
 
 
@@ -1385,21 +1522,19 @@ def render_page(
     selected, domains = _selected(app_state, domain)
     it = load_iteration(app_state.runs_dir, selected) if selected else _blank(None)
     issues = _issues(app_state, selected)
-    summaries = load_summaries(app_state.runs_dir)
-    pending = {d: pending_iterations(app_state.runs_dir, d) for d in summaries}
-    if selected:
-        summaries = {k: v for k, v in summaries.items() if k == selected} or summaries
+    summaries, pending = _curve_data(app_state, selected)
     contract = load_contract(app_state.runs_dir, selected or "", it.summary)
+    title = agent_title(app_state.runs_dir, selected or "", it.summary)
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>Anneal console</title>"
         f"<style>{CSS}</style></head><body><div class='wrap'>"
-        f"{render_topbar(selected, domains, it)}"
+        f"{render_topbar(selected, domains, it, agent_titles(app_state.runs_dir, domains))}"
         f'<main class="product">{_strip(it)}'
-        f"{render_contract(contract, selected)}"
+        f"{render_contract(contract, selected, title)}"
         f"{render_curves(summaries, pending)}"
-        f"{render_timeline(it, issues, _fronts(app_state, selected), step)}"
+        f'<div id="flow">{render_timeline(it, issues, _fronts(app_state, selected), step)}</div>'
         f"</main></div><script>{SCRIPT}</script></body></html>"
     )
 
@@ -1425,12 +1560,15 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
     @app.get("/fragments/topbar", response_class=HTMLResponse)
     def topbar(domain: str | None = None) -> str:
         selected, domains = _selected(state, domain)
-        return render_topbar(selected, domains, _iteration(state, domain)[1])
+        return render_topbar(selected, domains, _iteration(state, domain)[1],
+                             agent_titles(state.runs_dir, domains))
 
     @app.get("/fragments/contract", response_class=HTMLResponse)
     def contract(domain: str | None = None) -> str:
         selected, it = _iteration(state, domain)
-        return render_contract(load_contract(state.runs_dir, selected or "", it.summary), selected)
+        return render_contract(
+            load_contract(state.runs_dir, selected or "", it.summary), selected,
+            agent_title(state.runs_dir, selected or "", it.summary))
 
     @app.get("/fragments/timeline", response_class=HTMLResponse)
     def timeline(domain: str | None = None, step: str | None = None) -> str:
@@ -1439,20 +1577,15 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
 
     @app.get("/fragments/curves", response_class=HTMLResponse)
     def curves(domain: str | None = None) -> str:
-        summaries = load_summaries(state.runs_dir)
-        pending = {d: pending_iterations(state.runs_dir, d) for d in summaries}
-        if domain in summaries:
-            summaries = {domain: summaries[domain]}
-        return render_curves(summaries, pending)
+        return render_curves(*_curve_data(state, domain))
 
     @app.get("/fragments/ledger", response_class=HTMLResponse)
     def ledger(domain: str | None = None) -> str:
-        return render_ledger(_issues(state, domain) if domain else
-                             load_ledgers(state.runs_dir, state.ledger_path))
+        return render_ledger(_issues(state, _selected(state, domain)[0]))
 
     @app.get("/fragments/pareto", response_class=HTMLResponse)
     def pareto(domain: str | None = None) -> str:
-        return render_pareto(_fronts(state, domain) if domain else load_pareto(state.runs_dir))
+        return render_pareto(_fronts(state, _selected(state, domain)[0]))
 
     @app.get("/fragments/balance", response_class=HTMLResponse)
     def balance() -> str:

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from anneal import dashboard
+from anneal import dashboard, vocab
 
 SUMMARIES = [
     {"iteration": 0, "score": 0.412, "pass3": 0.2, "cost_per_task": 0.0131, "p95_latency_ms": 9100},
@@ -80,9 +80,12 @@ def test_page_renders_fixture_numbers(client: TestClient) -> None:
 def test_ledger_fragment_has_class_node_count_status_and_operators(client: TestClient) -> None:
     body = client.get("/fragments/ledger").text
     assert client.get("/fragments/ledger").status_code == 200
-    for text in ("tool_misuse", "executor", "premature_stop", "planner", "fixed",
-                 "tighten_tool_schema", ">7<", ">3<"):
+    # the reader sees the phrase; the class id survives only as small secondary text
+    for text in (vocab.failure("tool_misuse"), "Doer", vocab.failure("premature_stop"),
+                 "Planner", "fixed", ">7<", ">3<"):
         assert text in body, text
+    assert "tool_misuse" in body  # the id is still there to type on the CLI
+    assert "executor" not in body.replace("tool_misuse", "")  # but the role name is not
 
 
 def test_pareto_fragment_plots_every_candidate(client: TestClient) -> None:
@@ -404,11 +407,13 @@ def console(tmp_path: Path, **kwargs) -> TestClient:
 
 def step_states(body: str) -> dict[str, str]:
     """{step name: data-state} parsed out of the rendered timeline."""
+    names = {name: key for key, (name, _) in vocab.STEPS.items()}
     states = {}
     for chunk in body.split('<li class="step" data-state="')[1:]:
         state = chunk.split('"')[0]
         name = chunk.split('class="sname mono">')[1].split("<")[0]
-        states[name] = state
+        # keyed by the stage key so that rewording a step in vocab.py is not a test change
+        states[names.get(name, name)] = state
     return states
 
 
@@ -419,12 +424,12 @@ def open_step(body: str) -> str:
 def test_timeline_marks_steps_done_from_the_artefacts_on_disk(tmp_path: Path) -> None:
     body = console(tmp_path).get("/fragments/timeline?domain=airline").text
     assert step_states(body) == {
-        "Architect": "done",   # cand-*.yaml exist
-        "Run": "done",         # summary["search"] has candidates
-        "Diagnose": "done",    # runs/airline/ledger.json has issues
-        "Mutate": "done",      # summary["operator"]
-        "Gate": "done",        # gate.json exists
-        "Anneal": "active",    # no pareto.json yet — this is where the loop is
+        "architect": "done",   # cand-*.yaml exist
+        "run": "done",         # summary["search"] has candidates
+        "diagnose": "done",    # runs/airline/ledger.json has issues
+        "mutate": "done",      # summary["operator"]
+        "gate": "done",        # gate.json exists
+        "anneal": "active",    # no pareto.json yet — this is where the loop is
     }
 
 
@@ -432,9 +437,9 @@ def test_timeline_stops_at_the_first_missing_artefact(tmp_path: Path) -> None:
     """Withhold gate.json and Gate becomes the active step, Anneal a future one."""
     body = console(tmp_path, gate=False).get("/fragments/timeline?domain=airline").text
     states = step_states(body)
-    assert states["Mutate"] == "done"
-    assert states["Gate"] == "active"
-    assert states["Anneal"] == "todo"
+    assert states["mutate"] == "done"
+    assert states["gate"] == "active"
+    assert states["anneal"] == "todo"
 
 
 def test_timeline_on_a_bare_runs_dir_makes_architect_the_active_step(tmp_path: Path) -> None:
@@ -442,7 +447,7 @@ def test_timeline_on_a_bare_runs_dir_makes_architect_the_active_step(tmp_path: P
     runs.mkdir()
     client = TestClient(dashboard.create_app(runs, tmp_path / "ledger.json"))
     states = step_states(client.get("/").text)
-    assert states["Architect"] == "active"
+    assert states["architect"] == "active"
     assert set(states.values()) == {"active", "todo"}
 
 
@@ -456,18 +461,18 @@ def test_timeline_never_borrows_another_domains_ledger(tmp_path: Path) -> None:
     )
     (bare / "cand-01.yaml").write_text(PARENT_SPEC, encoding="utf-8")
     client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
-    assert step_states(client.get("/?domain=airline").text)["Diagnose"] == "done"
+    assert step_states(client.get("/?domain=airline").text)["diagnose"] == "done"
     bugfix = step_states(client.get("/?domain=bugfix").text)
-    assert bugfix["Run"] == "done"
-    assert bugfix["Diagnose"] == "active"
-    assert bugfix["Gate"] == "todo"
+    assert bugfix["run"] == "done"
+    assert bugfix["diagnose"] == "active"
+    assert bugfix["gate"] == "todo"
 
 
 # one marker that only appears in that step's artefact, and nowhere else
 STEP_MARKERS = {
-    "architect": ">steps<",
+    "architect": ">step limit<",
     "run": "airline-10",
-    "diagnose": "not_a_real_class",
+    "diagnose": "Not a real class",
     "mutate": "NODES ADDED",
     "gate": "REJECT",
     "anneal": "No pareto.json yet",
@@ -498,7 +503,26 @@ def test_the_open_step_defaults_to_the_step_the_loop_is_on(tmp_path: Path) -> No
 def test_every_step_is_a_plain_link_not_a_script(tmp_path: Path) -> None:
     body = console(tmp_path).get("/?domain=airline").text
     for step in STEP_MARKERS:
-        assert f'href="?step={step}&amp;domain=airline"' in body, step
+        # The trailing #flow is what keeps a click from reloading to the top of the page and
+        # losing the reader's place; the flow sits below the contract and the charts.
+        assert f'href="?step={step}&amp;domain=airline#flow"' in body, step
+    assert 'id="flow"' in body  # the anchor those links point at must exist
+
+
+def test_the_curves_fragment_shows_the_same_domain_the_page_does(tmp_path: Path) -> None:
+    """A refresh must not widen the selection the page made.
+
+    Opening "/" resolves a default domain, but the ten-second refresh fetches
+    /fragments/curves with no query string. That fragment used to filter only when a domain
+    was passed, so the charts for one domain were silently replaced by every domain stacked.
+    """
+    client = console(tmp_path)
+    page = client.get("/").text
+    fragment = client.get("/fragments/curves").text
+    for domain in ("airline", "invoices"):
+        assert (f"<h3 class=\"mono\">{domain}</h3>" in page) == (
+            f"<h3 class=\"mono\">{domain}</h3>" in fragment
+        ), domain
 
 
 def test_absent_values_render_an_em_dash_not_a_zero(tmp_path: Path) -> None:
@@ -515,10 +539,13 @@ def test_absent_values_render_an_em_dash_not_a_zero(tmp_path: Path) -> None:
     assert "airline-18" in run
 
     ledger = client.get("/?domain=airline&step=diagnose").text
-    assert "not_a_real_class" in ledger
-    assert f'<td class="mono num">{DASH}</td>' in ledger  # unknown severity
-    assert f"&rarr; {DASH}" in ledger                     # no operator ladder to draw from
-    assert "&rarr; add_validator_node" in ledger          # a known class points at its next op
+    assert "not_a_real_class" in ledger                    # the id, as secondary text
+    assert "Not a real class" in ledger                    # de-slugged, since it has no label
+    assert f'<td class="mono num">{DASH}</td>' in ledger   # unknown severity
+    assert f'<td class="op">{DASH}' in ledger              # no operator ladder to draw from
+    # a known class names its next repair in words, never by the function that performs it
+    assert vocab.operator("add_validator_node") in ledger
+    assert "add_validator_node" not in ledger.split('class="op"')[1][:200]
 
 
 def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
@@ -538,9 +565,12 @@ def test_gate_step_without_gate_json_says_so_and_invents_nothing(tmp_path: Path)
 
 def test_architect_step_shows_the_specs_with_node_pills_and_tiers(tmp_path: Path) -> None:
     body = console(tmp_path).get("/?domain=airline&step=architect").text
-    assert "cand-01-add_validator_node-i1" in body
-    for text in ("single", "executor", "validator", "cheap", "mid", "challenger", "reject"):
+    assert "cand-01-add_validator_node-i1" in body  # the id stays, as small secondary text
+    for text in (vocab.topology("single"), vocab.role("executor"), vocab.role("validator"),
+                 vocab.tier("cheap"), vocab.tier("mid"), vocab.decision("reject"),
+                 vocab.design_name("cand-01-add_validator_node-i1")):
         assert text in body, text
+    assert "round's try" in body  # the challenger, named for what it is
     assert 'class="link"' in body  # the pills are connected
 
 

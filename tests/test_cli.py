@@ -695,3 +695,20 @@ def test_a_real_bug_in_an_operator_still_propagates(tmp_path, monkeypatch):
                     concurrency=1, seed=0)
     with pytest.raises(AttributeError):
         cli._propose_mutation(loop, SimpleNamespace(id="cand-01"), [])
+
+
+def test_models_flag_does_not_outlive_the_invocation(loop, tmp_path):
+    """`--models` is scoped to one command, not to the interpreter.
+
+    main() is an ordinary function called many times in one process. A run pointed at a
+    temporary ladder used to leave it installed globally, so a later `anneal report` rendered
+    that tmp path in its footnote -- which is exactly how a pytest tmp_path models.yaml ended
+    up in a README block.
+    """
+    before = llm.MODELS_PATH
+    ladder = tmp_path / "models.yaml"
+    ladder.write_text(
+        Path("specs/models.local.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    run_cli(tmp_path, "--iterations", "1", "--models", str(ladder))
+    assert llm.MODELS_PATH == before
