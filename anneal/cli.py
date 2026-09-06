@@ -238,6 +238,17 @@ def _evidence(issue: dict[str, Any], rows: list[dict]) -> list[dict[str, Any]]:
     ]
 
 
+def _attempted_operator(issue: dict[str, Any]) -> str | None:
+    """The operator ``mutate.apply`` would have run for ``issue``, or None if there is none.
+
+    Recorded when an attempt fails so the same repair is not selected again next iteration.
+    """
+    try:
+        return mutate.select_operator(issue)
+    except (mutate.OperatorFailed, KeyError):
+        return None
+
+
 def _propose_mutation(
     loop: Loop, incumbent: Any, rows: list[dict]
 ) -> tuple[Any, dict[str, Any]] | None:
@@ -265,7 +276,21 @@ def _propose_mutation(
         try:
             operator = mutate.select_operator(issue)
             candidate = mutate.apply(incumbent, issue, _evidence(issue, rows), loop.domain)
-        except (mutate.NoOperatorAvailable, KeyError):
+        except mutate.OperatorFailed as exc:
+            # The repair could not be produced -- a small model returning an unusable tool
+            # spec, a node with nothing to rewrite. Record the attempt so the operator is not
+            # retried on the same issue, then try the next issue. Anything other than
+            # OperatorFailed is a real bug and is left to propagate.
+            operator = _attempted_operator(issue)
+            logger.info(json.dumps({
+                "event": "operator_failed", "issue": issue["id"], "class": issue["class"],
+                "operator": operator, "error": str(exc),
+            }))
+            if operator:
+                issue.setdefault("operators_tried", []).append(operator)
+                diagnose.save_ledger(loop.ledger, ledger)
+            continue
+        except KeyError:
             continue
         issue.setdefault("operators_tried", []).append(operator)
         diagnose.save_ledger(loop.ledger, ledger)

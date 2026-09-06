@@ -76,8 +76,24 @@ Evidence = list[dict[str, Any]]
 Operator = Callable[[HarnessSpec, Issue, Evidence, Any, Any], HarnessSpec]
 
 
-class NoOperatorAvailable(RuntimeError):
-    """No operator for the issue's class is implemented, untried and applicable to this spec."""
+class OperatorFailed(RuntimeError):
+    """This repair could not be produced. The loop records it and moves to the next issue.
+
+    A repair attempt failing is an ordinary outcome, not a program error: the model returns an
+    unparseable tool spec, an issue names a node that has nothing to rewrite, a synthesis worker
+    comes back empty. Those must leave the incumbent untouched and let the loop continue, exactly
+    as a rejected mutation does. Raising a bare ``RuntimeError`` instead killed a whole run when
+    a small model returned an empty tool name, so operators raise this and only this for
+    "I cannot make the change"; anything else escaping an operator is a genuine bug and should
+    still crash loudly rather than be swallowed.
+    """
+
+
+class NoOperatorAvailable(OperatorFailed):
+    """No operator for the issue's class is implemented, untried and applicable to this spec.
+
+    A special case of :class:`OperatorFailed`: the attempt failed before any work was done.
+    """
 
 
 # --- taxonomy ------------------------------------------------------------------------
@@ -251,7 +267,7 @@ def _failing_tool(issue: Issue, node: Node, evidence: Evidence) -> str:
         return counts.most_common(1)[0][0]
     if node.tools:
         return node.tools[0]
-    raise ValueError(f"node {node.name!r} has no tools; rewrite_tool_desc does not apply")
+    raise OperatorFailed(f"node {node.name!r} has no tools; rewrite_tool_desc does not apply")
 
 
 def _tool_description(domain: Any, tool: str) -> str:
@@ -291,7 +307,7 @@ def rewrite_tool_desc(
     ]
     text = _complete(client, messages)
     if not text:
-        raise RuntimeError("rewrite_tool_desc: model returned an empty description")
+        raise OperatorFailed("rewrite_tool_desc: model returned an empty description")
     data = spec.model_dump()
     data["tool_overrides"] = {**data.get("tool_overrides", {}), tool: text}
     return HarnessSpec.model_validate(data)
@@ -337,7 +353,7 @@ def add_fewshots(
     train = list(domain.eval.load_tasks(FEWSHOT_SPLIT))[:MAX_TRAIN_TASKS]
     examples = _complete(client, _fewshot_messages(domain, issue, evidence, base, train))
     if not examples:
-        raise RuntimeError("add_fewshots: model returned no examples")
+        raise OperatorFailed("add_fewshots: model returned no examples")
     section = f"## Worked examples\n\n{examples}\n"
     text = f"{base.rstrip()}\n\n{section}" if base.strip() else section
     new_version = PROMPT_STORE.save_version(name, text, STAGING_LABEL, at_least=version + 1)
@@ -682,14 +698,14 @@ def _parse_tool_spec(text: str, domain: Any) -> dict[str, Any]:
     try:
         data = json.loads(_strip_fences(text))
     except ValueError as exc:
-        raise RuntimeError(f"synthesize_tool: model reply is not JSON: {exc}") from exc
+        raise OperatorFailed(f"synthesize_tool: model reply is not JSON: {exc}") from exc
     if not isinstance(data, dict):
-        raise RuntimeError(f"synthesize_tool: expected a JSON object, got {type(data).__name__}")
+        raise OperatorFailed(f"synthesize_tool: expected a JSON object, got {type(data).__name__}")
     name = str(data.get("name") or "")
     if not TOOL_NAME_RE.fullmatch(name):
-        raise RuntimeError(f"synthesize_tool: {name!r} is not a snake_case tool name")
+        raise OperatorFailed(f"synthesize_tool: {name!r} is not a snake_case tool name")
     if name in _manifest_names(domain):
-        raise RuntimeError(f"synthesize_tool: {name!r} already exists in the human tools.yaml")
+        raise OperatorFailed(f"synthesize_tool: {name!r} already exists in the human tools.yaml")
     description = str(data.get("description") or "").strip()
     if not description:
         raise RuntimeError("synthesize_tool: model returned no description")
@@ -777,7 +793,7 @@ def _materialize(ao_module: Any, branch: str, dest: Path, *, required: bool) -> 
     done = ao_module._git(["show", f"{branch}:{_repo_rel(dest)}"], ROOT)
     if done.returncode != 0 or not done.stdout:
         if required:
-            raise RuntimeError(f"synthesize_tool: {branch} has no {_repo_rel(dest)}")
+            raise OperatorFailed(f"synthesize_tool: {branch} has no {_repo_rel(dest)}")
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(done.stdout)
