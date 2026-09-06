@@ -33,7 +33,8 @@ def test_the_form_asks_the_same_questions_the_terminal_does() -> None:
         if question.kind == "choice":
             for _value, label in question.choices:
                 assert label in body, label
-    assert "placeholder=\"\"" in body  # no placeholder-as-label on the example boxes
+    # no placeholder-as-label anywhere: a placeholder vanishes the moment someone types
+    assert "placeholder" not in body.split('class="extable"')[1]
 
 
 def test_a_submission_becomes_the_queue_the_script_asks_for() -> None:
@@ -403,3 +404,56 @@ def test_the_terminal_keeps_its_back(tmp_path: Path) -> None:
 
     assert ob.ScriptedTransport(["b"]).ask(ob.SCRIPT[0]) == ob.BACK
     assert ob.ScriptedTransport(["b"], allow_back=False).ask(ob.SCRIPT[0]) == "b"
+
+
+# --- what a first-time walkthrough turned up ----------------------------------------------
+
+
+def test_an_error_gives_back_everything_that_was_typed(tmp_path: Path, monkeypatch) -> None:
+    """Being told "three examples, not one" must not cost the name, the job and the examples."""
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", tmp_path / "domains")
+    (tmp_path / "domains").mkdir()
+    client = TestClient(dashboard.create_app(tmp_path / "runs", tmp_path / "l.json"))
+    typed = {
+        "name": "Refund checker", "job": "Decide if a refund can be auto-approved.",
+        "tools": "none", "success": "label",
+        "given_0": "Order 12, 8 GBP, within 30 days", "expected_0": "approve",
+    }
+    page = client.post("/new", data=typed)
+    assert page.status_code == 400
+    assert "at least 3 examples" in page.text
+    assert 'value="Refund checker"' in page.text
+    assert "Decide if a refund can be auto-approved." in page.text
+    assert "Order 12, 8 GBP, within 30 days" in page.text
+    assert ">approve</textarea>" in page.text
+
+
+def test_the_browser_asks_for_three_examples_before_the_form_is_sent() -> None:
+    """A round trip to learn a minimum is a round trip that did not need to happen."""
+    body = newagent.form_body()
+    grid = body.split('class="extable"')[1]
+    assert grid.count(" required") == newagent.MIN_FILLED_ROWS * 2
+
+
+def test_a_name_already_taken_is_said_without_naming_a_directory() -> None:
+    """"delete that directory" is an action a person in a browser cannot take."""
+    said = newagent.readable(
+        "domains/airline already exists; pick another name or delete that directory"
+    )
+    assert said == "You already have an agent called airline. Pick a different name."
+    assert "domains/" not in said and "directory" not in said
+    # anything else is passed through as the interview wrote it
+    assert newagent.readable("need at least 3 examples, got 1") == "need at least 3 examples, got 1"
+
+
+def test_the_done_page_offers_the_button_not_a_shell_command(tmp_path: Path) -> None:
+    """Somebody who just filled in a form has a Run button one page away."""
+    agent = tmp_path / "refund_checks"
+    agent.mkdir()
+    (agent / "goal.md").write_text("# Goal: x\n", encoding="utf-8")
+    body = newagent.done_body(agent)
+    assert 'action="/agents/refund_checks/run"' in body
+    assert "Run it now" in body
+    assert "uv run" not in body
+    # the path and the file list stay, as technical detail
+    assert 'class="dslug mono"' in body and "goal.md" in body

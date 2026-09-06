@@ -28,6 +28,9 @@ from anneal import onboard, vocab
 # How many example pairs the form offers. The interview needs three and accepts fifty; six rows
 # is enough to start honestly and few enough that the page is not a wall of boxes.
 EXAMPLE_ROWS = 6
+# The interview needs three, so the browser asks for three before the form is ever sent. Being
+# told after a round trip is how a form loses somebody's work and their patience.
+MIN_FILLED_ROWS = 3
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -334,12 +337,20 @@ def _choices(qid: str, checked: str) -> str:
     return f'<div class="choices">{rows}</div>'
 
 
-def _examples_grid() -> str:
+def _examples_grid(said: dict[str, Any] | None = None) -> str:
+    """Six pairs, refilled with what was typed, the first three required by the browser."""
+    said = said or {}
+
+    def cell(name: str, required: bool) -> str:
+        flag = " required" if required else ""
+        return (
+            f'<textarea name="{name}" rows="2"{flag}>'
+            f'{escape(str(said.get(name) or ""))}</textarea>'
+        )
+
     rows = "".join(
-        '<div class="exrow">'
-        f'<textarea name="given_{i}" rows="2" placeholder=""></textarea>'
-        f'<textarea name="expected_{i}" rows="2" placeholder=""></textarea>'
-        "</div>"
+        f'<div class="exrow">{cell(f"given_{i}", i < MIN_FILLED_ROWS)}'
+        f'{cell(f"expected_{i}", i < MIN_FILLED_ROWS)}</div>'
         for i in range(EXAMPLE_ROWS)
     )
     return (
@@ -450,8 +461,27 @@ sync();
 """
 
 
-def form_body(error: str = "") -> str:
-    """The whole form. Every question comes from the interview script, none is written here."""
+def readable(message: str) -> str:
+    """The interview's message, with anything only a developer could act on taken out.
+
+    "domains/airline already exists; pick another name or delete that directory" is fine at a
+    terminal, where deleting a directory is a thing you can do. In a browser it names a path
+    the reader cannot see and asks for an action they cannot take.
+    """
+    if "already exists" in message:
+        name = message.split("/", 1)[-1].split(" ", 1)[0] if "/" in message else "that name"
+        return f"You already have an agent called {name}. Pick a different name."
+    return message
+
+
+def form_body(error: str = "", said: dict[str, Any] | None = None) -> str:
+    """The whole form, refilled with whatever was typed.
+
+    An error used to come back with every field blank, so being told "three examples, not one"
+    cost you the name, the job and the examples you had already written. Nobody types all that
+    a second time; they close the tab.
+    """
+    said = said or {}
     banner = (
         f'<p class="formerror" role="alert">{escape(error)}</p>' if error else ""
     )
@@ -460,17 +490,25 @@ def form_body(error: str = "") -> str:
         "<p>Five questions. Anneal writes the goal, the tool list and the scorer, then you "
         "can run it.</p></div>"
         f'{banner}<form class="newform" method="post" action="/new">'
-        + _field("name", '<input class="finput" id="name" name="name" required>', "Name it")
+        + _field(
+            "name",
+            '<input class="finput" id="name" name="name" required '
+            f'value="{escape(str(said.get("name") or ""))}">',
+            "Name it",
+        )
         + _field(
             "job",
-            '<textarea class="finput" id="job" name="job" rows="3" required></textarea>',
+            '<textarea class="finput" id="job" name="job" rows="3" required>'
+            f'{escape(str(said.get("job") or ""))}</textarea>',
             "What should it do?",
         )
-        + _field("tools", _choices("tools", "none"), "What can it use?")
+        + _field("tools", _choices("tools", str(said.get("tools") or "none")),
+                 "What can it use?")
         + _mcp_picker() + _python_picker()
-        + _field("success", _choices("success", "label"), "What makes an answer right?")
+        + _field("success", _choices("success", str(said.get("success") or "label")),
+                 "What makes an answer right?")
         + '<div class="field"><label class="flabel">Show it some examples</label>'
-        f"{_examples_grid()}"
+        f"{_examples_grid(said)}"
         '<p class="fhelp">Three or more, filled in pairs. These become the tasks it is '
         "scored on, split so that some are held back from every repair step.</p></div>"
         '<button class="fsubmit" type="submit">Create the agent</button>'
@@ -480,24 +518,24 @@ def form_body(error: str = "") -> str:
 
 
 def done_body(path: Path, notes: list[str] | None = None) -> str:
-    """What was written, anything that did not go to plan, and how to run it.
+    """What was made, anything that did not go to plan, and the one thing to do next.
 
-    The interview records a server that would not start or a module that would not import and
-    then carries on with no tools. Those notes were dropped here, so an agent could be created
-    with nothing to call and the page would say only that it was ready.
+    This used to print the absolute path of the machine Anneal is running on, a list of six
+    filenames, and a shell command, to somebody who had just filled in a form in a browser and
+    has a Run button one page away. The path and the filenames are still here for anyone who
+    wants them; they sit under the technical switch, and running it is the button.
     """
-    files = "".join(
-        f'<li class="mono">{escape(p.name)}</li>' for p in sorted(path.iterdir())
-    )
+    files = " ".join(sorted(p.name for p in path.iterdir()))
     said = "".join(f'<p class="formnote">{escape(note)}</p>' for note in (notes or []))
     return (
         said
         + '<div class="pagehead"><h1>Your agent is ready</h1>'
-        f"<p>Anneal wrote it to <span class=\"mono\">{escape(str(path))}</span>. "
-        "Run it, and it will design a few versions, score them, and keep only what survives "
-        "the held-back tasks.</p></div>"
-        f'<div class="donebox"><ul class="filelist">{files}</ul>'
-        f'<pre class="cmd">uv run anneal run {escape(str(path))} \\\n'
-        "  --models specs/models.local.yaml</pre>"
-        '<a class="fsubmit quiet" href="/agents">Back to your agents</a></div>'
+        "<p>Run it, and it will design a few versions, score them on your examples, and keep "
+        "only what still wins on the ones it was not allowed to see.</p>"
+        f'<p class="dslug mono">{escape(str(path))}<br>{escape(files)}</p></div>'
+        '<form method="post" class="donebox" '
+        f'action="/agents/{escape(path.name)}/run">'
+        '<button class="fsubmit" type="submit">Run it now</button>'
+        '<a class="fsubmit quiet" href="/agents">All your agents</a>'
+        "</form>"
     )

@@ -838,3 +838,39 @@ def test_a_long_answer_is_clipped_in_memory_not_only_on_screen(tmp_path: Path) -
     _, rows = dashboard.load_live_rows(runs, "cand-01")
     assert len(rows[0]["output"]) == dashboard.OUTPUT_CLIP
     assert "trace" not in rows[0]
+
+
+def test_an_agent_with_no_runs_is_shown_not_swapped_for_another(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The worst thing found by walking it: right heading, somebody else's numbers.
+
+    Opening an agent whose first round was still going fell through to domains[0], so the page
+    showed a different agent entirely and said nothing about it. Being wrong is bad; being
+    wrong under the name you asked for is worse.
+    """
+    runs, ledger = write_fixture(tmp_path)          # airline has runs
+    domains = tmp_path / "domains"
+    (domains / "refund_checks").mkdir(parents=True)
+    (domains / "refund_checks" / "goal.md").write_text(
+        "# Goal: Decide whether a refund needs a manager\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", domains)
+    body = TestClient(dashboard.create_app(runs, ledger)).get(
+        "/console?domain=refund_checks"
+    ).text
+    assert "Decide whether a refund needs a manager" in body
+    assert "0.734" not in body          # airline's score is not shown under this name
+    assert "No runs yet" in body        # it says it has none instead
+
+
+def test_the_console_switcher_offers_agents_that_have_never_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runs, ledger = write_fixture(tmp_path)
+    domains = tmp_path / "domains"
+    (domains / "brand_new").mkdir(parents=True)
+    (domains / "brand_new" / "goal.md").write_text("# Goal: Something new\n", encoding="utf-8")
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", domains)
+    body = TestClient(dashboard.create_app(runs, ledger)).get("/console").text
+    assert 'href="/console?domain=brand_new"' in body

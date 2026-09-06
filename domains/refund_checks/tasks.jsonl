@@ -1,0 +1,3 @@
+{"expected": {"label": "approve"}, "id": "refund_checks-00", "input": {"request": "Order 12, 8 GBP, asked within 30 days"}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "manager"}, "id": "refund_checks-01", "input": {"request": "Order 44, 900 GBP, asked after 90 days"}, "split": "holdout", "tags": ["label"]}
+{"expected": {"label": "approve"}, "id": "refund_checks-02", "input": {"request": "Order 51, 15 GBP, asked within 30 days"}, "split": "search", "tags": ["label"]}

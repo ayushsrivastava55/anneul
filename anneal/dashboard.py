@@ -641,7 +641,10 @@ def _domain_dir(runs_dir: Path | str, domain: str, summary: dict[str, Any]) -> P
     """The domain's input directory: the path the run recorded, else this repo's copy."""
     recorded = summary.get("domain_path")
     candidates = [Path(str(recorded))] if recorded else []
-    candidates.append(Path(__file__).resolve().parent.parent / "domains" / domain)
+    # DOMAINS_DIR first: it is where this server creates agents, so it is the answer whenever
+    # the two differ. Looking at the repository's own folder first meant a server pointed
+    # somewhere else still described the repository's agents.
+    candidates.append(DOMAINS_DIR / domain)
     candidates.append(Path(runs_dir).parent / "domains" / domain)
     return next((p for p in candidates if p.is_dir()), None)
 
@@ -1326,9 +1329,10 @@ def render_pareto(fronts: dict[str, list[Point]]) -> str:
 
 
 def _curves_for(domain: str, points: list[Point], pending: tuple[str, ...]) -> str:
+    """One agent's four charts. The slug heading is machinery: the page already names it."""
     charts = "".join(line_chart(points, key, title, fmt, pending) for key, title, fmt in METRICS)
     return (
-        f'<div class="pblock"><h3 class="mono">{escape(domain)}</h3>'
+        f'<div class="pblock"><h3 class="dslug mono">{escape(domain)}</h3>'
         f'<div class="charts">{charts}</div></div>'
     )
 
@@ -1348,8 +1352,8 @@ def render_curves(
             "curves",
             "Measurements",
             _note(
-                "No runs yet — <code>uv run anneal run domains/&lt;name&gt;</code> and this "
-                "fills in one point per iteration."
+                "No runs yet. Press Run on the agents page and a point appears here "
+                "for every round."
             ),
         )
     body = "".join(
@@ -1675,8 +1679,7 @@ circle.hollow { fill:var(--panel); stroke:var(--ash); stroke-width:1; }
   color:var(--ink); background:var(--panel); border-left:2px solid var(--orange); }
 .formerror { max-width:65ch; margin:0 0 28px; padding:12px 14px; font-size:14px;
   color:var(--clay); background:var(--panel); border:1px solid var(--clay); }
-.donebox { border:1px solid var(--rule); background:var(--panel); padding:24px;
-  margin-bottom:64px; }
+.donebox { display:flex; gap:12px; align-items:center; margin-bottom:64px; }
 .filelist { list-style:none; margin:0 0 20px; padding:0; display:flex; flex-wrap:wrap; gap:14px;
   font-size:12px; color:var(--ash); }
 .cmd { margin:0 0 20px; padding:16px; background:var(--paper); border:1px solid var(--rule);
@@ -1750,11 +1753,38 @@ class AppState:
     """Runs this server started from the browser. None when nothing can be launched."""
 
 
+def known_agents(state: AppState) -> list[str]:
+    """Every agent that exists, whether or not it has ever run.
+
+    ``list_domains`` reads the runs directory, so an agent created a minute ago was invisible
+    here: the page that is supposed to say "what do I have" could only see what had already
+    produced numbers. An agent is a directory under ``domains/``; having run is a property of
+    one, not the definition.
+    """
+    on_disk = []
+    if DOMAINS_DIR.is_dir():
+        on_disk = [
+            d.name for d in sorted(DOMAINS_DIR.iterdir())
+            if d.is_dir() and not d.name.startswith(("_", "."))
+            and (d / "goal.md").is_file()
+        ]
+    with_runs = list_domains(state.runs_dir)
+    return list(dict.fromkeys([*on_disk, *with_runs]))
+
+
 def _selected(state: AppState, domain: str | None) -> tuple[str | None, list[str]]:
-    domains = list_domains(state.runs_dir)
-    if domain in domains:
+    """The agent to show, and every agent the switcher offers.
+
+    An agent asked for by name is shown even when it has no runs yet, and the page then says
+    it has none. This used to fall through to ``domains[0]``, so opening an agent whose first
+    round was still going silently showed a different agent's numbers under the name you had
+    asked for: the worst kind of wrong, because nothing on the page said so.
+    """
+    domains = known_agents(state)
+    if domain and domain in domains:
         return domain, domains
-    return (domains[0] if domains else None), domains
+    with_runs = [d for d in domains if d in list_domains(state.runs_dir)]
+    return (with_runs[0] if with_runs else (domains[0] if domains else None)), domains
 
 
 def _issues(state: AppState, domain: str | None) -> list[dict[str, Any]]:
@@ -1778,8 +1808,10 @@ def _curve_data(
     summaries = load_summaries(state.runs_dir)
     pending = {d: pending_iterations(state.runs_dir, d) for d in summaries}
     selected, _ = _selected(state, domain)
-    if selected in summaries:
-        summaries = {selected: summaries[selected]}
+    if selected is not None:
+        # An agent with no runs gets no charts, not every other agent's. Falling back to the
+        # whole set put one agent's numbers on the page under another agent's name.
+        summaries = {selected: summaries[selected]} if selected in summaries else {}
     return summaries, pending
 
 
@@ -1907,25 +1939,6 @@ def page(title: str, active: str, body: str, level: str = "plain") -> str:
         f'<body class="{escape(level)}">{render_nav(active, level)}'
         f'<div class="wrap">{body}</div></body></html>'
     )
-
-
-def known_agents(state: AppState) -> list[str]:
-    """Every agent that exists, whether or not it has ever run.
-
-    ``list_domains`` reads the runs directory, so an agent created a minute ago was invisible
-    here: the page that is supposed to say "what do I have" could only see what had already
-    produced numbers. An agent is a directory under ``domains/``; having run is a property of
-    one, not the definition.
-    """
-    on_disk = []
-    if DOMAINS_DIR.is_dir():
-        on_disk = [
-            d.name for d in sorted(DOMAINS_DIR.iterdir())
-            if d.is_dir() and not d.name.startswith(("_", "."))
-            and (d / "goal.md").is_file()
-        ]
-    with_runs = list_domains(state.runs_dir)
-    return list(dict.fromkeys([*on_disk, *with_runs]))
 
 
 def _agent_row(state: AppState, name: str, titles: dict[str, str],
@@ -2073,15 +2086,17 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
         module that will not import -- comes back as its own message on the form rather than a
         traceback, because the person filling this in is not reading our logs.
         """
-        submission = newagent.parse(dict(await request.form()))
+        said = {key: str(value) for key, value in (await request.form()).items()}
+        submission = newagent.parse(said)
         try:
             path, notes = newagent.create(submission, DOMAINS_DIR)
         except onboard.OnboardError as exc:
-            body = newagent.form_body(str(exc))
+            # `said` goes back with the error so nothing anyone typed has to be typed again
+            body = newagent.form_body(newagent.readable(str(exc)), said)
             return HTMLResponse(page("Anneal - new agent", "/new", body), status_code=400)
         except Exception as exc:  # noqa: BLE001 - any failure is the form's to report
             log.warning("new agent failed: %s", exc)
-            body = newagent.form_body(f"Could not create the agent: {exc}")
+            body = newagent.form_body(f"Could not create the agent: {exc}", said)
             return HTMLResponse(page("Anneal - new agent", "/new", body), status_code=400)
         body = newagent.done_body(path, notes)
         return HTMLResponse(page("Anneal - agent created", "/new", body))
