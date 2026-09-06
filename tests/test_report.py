@@ -176,10 +176,20 @@ def test_a_genuinely_missing_value_renders_as_an_em_dash(tmp_path):
     assert [c.strip() for c in row[3:10]] == [cli.DASH] * 7
 
 
-def test_the_footnote_names_local_inference_and_the_em_dash(tmp_path):
+def test_the_footnote_describes_the_ladder_instead_of_asserting_one(tmp_path):
+    """The footnote is computed from the model config, never written by hand.
+
+    An earlier version hardcoded "inference is local (Ollama) ... $0 in real money" and kept
+    saying it after the ladder moved to hosted models, directly above a $/task column that
+    showed otherwise. Every provider fact in the footnote must now come from the ladder.
+    """
+    from anneal import llm as _llm
+
     text = block(real_run(tmp_path / "runs"))
-    assert "Ollama" in text and "qwen2.5" in text
-    assert "specs/models.yaml" in text and "price_source" in text
+    for row in _llm.describe_ladder():
+        assert row["model"] in text and row["provider"] in text
+    assert "price_source" in text
+    assert "$0 in real money" not in text  # provider facts are computed, never asserted
     assert f"`{cli.DASH}`" in text  # what an em-dash means is stated, not assumed
 
 

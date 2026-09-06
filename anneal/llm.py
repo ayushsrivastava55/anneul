@@ -61,6 +61,52 @@ def _default_models_path() -> Path:
 
 
 MODELS_PATH = _default_models_path()
+
+
+def set_default_models_path(path: Path | str | None) -> Path:
+    """Point every later gateway call in this process at the ladder in ``path``.
+
+    There is exactly one default ladder and two ways to set it: ``ANNEAL_MODELS_PATH`` seeds it
+    at import (tests, ``python -m anneal.llm``), and the CLI's ``--models`` flag calls this once
+    before dispatching a command. Both write the same variable, so ``architect``, ``diagnose``,
+    ``mutate`` and ``runner`` can never disagree about which models a run is using.
+
+    ``load_models`` and ``get_client`` cache on their *argument*. A call made with ``path=None``
+    before this ran cached the previous default under the key ``None`` and would keep serving
+    it, so both caches are cleared here. Passing ``None`` restores the import-time default.
+    """
+    global MODELS_PATH
+    MODELS_PATH = Path(path) if path else _default_models_path()
+    load_models.cache_clear()
+    get_client.cache_clear()
+    return MODELS_PATH
+
+
+def describe_ladder(path: Path | str | None = None) -> list[dict[str, str]]:
+    """One row per tier, for reports that must state the ladder rather than assume it.
+
+    ``price_source`` is copied from the tier when recorded (``published`` = the provider's list
+    price, ``scaled`` = derived from a published rate for a different size) and reported as
+    ``unrecorded`` otherwise. Nothing here is inferred from the model name.
+    """
+
+    def _usd(value: Any) -> str:
+        try:
+            return f"{float(value):g}"
+        except (TypeError, ValueError):
+            return "?"
+
+    return [
+        {
+            "tier": str(tier),
+            "provider": str(spec.get("provider", "?")),
+            "model": str(spec.get("model", "?")),
+            "price_in": _usd(spec.get("price_in")),
+            "price_out": _usd(spec.get("price_out")),
+            "price_source": str(spec.get("price_source") or "unrecorded"),
+        }
+        for tier, spec in load_models(path)["tiers"].items()
+    ]
 BACKEND_HEADER = "x-tensormux-backend"
 PLACEHOLDER = "REPLACE_ME"
 

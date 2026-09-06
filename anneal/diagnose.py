@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from collections.abc import Iterable
@@ -56,7 +55,7 @@ SEARCH_SPLIT = "search"
 # returned an unusable class repeatedly and fell back to a deterministic guess. Diagnosis is
 # one call per failed task, so the strongest tier is the right trade even under a budget.
 # Override with ANNEAL_CLASSIFIER_TIER when a domain proves a cheaper tier is sufficient.
-CLASSIFIER_TIER = os.environ.get("ANNEAL_CLASSIFIER_TIER") or "frontier"
+CLASSIFIER_TIER = config.env("ANNEAL_CLASSIFIER_TIER", "frontier")
 MAX_CONTEXT_CHARS = 6000
 
 # --- diagnosis confidence ---------------------------------------------------------------
@@ -273,7 +272,7 @@ class NeatlogsMCP:
 
 def default_trace_source(rows: Iterable[Row]) -> TraceSource:
     """``NeatlogsMCP`` when ``NEATLOGS_API_KEY`` is set, else ``LocalTraces`` over ``rows``."""
-    key = (os.environ.get("NEATLOGS_API_KEY") or "").strip()
+    key = (config.env("NEATLOGS_API_KEY") or "").strip()
     return NeatlogsMCP(key) if key else LocalTraces(rows)
 
 

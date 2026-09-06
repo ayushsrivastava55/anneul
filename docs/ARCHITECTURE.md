@@ -89,3 +89,33 @@ scatter (score vs $/task, point size = p95). Credit balance from billing cache.
 4. Diagnose failures → ledger. 5. Pick top issue → operator → mutated spec. 6. Gate on holdout.
 7. Promote/reject; write `runs/<domain>/<iter>/summary.json`. 8. Debit credits; check balance.
 9. Repeat until `--iterations` or plateau (no promote in 2 iterations). 10. Anneal. 11. Ship.
+
+## Configuration (rules every module follows)
+
+**One loader.** `anneal/config.py` is the only module that reads `.env`, and `config.env(name,
+default)` is the only way to read an environment variable. It treats a blank value as unset, so an
+exported-but-empty variable can never shadow a filled-in `.env`. Reading `os.environ` directly
+anywhere else reintroduces that bug through a side door; a review should reject it.
+
+**One model ladder per process.** `specs/models.yaml` is the only place model ids and prices
+live. `anneal/llm.py` owns which file is in force: `ANNEAL_MODELS_PATH` seeds the default at
+import, and the CLI's `--models` flag calls `llm.set_default_models_path()` once before
+dispatching, so `architect`, `diagnose`, `mutate` and `runner` always resolve the same ladder.
+The setter clears the path-keyed caches; nothing else may mutate `MODELS_PATH`.
+`specs/models.local.yaml` is the verified all-local Ollama ladder for machines with no API key.
+
+**Reports compute provider facts, never assert them.** `anneal report` derives its footnote from
+`llm.describe_ladder()` and each tier's recorded `price_source`; every `summary.json` records the
+`models_path` its run used so a report can say which ladder produced which row.
+
+**Environment variables the core reads** (all via `config.env`):
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `<PROVIDER>_BASE_URL`, `<PROVIDER>_API_KEY` | `llm` | per `providers:` in the ladder |
+| `ANNEAL_MODELS_PATH` | `llm` | ladder file to use when no `--models` is given |
+| `ANNEAL_CLASSIFIER_TIER` | `diagnose` | tier for failure classification (default `frontier`) |
+| `ANNEAL_CONNECT_TIMEOUT`, `ANNEAL_READ_TIMEOUT`, `ANNEAL_LLM_RETRIES` | `llm` | client transport limits |
+| `ANNEAL_CONCURRENCY`, `ANNEAL_HOLDOUT_RUNS` | `runner`, `gate` | run defaults |
+| `NEATLOGS_API_KEY`, `NEATLOGS_WORKFLOW` | `tracing`, `diagnose` | tracing on/off, MCP trace source |
+| `DODO_API_KEY`, `DODO_ENV`, `DODO_CUSTOMER_ID` | `billing` | live billing vs local ledger |

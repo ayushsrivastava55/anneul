@@ -301,6 +301,8 @@ def _summary(loop: Loop, iteration: int, inc: Any, **kw: Any) -> dict[str, Any]:
         "stop_reason": None,
         "spend_usd": round(loop.spend, 6),
         "budget_usd": loop.budget,
+        # the ladder this run resolved against, so a report can state it rather than assume it
+        "models_path": str(loop.models_path or llm.MODELS_PATH),
         "search": dict(loop.search),
         "specs": dict(loop.specs),
         # what the optimiser has learned so far: the judges' "memory growing" series
@@ -808,18 +810,63 @@ REJECT_HEADER = (
     "| Domain | Iteration | Operator | Gate condition that failed |\n|---|---|---|---|"
 )
 NO_REJECTS = "**Rejected mutations** — no rejected mutations in these runs."
-FOOTNOTE = f"""\
+FOOTNOTE_COLUMNS = f"""\
 `{DASH}` means the value does not exist in the runs (no gate ran at that iteration, or the
 spec was never scored on that split) — it is never a zero and never a rounded-away number.
 Holdout accuracy, pass^3, hard fails and p come from the gate's `gate.json`; `$/task` and p95
 are measured on the search split. Gen gap is the search mean minus the gated mean, recomputed
-from those two recorded means when the gate stored it only for the candidate.
+from those two recorded means when the gate stored it only for the candidate."""
 
-Inference is **local** (Ollama, qwen2.5 3b / 1.5b / 0.5b), so these runs cost $0 in real money.
-Tokens and latency are measured. USD is those measured tokens priced at the reference rates in
-`specs/models.yaml`, where each tier carries a `price_source` (`published` or `scaled`); the
-sub-7B rates are scaled from a published 7B rate, not quoted. Do not read `$/task` as the cost
-of a hosted provider."""
+# Provider facts are computed from the ladder, never written here. A previous version of this
+# footnote asserted "inference is local (Ollama) ... $0 in real money" and kept saying it after
+# the ladder moved to hosted models, directly above a $/task column that showed otherwise.
+LADDER_NOTE = (
+    "Tokens and latency are measured. USD is those tokens priced at the rates the run's ladder "
+    "declares; that ladder is listed below, never assumed. `price_source` is what each tier "
+    "recorded: `published` is the provider's list price, `scaled` is derived from a published "
+    "rate for a different model size, and `unrecorded` means the tier carries no provenance. "
+    "A local provider costs nothing in money; the column is still what those tokens would cost "
+    "at the listed rate, so rows stay comparable across ladders."
+)
+LADDER_HEADER = (
+    "| Tier | Provider | Model | $/1M in | $/1M out | price_source |\n|---|---|---|---|---|---|"
+)
+
+
+def _ladder_paths(summaries: list[dict[str, Any]]) -> list[Path]:
+    """Distinct ladders the summaries recorded, else the ladder in force at report time.
+
+    Runs record ``models_path`` (see ``_summary``); older runs did not, and for those the only
+    honest statement is the ladder the reporting process itself resolves.
+    """
+    seen: list[Path] = []
+    for body in summaries:
+        recorded = body.get("models_path")
+        if recorded and Path(recorded) not in seen:
+            seen.append(Path(recorded))
+    return seen or [Path(llm.MODELS_PATH)]
+
+
+def _display_path(path: Path) -> str:
+    """A recorded path may be absolute on the machine that ran it; show it relative when we can."""
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _ladder_table(path: Path) -> str:
+    """The ladder at ``path`` as a markdown table, or a plain statement that it was unreadable."""
+    try:
+        ladder = llm.describe_ladder(path)
+    except (OSError, ValueError, KeyError) as exc:
+        return f"Ladder `{_display_path(path)}` could not be read at report time ({exc})."
+    rows = [
+        f"| {r['tier']} | {r['provider']} | `{r['model']}` | {r['price_in']} | "
+        f"{r['price_out']} | {r['price_source']} |"
+        for r in ladder
+    ]
+    return f"Ladder `{_display_path(path)}`:\n\n" + "\n".join([LADDER_HEADER, *rows])
 
 
 def render_block(runs_dir: Path | str, summaries: list[dict[str, Any]]) -> str:
@@ -829,7 +876,9 @@ def render_block(runs_dir: Path | str, summaries: list[dict[str, Any]]) -> str:
     parts = [
         HEADER + "\n" + "\n".join(_report_rows(runs_dir, summaries)),
         ("\n".join([REJECT_HEADER, *rejected]) if rejected else NO_REJECTS),
-        FOOTNOTE,
+        FOOTNOTE_COLUMNS,
+        LADDER_NOTE,
+        *[_ladder_table(path) for path in _ladder_paths(summaries)],
     ]
     return "\n\n".join(parts) + "\n"
 
@@ -928,6 +977,11 @@ def main(argv: list[str] | None = None) -> int:
         for name, help_text in COMMANDS.items():
             console.print(f"  [cyan]{name:<10}[/cyan] {help_text}")
         return 0
+    if getattr(args, "models", None):
+        # One ladder per process. The flag drives the same default that ANNEAL_MODELS_PATH
+        # seeds, so architect, diagnose and mutate can never resolve a different file than
+        # runner does (docs/ARCHITECTURE.md, "Configuration").
+        llm.set_default_models_path(args.models)
     handler = {
         "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
         "anneal": cmd_anneal, "dashboard": cmd_dashboard,

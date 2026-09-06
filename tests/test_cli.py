@@ -326,10 +326,16 @@ def test_budget_message_is_explicit(loop, tmp_path, monkeypatch, capsys):
 # --- report ------------------------------------------------------------------------------
 
 
+STAGES = (" | iteration 0 | ", " | final | ", " | annealed | ")
+
+
 def stage_rows(out: str) -> list[str]:
-    """The two results rows of the report block, ignoring its headers and the reject table."""
-    stages = (" | iteration 0 | ", " | final | ")
-    return [ln for ln in out.splitlines() if any(stage in ln for stage in stages)]
+    """The results rows of the report block, selected by stage.
+
+    Selecting by stage rather than by a leading ``|`` is deliberate: the block also carries the
+    rejected-mutations table and the ladder table, both of which are pipe-delimited.
+    """
+    return [ln for ln in out.splitlines() if any(stage in ln for stage in STAGES)]
 
 
 def write_summary(root: Path, iteration: int, **kw: Any) -> None:
@@ -391,10 +397,9 @@ def test_report_adds_an_annealed_row_when_the_downshift_has_run(tmp_path, capsys
     write_summary(root, 0)
     write_pareto(root)
     assert cli.main(["report", str(root)]) == 0
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
-    stages = [ln.split("|")[2].strip() for ln in lines[2:]]  # skip header + separator
-    assert stages == ["iteration 0", "final", "annealed"]
-    annealed = lines[4].split("|")
+    lines = stage_rows(capsys.readouterr().out)
+    assert [ln.split("|")[2].strip() for ln in lines] == ["iteration 0", "final", "annealed"]
+    annealed = lines[2].split("|")
     assert annealed[3].strip() == "0.880"
     assert annealed[7].strip() == "0.004"  # cheaper $/task than the search rows above
     assert annealed[8].strip() == "0.7"  # p95 is reported in seconds
@@ -404,8 +409,8 @@ def test_report_omits_the_annealed_row_before_the_downshift_runs(tmp_path, capsy
     root = tmp_path / "runs"
     write_summary(root, 0)
     assert cli.main(["report", str(root)]) == 0
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
-    assert [ln.split("|")[2].strip() for ln in lines[2:]] == ["iteration 0", "final"]
+    stages = [ln.split("|")[2].strip() for ln in stage_rows(capsys.readouterr().out)]
+    assert stages == ["iteration 0", "final"]
 
 
 def test_report_final_row_is_the_last_winner(tmp_path, capsys):

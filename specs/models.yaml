@@ -14,21 +14,25 @@
 # rate is used here. These numbers are what the reported $/task column is computed from, so
 # re-check them if the run happens after a price change.
 tiers:
+  # price_source is what `anneal report` prints per tier; the prose above is the evidence.
   frontier:
     provider: frontier
     model: claude-opus-5
     price_in: 5.0
     price_out: 25.0
+    price_source: published        # platform.claude.com/docs pricing, checked 6 Sep 2026
   mid:
     provider: frontier
     model: claude-sonnet-5
     price_in: 3.0
     price_out: 15.0
+    price_source: published        # same source; the post-1 Sep 2026 rate
   cheap:
     provider: frontier
     model: claude-haiku-4-5-20251001
     price_in: 1.0
     price_out: 5.0
+    price_source: published        # same source
   # --- sponsor-backed floor of the ladder -------------------------------------------------
   # Architect never assigns these (architect.NODE_TIER only names frontier/mid/cheap); the
   # downshift walks into them. Both are reasoning models that return content=None on a
@@ -45,12 +49,15 @@ tiers:
     model: glm-4-7-flash
     price_in: 0.06
     price_out: 0.40
+    price_source: published        # third-party market rate for these weights (see above);
+                                   # NOT what we were charged, which was $0 on the allocation
   # gpt-5-nano via the AI Grants India key. Official OpenAI list price, checked 6 Sep 2026.
   nano:
     provider: aigi
     model: gpt-5-nano
     price_in: 0.05
     price_out: 0.40
+    price_source: published        # OpenAI list price, checked 6 Sep 2026
 downshift_order: [frontier, mid, cheap, flash, nano]
 providers:
   ollama:    {base_url_env: OLLAMA_BASE_URL,    api_key_env: OLLAMA_API_KEY}
