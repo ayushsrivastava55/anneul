@@ -1,0 +1,49 @@
+# Model tiers used by Architect (initial assignment) and Anneal (downshift order).
+# This is the ONLY place model names live.
+#
+# PROVENANCE OF THE NUMBERS BELOW — read before quoting any cost figure.
+#
+# Inference runs locally through Ollama's OpenAI-compatible endpoint, so the real
+# monetary cost of a run on this machine is $0. Tokens and latency in runs/*.jsonl are
+# genuinely MEASURED. The USD figures here are a documented reference rate used to turn
+# measured tokens into a comparable cost, so the anneal stage has a meaningful axis to
+# optimise. Each rate carries its source:
+#
+#   published — the provider's listed serverless rate for that exact model.
+#   scaled    — no public serverless rate exists for this size; scaled from the 7B
+#               published rate by parameter ratio. This is an ASSUMPTION, not a quote.
+#
+# Source: Together AI pricing page, Qwen2.5 7B Instruct Turbo at $0.30 / $0.30 per 1M
+# tokens (checked 6 Sep 2026, https://www.together.ai/pricing).
+#
+# If you swap in a hosted provider, replace these with that provider's real rates and
+# change price_source to "published".
+# Hardware note: this machine has 8.6 GB of RAM. A 7B model loads but spills to CPU and
+# returns empty completions once other models are resident, so the ladder is sized to fit
+# entirely in memory (3.3 GB across all three). One Qwen2.5 family, three sizes, so the
+# downshift compares like with like.
+tiers:
+  frontier:
+    provider: ollama
+    model: qwen2.5:3b-instruct
+    price_in: 0.13
+    price_out: 0.13
+    price_source: scaled           # 3/7 of the 7B published rate; no public rate at this size
+  mid:
+    provider: ollama
+    model: qwen2.5:1.5b-instruct
+    price_in: 0.06
+    price_out: 0.06
+    price_source: scaled           # 1.5/7 of the 7B published rate
+  cheap:
+    provider: ollama
+    model: qwen2.5:0.5b-instruct
+    price_in: 0.02
+    price_out: 0.02
+    price_source: scaled           # 0.5/7 of the 7B published rate
+downshift_order: [frontier, mid, cheap]
+providers:
+  ollama:    {base_url_env: OLLAMA_BASE_URL,    api_key_env: OLLAMA_API_KEY}
+  tensormux: {base_url_env: TENSORMUX_BASE_URL, api_key_env: TENSORMUX_API_KEY}
+  frontier:  {base_url_env: FRONTIER_BASE_URL,  api_key_env: FRONTIER_API_KEY}
+  aigi:      {base_url_env: AIGI_BASE_URL,      api_key_env: AIGI_API_KEY}

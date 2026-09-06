@@ -45,7 +45,22 @@ def _env(name: str) -> str:
 
 
 ROOT = Path(__file__).resolve().parent.parent
-MODELS_PATH = ROOT / "specs" / "models.yaml"
+
+
+def _default_models_path() -> Path:
+    """The model config every call falls back to, overridable per process.
+
+    ``--models`` only reaches ``runner``; ``architect``, ``diagnose`` and ``mutate`` call the
+    gateway without a path, so a run pointed at a different ladder would silently classify and
+    mutate against the committed one -- and fail outright if that ladder needs a key the
+    machine does not have. This module is the single owner of model config, so the override
+    belongs here rather than threaded through four signatures.
+    """
+    override = (_config.env("ANNEAL_MODELS_PATH") or "").strip()
+    return Path(override) if override else ROOT / "specs" / "models.yaml"
+
+
+MODELS_PATH = _default_models_path()
 BACKEND_HEADER = "x-tensormux-backend"
 PLACEHOLDER = "REPLACE_ME"
 
