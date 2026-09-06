@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anneal, pitch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&family=Geist+Mono&display=swap" rel="stylesheet">
+<style>
+  :root { --paper:#F7F7F5; --panel:#FFFFFF; --ink:#111214; --graphite:#5B6068; --ash:#8A9099;
+          --rule:#E4E4E1; --accent:#F4511E; --clay:#B4442C; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--ash); font:15px/1.6 Geist, ui-sans-serif, -apple-system, sans-serif;
+         color:var(--ink); -webkit-font-smoothing:antialiased; }
+  .mono { font-family:"Geist Mono", ui-monospace, Menlo, monospace; }
+  /* Three pages, each exactly one landscape sheet, so printing to PDF gives a real deck. */
+  .page { width:1120px; height:630px; margin:24px auto; background:var(--paper);
+          padding:52px 72px 44px; display:flex; flex-direction:column; position:relative; }
+  .num { position:absolute; right:72px; bottom:20px; font-family:"Geist Mono",monospace;
+         font-size:11px; letter-spacing:0.18em; color:var(--ash); }
+  h1 { font-size:52px; line-height:1.05; letter-spacing:-0.03em; font-weight:500; }
+  h2 { font-size:34px; line-height:1.1; letter-spacing:-0.02em; font-weight:500;
+       margin-bottom:10px; }
+  .lede { color:var(--graphite); font-size:18px; max-width:62ch; margin-top:16px; }
+  .rule { height:2px; width:180px; background:var(--accent); margin:26px 0 30px; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:44px; margin-top:30px; }
+  .step { border-top:1px solid var(--rule); padding-top:12px; }
+  .step b { display:block; font-weight:500; font-size:17px; margin-bottom:4px; }
+  .step span { color:var(--graphite); font-size:14px; }
+  table { width:100%; border-collapse:collapse; margin-top:20px; font-size:15px; }
+  th { text-align:left; font-weight:400; font-size:10px; letter-spacing:0.12em;
+       text-transform:uppercase; color:var(--ash); padding-bottom:8px; }
+  td { padding:9px 0; border-top:1px solid var(--rule); }
+  td.n { font-family:"Geist Mono",monospace; text-align:right; }
+  .bad { color:var(--clay); }
+  .quote { margin-top:20px; padding:16px 22px; background:var(--panel);
+           border-left:2px solid var(--accent); font-size:17px; max-width:70ch; }
+  .foot { margin-top:auto; padding-top:14px; color:var(--ash); font-size:12px;
+        max-width:88ch; }
+  /* A deck is landscape. Without this Chrome prints portrait and every slide sits in the
+     top two thirds of a page with a band of nothing under it. */
+  @page { size: 1120px 630px; margin: 0; }
+  @media print {
+    body { background:#fff; }
+    .page { margin:0; page-break-after:always; width:1120px; height:630px; }
+    .page:last-child { page-break-after:auto; }
+  }
+</style>
+</head>
+<body>
+
+<section class="page">
+  <h1>Describe the job.<br>Anneal builds the agent.</h1>
+  <div class="rule"></div>
+  <p class="lede">Teams ship agents on vibes. You tweak a prompt, it looks better on the four
+  cases you checked, and nothing tells you whether it actually improved. Anneal gives that
+  process a scoreboard, and refuses changes that do not earn their place.</p>
+  <div class="cols">
+    <div class="step"><b>You give it</b><span>A job in one sentence, the tools it may use,
+      and a handful of examples. Five questions in a browser.</span></div>
+    <div class="step"><b>It gives you back</b><span>An agent, the evidence it works, and a
+      written record of every change it refused.</span></div>
+  </div>
+  <p class="foot">Syndicate by Maximor, Track 1. Ayush Srivastava and Tanush Singhal.</p>
+  <span class="num">01</span>
+</section>
+
+<section class="page">
+  <h2>The loop</h2>
+  <p class="lede">The same six steps whatever the job is, and you watch each one happen.</p>
+  <div class="cols">
+    <div class="step"><b>Design</b><span>Wires your goal and tools into several different
+      agents. One alone, a planner and a doer, a doer with a reviewer.</span></div>
+    <div class="step"><b>Try it</b><span>Runs every design over your examples and scores
+      each one, task by task.</span></div>
+    <div class="step"><b>Find the faults</b><span>Groups the failures by what actually went
+      wrong, and names the repair each one calls for.</span></div>
+    <div class="step"><b>Fix one</b><span>Applies that repair. It never spends the same
+      repair on the same fault twice.</span></div>
+    <div class="step"><b>Prove it helped</b><span>Re-runs both versions on tasks held back
+      from every earlier step. If the change does not win there, it is gone.</span></div>
+    <div class="step"><b>Make it cheaper</b><span>Walks the winner down to cheaper models
+      for as long as the score holds.</span></div>
+  </div>
+  <span class="num">02</span>
+</section>
+
+<section class="page">
+  <h2>What it moved, and what it refused</h2>
+  <p class="lede">Every figure is read out of the committed runs by the reporting tool, never
+  typed in by hand. A test fails the build if the two ever disagree.</p>
+  <table>
+    <thead><tr><th>Agent</th><th></th><th>Before</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><td>Bug fixing</td><td>cost per task</td><td class="n">$0.0899</td><td class="n">$0.026</td></tr>
+      <tr><td>Bug fixing</td><td>slowest run</td><td class="n">37.9s</td><td class="n">13.5s</td></tr>
+      <tr><td>Invoice triage</td><td>cost per task</td><td class="n">$0.035</td><td class="n">$0.0111</td></tr>
+      <tr><td>Helpdesk routing</td><td>how often it is right</td><td class="n">0.000</td><td class="n">1.000</td></tr>
+    </tbody>
+  </table>
+  <p class="quote">On one round the challenger scored <b>0.800</b> against the incumbent's
+  <b>0.767</b>, and Anneal threw it away, because it made <b class="bad">three</b> serious
+  mistakes where the old one made <b>one</b>. A system that only reports its wins is not
+  measuring anything.</p>
+  <p class="foot">Four agents through the identical loop with no code written for any of them,
+  plus two more built from scratch through the five questions to check it works on a job it
+  had never seen. Accuracy moved both ways; every case where it fell is listed in the repo.</p>
+  <span class="num">03</span>
+</section>
+
+</body>
+</html>

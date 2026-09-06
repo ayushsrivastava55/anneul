@@ -42,3 +42,10 @@ domains/*/generated_tools/*
 
 # local dev-env bootstrap (uv + managed pythons), not part of the project
 .tooling/
+
+# The demo film. The sources are tracked: the script, the components, the captured shots.
+# What is generated from them is not: node_modules, the narration WAVs (regenerated from the
+# script with a Sarvam key) and the renders themselves, which are hundreds of megabytes.
+video/node_modules/
+video/out/
+video/public/audio/

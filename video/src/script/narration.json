@@ -1,0 +1,152 @@
+{
+  "voice": {
+    "model": "bulbul:v3",
+    "speaker": "aditya",
+    "language_code": "en-IN",
+    "pace": 0.95,
+    "speech_sample_rate": 24000,
+    "output_audio_codec": "wav"
+  },
+  "scenes": [
+    {
+      "id": "01-title",
+      "kind": "title",
+      "title": "Anneal",
+      "subtitle": "An agent that engineers agents",
+      "text": "Every team I know builds agents the same way. Write a prompt. Try it on three examples. Ship it and hope. We got tired of that, so we built Anneal. You tell it what job you need done, and it builds the agent, breaks it, fixes it, and then proves the fix actually helped."
+    },
+    {
+      "id": "02-problem",
+      "kind": "slide",
+      "title": "The problem",
+      "bullets": [
+        "Building an agent is guesswork",
+        "You change a prompt and hope",
+        "Nothing tells you if it got better"
+      ],
+      "text": "Here's the thing nobody admits. When you tweak an agent's prompt and it looks better, you have no idea if it got better or if you just got lucky on the four cases you happened to check. There's no scoreboard. So teams ship agents on vibes, and then they're surprised in production."
+    },
+    {
+      "id": "03-loop",
+      "kind": "slide",
+      "title": "What Anneal does",
+      "bullets": [
+        "Design a few agents",
+        "Try them on your examples",
+        "Find the faults, fix one",
+        "Prove it helped, then make it cheaper"
+      ],
+      "text": "So we gave it a scoreboard. Anneal takes your goal and your tools and wires up a few different agents. Runs all of them on your examples. Reads the failures and sorts them by what actually went wrong. Fixes one thing. And then, the important bit, it re-tests on tasks it was never allowed to see while it was fixing. If the fix doesn't win there, the fix is gone. Then it hunts for the cheapest models that still hold the score."
+    },
+    {
+      "id": "04-evidence",
+      "kind": "slide",
+      "title": "Measured, not claimed",
+      "bullets": [
+        "Cost per task: 0.0899 to 0.026 dollars",
+        "Slowest run: 37.9 to 13.5 seconds",
+        "Six changes refused by the gate"
+      ],
+      "text": "And these aren't numbers I typed into a slide. They're pulled straight out of the runs. On bug fixing we went from nine cents a task to under three, and from thirty eight seconds down to thirteen. But here's my favourite one. Across four agents the gate threw out six changes. One of those scored higher than what it was replacing. We killed it anyway, because it made three serious mistakes where the old one made one. Higher score, worse agent. That's the whole point."
+    },
+    {
+      "id": "05-landing",
+      "kind": "shot",
+      "shot": "landing",
+      "caption": "The front door",
+      "text": "This is it running. And that screenshot on the front page isn't a mockup, it's that exact rejection I just told you about."
+    },
+    {
+      "id": "06-new",
+      "kind": "shot",
+      "shot": "new-form",
+      "caption": "Five questions",
+      "text": "Making one takes five questions. What do you want to call it. What should it do, in a sentence or two. That's it, that's the hard part done. Anneal writes the goal file, the tool list and the scorer itself. You don't touch any of them."
+    },
+    {
+      "id": "07-tools",
+      "kind": "shot",
+      "shot": "new-tools",
+      "caption": "Tools, in plain words",
+      "text": "Now, tools. We are not going to ask a normal person for a server launch command. We ask what the agent should be able to do. Work with files. Remember things between tasks. Those are real Model Context Protocol servers underneath, we just assemble the command so you never have to see one."
+    },
+    {
+      "id": "08-examples",
+      "kind": "shot",
+      "shot": "new-examples",
+      "caption": "Your own examples",
+      "text": "Then show it a few examples. What comes in, what a good answer looks like. And we quietly hold some of those back, so the agent never sees them while it's being fixed. Without that, every number after this is meaningless."
+    },
+    {
+      "id": "09-agents",
+      "kind": "shot",
+      "shot": "agents",
+      "caption": "Your agents",
+      "text": "Here's everything you've built. Rounds, how often it's right, what it costs, where it's got to. Hit Run and it genuinely starts working on your machine. We pick the models for you, because you clicked Run, you didn't ask to have an opinion about model providers."
+    },
+    {
+      "id": "10-design",
+      "kind": "shot",
+      "shot": "console-design",
+      "caption": "Step one: Design",
+      "text": "So watch it go. First it drafts a few designs from the same goal and the same tools. One agent working alone. A planner handing work to a doer. A doer with someone reviewing it."
+    },
+    {
+      "id": "11-run",
+      "kind": "shot",
+      "shot": "console-run",
+      "caption": "Step two: Try it",
+      "text": "Then it runs all of them and scores them. And you can read what the agent actually said on every single task, which is the thing you usually have to dig through a log file to find."
+    },
+    {
+      "id": "12-faults",
+      "kind": "shot",
+      "shot": "console-diagnose",
+      "caption": "Step three: Find the faults",
+      "text": "Now it reads the failures. Did something it shouldn't have. Misread one of your rules. Made a claim it couldn't back up. Each one names the fix it's about to try, and the fixes it's already burned, so it never goes round in circles."
+    },
+    {
+      "id": "13-gate",
+      "kind": "shot",
+      "shot": "console-gate",
+      "caption": "Step five: Prove it helped",
+      "text": "And this is the step I'd defend in front of anyone. It re-runs the new version and the old one on the held-back tasks. Here the challenger scored higher. Zero point eight against zero point seven six seven. And we binned it, because it made three serious mistakes against one. Any system that only ever reports its wins isn't measuring anything."
+    },
+    {
+      "id": "14-unseen",
+      "kind": "slide",
+      "title": "On a job it had never seen",
+      "bullets": [
+        "Built through the five questions",
+        "One agent: 0.000",
+        "Planner and doer: 1.000"
+      ],
+      "text": "Fine, but does it work on something it's never seen? We built two brand new agents through those same five questions. No API key, nothing written by hand. On helpdesk routing the same job wired three ways scored zero, then a perfect one, then a third. Picking the architecture is what moved it. The second agent scored zero the whole way, because the small local model just couldn't do the job, and the gate refused both fixes instead of pretending. I'll take that over a demo that only shows the good run."
+    },
+    {
+      "id": "15-built",
+      "kind": "slide",
+      "title": "How we built it",
+      "bullets": [
+        "29 Agent Orchestrator sessions",
+        "214 commits, 641 tests",
+        "13 thousand lines of Python"
+      ],
+      "text": "We built this the way the track asked. Twenty nine separate Agent Orchestrator sessions, each on its own branch, each taking one piece: the architect, the runner, the gate, the console, the interview. Two hundred and fourteen commits, six hundred and forty one tests. And one of those sessions wasn't ours, Anneal spawned it itself to go write a tool one of its agents was missing."
+    },
+    {
+      "id": "16-github",
+      "kind": "shot",
+      "shot": "github",
+      "caption": "The code",
+      "text": "It's all on GitHub. Including the raw runs behind every number on that site, and a note with each one telling you exactly how it was produced and what you shouldn't read into it."
+    },
+    {
+      "id": "17-close",
+      "kind": "title",
+      "title": "Anneal",
+      "subtitle": "Describe the job. Anneal builds it.",
+      "text": "That's Anneal. Describe the job, and it builds the thing, then proves it got better. We'd rather show you a refused change than a fake win."
+    }
+  ]
+}
