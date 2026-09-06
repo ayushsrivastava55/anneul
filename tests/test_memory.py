@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from anneal import cli, llm
+from anneal import cli, llm, runner
 from anneal import memory as memory_mod
 from anneal.domain import load_domain
 from anneal.memory import MEMORY_HEADING, Entry, Memory
@@ -38,8 +38,12 @@ RULE = (
 )
 
 
+EVIDENCE = '{"cabin": "basic_economy"}'
+
+
 def rules_reply(*rules: dict[str, Any]) -> str:
-    return json.dumps(list(rules))
+    """A reflector reply. Rules cite a tool result unless the test says otherwise."""
+    return json.dumps([{"evidence": EVIDENCE, **rule} for rule in rules])
 
 
 def failing_row(task_id: str, **kw: Any) -> dict[str, Any]:
@@ -79,7 +83,7 @@ def test_reflect_extracts_a_grounded_rule(tmp_path: Path) -> None:
     added = mem.reflect([failing_row("t1")], StubDomain(), client=client, iteration=2)
     assert [e.text for e in added] == [RULE]
     entry = mem.entries[0]
-    assert entry.tool == "get_reservation_details"
+    assert entry.tool == "get_reservation_details" and entry.evidence == EVIDENCE
     assert entry.source_task_ids == ["t1"] and entry.source_trace_ids == ["tr-t1"]
     assert entry.created_iteration == 2 and entry.status == "active"
     # the prompt carries the tool result the rule has to be grounded in
@@ -144,6 +148,25 @@ def test_reflect_grounds_on_what_the_runtime_observed(tmp_path: Path) -> None:
 def test_reflect_tolerates_junk_replies(tmp_path: Path, reply: str) -> None:
     mem = Memory(tmp_path / "memory.json")
     assert mem.reflect([failing_row("t1")], StubDomain(), client=FakeClient(turns=[reply])) == []
+
+
+def test_reflect_drops_a_rule_that_cites_no_tool_result(tmp_path: Path) -> None:
+    """A rule the model cannot point at a tool result for is a guess, not a lesson."""
+    mem = Memory(tmp_path / "memory.json")
+    reply = json.dumps(
+        [{"text": "Be more careful with reservations.", "evidence": ""},
+         {"text": RULE, "tool": "get_reservation_details", "evidence": EVIDENCE}]
+    )
+    added = mem.reflect([failing_row("t1")], StubDomain(), client=FakeClient(turns=[reply]))
+    assert [e.text for e in added] == [RULE]
+
+
+def test_reflect_keeps_ungrounded_rules_when_there_was_nothing_to_cite(tmp_path: Path) -> None:
+    """A run that made no tool call has no result to quote; its lesson still counts."""
+    mem = Memory(tmp_path / "memory.json")
+    reply = json.dumps([{"text": "Reply with the required JSON object and nothing else."}])
+    row = {"task_id": "t1", "score": 0.0, "output": "sorry!", "trace": []}
+    assert len(mem.reflect([row], StubDomain(), client=FakeClient(turns=[reply]))) == 1
 
 
 def test_reflect_caps_the_rules_it_accepts(tmp_path: Path) -> None:
@@ -393,6 +416,19 @@ def test_runtime_without_an_active_store_is_unchanged(cabin_domain: Any) -> None
     assert result.memory_ids == []
 
 
+def test_recall_survives_the_runner_thread_pool(
+    cabin_domain: Any, tmp_path: Path, monkeypatch  # noqa: ANN001 - pytest fixture
+) -> None:
+    """The production path is runner.run -> asyncio -> a worker thread; the store must reach it."""
+    mem = Memory(tmp_path / "memory.json", [Entry(id="a", text=RULE, domain="cabin")])
+    monkeypatch.setattr(llm, "get_client", lambda *a, **kw: PolicyClient())
+    with memory_mod.activate(mem):
+        rows = runner.run(cabin_spec(memory=True), cabin_domain, SEARCH, runs_dir=tmp_path)
+    assert mem.injections["cabin-1"] == ["a"]
+    assert [r["score"] for r in rows] == [1.0]
+    assert "basic_economy" in str(mem.observed("cabin-1"))
+
+
 # --- the headline: fail empty, learn, pass -----------------------------------------------
 
 
@@ -465,6 +501,21 @@ def test_summary_reports_a_memory_that_grows_across_iterations(
     assert counts == sorted(counts) and counts[-1] > counts[0], counts
     stored = Memory.load(root / "memory.json")
     assert len(stored.entries) == counts[-1] >= 2
+
+
+def test_every_candidate_reflects_on_its_own_run(cli_loop, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """Rules must cite the run that produced them, so reflection follows each search run."""
+    seen: list[tuple[str, set[str]]] = []
+    monkeypatch.setattr(
+        cli, "_learn",
+        lambda loop, candidate, rows, iteration: seen.append(
+            (candidate.id, {r["candidate_id"] for r in rows})
+        ),
+    )
+    assert cli.main(["run", "domains/airline", "--runs-dir", str(tmp_path / "runs"),
+                     "--iterations", "1", "--candidates", "3"]) == 0
+    assert [c for c, _ in seen] == ["cand-1", "cand-2", "cand-3", "cand-1-m1"]
+    assert all(rows == {candidate} for candidate, rows in seen)
 
 
 def test_no_memory_flag_leaves_the_store_alone(cli_loop, tmp_path: Path) -> None:  # noqa: ANN001

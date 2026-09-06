@@ -97,6 +97,7 @@ class Entry:
     source_task_ids: list[str] = field(default_factory=list)
     source_trace_ids: list[str] = field(default_factory=list)
     tool: str | None = None
+    evidence: str | None = None
     created_iteration: int = 0
     hits: int = 0
     wins: int = 0
@@ -177,6 +178,9 @@ class Memory:
 
     def save(self) -> Path:
         """Write the store atomically (tmp + rename) and return its path."""
+        return tracing.node_span("memory.save")(self._save)()
+
+    def _save(self) -> Path:
         with self._lock:
             body = json.dumps(
                 {"entries": [e.to_dict() for e in self.entries]}, indent=2, sort_keys=True
@@ -276,6 +280,9 @@ class Memory:
 
     def credit_run(self, rows: Iterable[dict[str, Any]], threshold: float) -> int:
         """Credit every row of a finished run against the entries it was given."""
+        return int(tracing.node_span("memory.credit")(self._credit_run)(list(rows), threshold))
+
+    def _credit_run(self, rows: list[dict[str, Any]], threshold: float) -> int:
         n = 0
         for row in rows:
             ids = self.injections.get(str(row.get("task_id")))
@@ -355,10 +362,11 @@ class Memory:
         except Exception as exc:  # noqa: BLE001 - reflection is best effort, never fatal
             logger.warning(json.dumps({"event": "reflect_failed", "error": repr(exc)}))
             return []
+        grounded = _grounded(parse_rules(reply), any(trace for _, trace in cases))
         added = [
             e for e in (
                 self.add(_entry(rule, failures, getattr(domain, "name", ""), iteration))
-                for rule in parse_rules(reply)
+                for rule in grounded
             ) if e is not None
         ]
         logger.info(json.dumps({"event": "memory_reflect", "domain": getattr(domain, "name", ""),
@@ -379,12 +387,28 @@ class Memory:
         return [s for s in (context.get("trace") or []) if isinstance(s, dict)]
 
 
+def _grounded(rules: list[dict[str, Any]], had_tool_results: bool) -> list[dict[str, Any]]:
+    """Drop rules that cite no tool result, but only when there were tool results to cite.
+
+    A rule the model cannot point at a tool result for is a guess, and guesses are what
+    memory is supposed to stop accumulating. Runs that made no tool call at all (a crash, a
+    schema failure on the first turn) have nothing to cite, so their rules pass through.
+    """
+    if not had_tool_results:
+        return rules
+    kept = [r for r in rules if str(r.get("evidence") or "").strip()]
+    for dropped in [r for r in rules if r not in kept]:
+        logger.info(json.dumps({"event": "memory_ungrounded", "text": str(dropped.get("text"))}))
+    return kept
+
+
 def _merge(existing: Entry, new: Entry) -> None:
     """Fold a duplicate rule's provenance into the entry that already covers it."""
     for field_name in ("source_task_ids", "source_trace_ids"):
         merged = dict.fromkeys([*getattr(existing, field_name), *getattr(new, field_name)])
         setattr(existing, field_name, list(merged))
     existing.tool = existing.tool or new.tool
+    existing.evidence = existing.evidence or new.evidence
 
 
 def _threshold(domain: Any) -> float:
@@ -401,6 +425,7 @@ def _entry(rule: dict[str, Any], rows: list[dict[str, Any]], domain: str, iterat
         source_task_ids=[str(r.get("task_id")) for r in used],
         source_trace_ids=[str(r["trace_id"]) for r in used if r.get("trace_id")],
         tool=str(rule["tool"]) if rule.get("tool") else None,
+        evidence=str(rule["evidence"])[:RESULT_CHARS] if rule.get("evidence") else None,
         created_iteration=iteration,
     )
 

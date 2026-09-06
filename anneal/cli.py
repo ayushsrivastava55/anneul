@@ -25,7 +25,17 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec
+from anneal import (
+    __version__,
+    architect,
+    diagnose,
+    gate,
+    llm,
+    mutate,
+    runner,
+    spec,
+    tracing,
+)
 from anneal import memory as memory_mod
 from anneal.domain import load_domain
 from anneal.spec import HarnessSpec
@@ -189,26 +199,34 @@ def _run_search(
     if loop.memory is not None:
         loop.memory.credit_run(rows, _threshold(loop.domain))
         loop.injected = len(loop.memory.injected_ids())
+        _learn(loop, candidate, rows, iteration)
     metrics = _summarize(loop, candidate, rows)
     metrics["n_tasks"] = len(rows)
     loop.search[candidate.id] = metrics
     return candidate, rows
 
 
-def _learn(loop: Loop, rows: list[dict], iteration: int) -> None:
+def _learn(loop: Loop, candidate: Any, rows: list[dict], iteration: int) -> None:
     """Reflect on this run's failures, retire losing rules and persist the store.
 
-    Reflection reads only the search rows the loop just scored. It never raises: an
-    unreachable gateway costs new rules, not the run.
+    Called immediately after the run that produced ``rows``, so the tool results the store
+    recorded still belong to ``candidate`` and the rules it learns cite that candidate's own
+    traces. Reflection reads only search rows, is tagged with the same run context as those
+    rows so Neatlogs joins the failing trace to the rule learned from it, and never raises:
+    an unreachable gateway costs new rules, not the run.
     """
     if loop.memory is None:
         return
-    loop.memory.reflect(
-        rows, loop.domain, client=loop.memory_client, iteration=iteration,
-        threshold=_threshold(loop.domain),
-    )
-    loop.memory.prune()
-    loop.memory.save()
+    with tracing.run_context(
+        candidate_id=candidate.id, iteration=iteration,
+        domain=loop.domain.name, split=SEARCH_SPLIT,
+    ):
+        loop.memory.reflect(
+            rows, loop.domain, client=loop.memory_client, iteration=iteration,
+            threshold=_threshold(loop.domain),
+        )
+        loop.memory.prune()
+        loop.memory.save()
 
 
 # --- one iteration -----------------------------------------------------------------------
@@ -326,7 +344,6 @@ def _pick_incumbent(loop: Loop, console: Console) -> tuple[Any, list[dict]]:
         if best is None or score > best[0]:
             best = (score, candidate, rows)
     assert best is not None
-    _learn(loop, best[2], 0)
     return best[1], best[2]
 
 
@@ -342,7 +359,6 @@ def _iteration(
         )
     candidate, issue = proposed
     candidate, cand_rows = _run_search(loop, candidate, i)
-    _learn(loop, cand_rows, i)
     # the gate runs the incumbent again at this iteration, so it needs the same stamp
     result = gate.gate(
         _persist(loop, incumbent, i), candidate, loop.domain, i, loop.runs_dir,
