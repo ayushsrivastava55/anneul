@@ -179,23 +179,42 @@ def _metrics(pass3_rate: float, hard_fails: int) -> gate.SpecMetrics:
 
 
 def test_decide_rejects_when_pass3_below_incumbent():
-    ok, reason = gate.decide(_metrics(0.5, 0), _metrics(0.6, 0), p=0.01)
-    assert not ok and reason.startswith("pass3_rate")
+    ok, verdict = gate.decide(_metrics(0.5, 0), _metrics(0.6, 0), p=0.01)
+    assert not ok and verdict.metric == "pass3_rate"
+    assert str(verdict) == "pass3_rate 0.500 < incumbent 0.600"
 
 
 def test_decide_rejects_when_more_hard_fails():
-    ok, reason = gate.decide(_metrics(0.9, 2), _metrics(0.6, 1), p=0.01)
-    assert not ok and reason.startswith("hard_fails")
+    ok, verdict = gate.decide(_metrics(0.9, 2), _metrics(0.6, 1), p=0.01)
+    assert not ok and verdict.metric == "hard_fails"
+    assert str(verdict) == "hard_fails 2 > incumbent 1"
 
 
 def test_decide_rejects_when_not_significant():
-    ok, reason = gate.decide(_metrics(0.7, 0), _metrics(0.6, 0), p=0.25)
-    assert not ok and reason.startswith("p")
+    ok, verdict = gate.decide(_metrics(0.7, 0), _metrics(0.6, 0), p=0.25)
+    assert not ok and verdict.metric == "p"
+    # the sentence is byte-identical to the one the gate wrote before Verdict existed:
+    # three decimals on the p-value, alpha bare
+    assert str(verdict) == f"p 0.250 >= alpha {gate.ALPHA:g}"
 
 
 def test_decide_promotes_when_all_conditions_hold():
-    ok, reason = gate.decide(_metrics(0.9, 0), _metrics(0.6, 0), p=0.05)
-    assert ok and reason == "promoted"
+    ok, verdict = gate.decide(_metrics(0.9, 0), _metrics(0.6, 0), p=0.05)
+    assert ok and str(verdict) == "promoted"
+    assert verdict.parts() is None  # a promotion has no failing condition to record
+
+
+def test_the_verdict_is_recorded_as_both_a_sentence_and_its_fields():
+    """gate.json keeps the line the report quotes, plus the fields the console reads.
+
+    Parsing the sentence back apart to render it would be guessing at our own output, and a
+    console that shows "hard_fails 3 > incumbent 1" to a reader has told them nothing.
+    """
+    _, verdict = gate.decide(_metrics(0.9, 3), _metrics(0.6, 1), p=0.01)
+    assert verdict.parts() == {
+        "metric": "hard_fails", "value": 3, "comparator": ">", "against": 1,
+        "against_label": "incumbent", "fmt": "{:.0f}", "against_fmt": "",
+    }
 
 
 # --- end to end with injected runner ----------------------------------------------------

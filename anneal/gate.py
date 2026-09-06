@@ -80,7 +80,16 @@ class GateResult:
     p: float
     promoted: bool
     reason: str
+    """The sentence the gate has always written; ``str(Verdict)``."""
+
     path: Path
+    reason_parts: dict[str, Any] | None = None
+    """The same verdict as fields, so a reader can be shown it in words.
+
+    ``None`` both on a promotion, which has no failing condition, and on a result built
+    without one -- older gate.json files on disk carry no such key and must stay readable.
+    """
+
     escalated: bool = False
     """True when the gate bought a second block of runs before deciding (see ``gate``)."""
 
@@ -187,20 +196,53 @@ def paired_test(
     return PairedResult(wins, losses, p, floor)
 
 
-def decide(candidate: SpecMetrics, incumbent: SpecMetrics, p: float) -> tuple[bool, str]:
+@dataclasses.dataclass(frozen=True)
+class Verdict:
+    """The one condition that settled a gate, kept as fields rather than as a sentence.
+
+    ``str(verdict)`` is the line the gate has always written, and it is still what gate.json's
+    ``reason`` holds, what the report quotes and what the tests assert on. The fields exist
+    because a reader should not be shown "hard_fails 3 > incumbent 1": the console needs to know
+    *which* metric failed and against what to say it in words, and parsing that back out of the
+    sentence would be guessing at our own output. ``metric`` is empty on a promotion.
+    """
+
+    metric: str = ""
+    value: float | int | None = None
+    comparator: str = ""
+    against: float | int | None = None
+    against_label: str = "incumbent"
+    fmt: str = "{:.3f}"
+    against_fmt: str = ""
+    """Format for the right-hand side when it differs from ``fmt``; alpha is written bare."""
+
+    def __str__(self) -> str:
+        if not self.metric:
+            return "promoted"
+        left = self.fmt.format(self.value)
+        right = (self.against_fmt or self.fmt).format(self.against)
+        return f"{self.metric} {left} {self.comparator} {self.against_label} {right}"
+
+    def parts(self) -> dict[str, Any] | None:
+        """The fields, for gate.json. ``None`` on a promotion, which has no failing condition."""
+        return dataclasses.asdict(self) if self.metric else None
+
+
+def decide(candidate: SpecMetrics, incumbent: SpecMetrics, p: float) -> tuple[bool, Verdict]:
     """Promote iff pass3 >= incumbent, hard_fails <= incumbent, p < ALPHA.
 
-    The reason names the first condition that failed.
+    The verdict names the first condition that failed.
     """
     if candidate.pass3_rate < incumbent.pass3_rate:
-        return False, (
-            f"pass3_rate {candidate.pass3_rate:.3f} < incumbent {incumbent.pass3_rate:.3f}"
-        )
+        return False, Verdict("pass3_rate", candidate.pass3_rate, "<", incumbent.pass3_rate)
     if candidate.hard_fails > incumbent.hard_fails:
-        return False, f"hard_fails {candidate.hard_fails} > incumbent {incumbent.hard_fails}"
+        return False, Verdict(
+            "hard_fails", candidate.hard_fails, ">", incumbent.hard_fails, fmt="{:.0f}"
+        )
     if not p < ALPHA:
-        return False, f"p {p:.3f} >= alpha {ALPHA}"
-    return True, "promoted"
+        return False, Verdict("p", p, ">=", ALPHA, against_label="alpha",
+                              fmt="{:.3f}", against_fmt="{:g}")
+    return True, Verdict()
 
 
 def is_underpowered(wins: int, losses: int) -> bool:
@@ -299,7 +341,7 @@ def _escalation_enabled() -> bool:
     return raw not in {"0", "false", "off"}
 
 
-def _should_escalate(promoted: bool, reason: str, pair: PairedResult) -> bool:
+def _should_escalate(promoted: bool, verdict: Verdict, pair: PairedResult) -> bool:
     """Buy a second block only when the p-value is the sole objection and the sign is right.
 
     A pass^3 or hard-fail regression is a verdict, not a power problem; equal or losing
@@ -308,7 +350,7 @@ def _should_escalate(promoted: bool, reason: str, pair: PairedResult) -> bool:
     """
     if promoted or not _escalation_enabled():
         return False
-    return reason.startswith("p ") and pair.wins > pair.losses
+    return verdict.metric == "p" and pair.wins > pair.losses
 
 
 def gate(
@@ -332,9 +374,9 @@ def gate(
     cand = spec_metrics(cand_runs, threshold, search_rows)
     # Pass counts, not pass^3 booleans: partial movement is evidence and must count.
     pair = paired_test(cand.passes or cand.pass3, inc.passes or inc.pass3)
-    promoted, reason = decide(cand, inc, pair.p)
+    promoted, verdict = decide(cand, inc, pair.p)
     escalated = False
-    if _should_escalate(promoted, reason, pair):
+    if _should_escalate(promoted, verdict, pair):
         # The candidate is ahead but the block was too small for any verdict. Rejecting now
         # publishes "no effect" about a sample size, not about the change - so the gate buys
         # one more block of runs (seeds n..2n-1, incumbent extended too) and re-decides on
@@ -349,16 +391,17 @@ def gate(
         inc = spec_metrics(inc_runs, threshold)
         cand = spec_metrics(cand_runs, threshold, search_rows)
         pair = paired_test(cand.passes or cand.pass3, inc.passes or inc.pass3)
-        promoted, reason = decide(cand, inc, pair.p)
+        promoted, verdict = decide(cand, inc, pair.p)
     path = Path(runs_dir) / domain.name / str(iteration) / "gate.json"
     result = GateResult(
         domain=domain.name, iteration=iteration, incumbent=inc, candidate=cand,
-        wins=pair.wins, losses=pair.losses, p=pair.p, promoted=promoted, reason=reason, path=path,
+        wins=pair.wins, losses=pair.losses, p=pair.p, promoted=promoted,
+        reason=str(verdict), reason_parts=verdict.parts(), path=path,
         escalated=escalated,
     )
     if promoted:
         promote_prompts(candidate)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-    log.info(json.dumps({"event": "gate", "promoted": promoted, "reason": reason}))
+    log.info(json.dumps({"event": "gate", "promoted": promoted, "reason": str(verdict)}))
     return result

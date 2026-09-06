@@ -282,7 +282,9 @@ def test_landing_page_is_served_and_names_the_product(client: TestClient) -> Non
     response = client.get("/landing")
     assert response.status_code == 200
     assert "Anneal" in response.text
-    assert "the agent that engineers agents" in response.text.lower()
+    # the page leads with what it does for the reader, not with a description of itself
+    assert "anneal builds the agent" in response.text.lower()
+    assert "open the console" in response.text.lower()
 
 
 # --- the step timeline ------------------------------------------------------------------
@@ -324,6 +326,12 @@ CONSOLE_GATE = {
     "min_discordant_to_promote": 4,
     "underpowered": True,
     "reason": "pass3_rate 0.600 < incumbent 0.700",
+    # the same verdict as fields, which is what the console renders; the sentence above stays
+    # because it is what the report quotes and what a pre-reason_parts run has on disk
+    "reason_parts": {
+        "metric": "pass3_rate", "value": 0.6, "comparator": "<", "against": 0.7,
+        "against_label": "incumbent", "fmt": "{:.3f}",
+    },
     "candidate": {"candidate_id": "cand-01-add_validator_node-i1", "mean_score": 0.6667,
                   "pass3_rate": 0.6, "hard_fails": 5, "gen_gap": -0.0667},
     "incumbent": {"candidate_id": "cand-01", "mean_score": 0.7, "pass3_rate": 0.7,
@@ -552,7 +560,8 @@ def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
     body = console(tmp_path).get("/?domain=airline&step=gate").text
     assert vocab.decision("reject") in body
     # the gate's own reason line, with its field names read out as words and its numbers intact
-    assert "pass3_rate 0.600 is less than the current best&#x27;s 0.700" in body
+    assert "right 3 times running 0.600 is below the version in use&#x27;s 0.700" in body
+    assert "pass3_rate" not in body  # the field name is never shown to a reader
     for text in ("0.667", "0.700", "1.000", "0.10", "underpowered"):
         assert text in body, text
 
@@ -661,3 +670,22 @@ def test_page_has_the_standing_regions_and_no_cdn_script(tmp_path: Path) -> None
     for region in ("topbar", "contract", "curves", "timeline"):
         assert f'id="{region}"' in body, region
     assert "http://" not in body and "https://" not in body
+
+
+def test_a_gate_written_before_reason_parts_is_still_read_out_in_words(tmp_path: Path) -> None:
+    """Old runs carry only the sentence, and every number needed to say it properly.
+
+    The metric name and comparator are the two tokens gate.py writes in a format it owns; the
+    values come from the structured incumbent/candidate metrics the same file records. A gate
+    whose line does not match that shape falls back to showing the sentence as written.
+    """
+    runs = write_console_fixture(tmp_path)
+    path = runs / "airline" / "1" / "gate.json"
+    old_style = {k: v for k, v in CONSOLE_GATE.items() if k != "reason_parts"}
+    path.write_text(json.dumps(old_style), encoding="utf-8")
+    client = TestClient(dashboard.create_app(runs, tmp_path / "no-ledger.json"))
+    panel = client.get("/?domain=airline&step=gate").text
+    # the fields are rebuilt from the metrics that run did record, so even an old gate.json
+    # reads as words; the field name is never shown
+    assert "right 3 times running 0.600 is below the version in use&#x27;s 0.700" in panel
+    assert "pass3_rate" not in panel

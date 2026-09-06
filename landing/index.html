@@ -3,172 +3,202 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Anneal — the agent that engineers agents, then makes them cheap</title>
+<title>Anneal — an agent that engineers agents</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&family=Geist+Mono:wght@400&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg: #0b0e14; --panel: #12161f; --line: #232a38;
-    --text: #e6e9ef; --muted: #8b93a7; --accent: #ff7a45; --accent2: #4fc1ff;
-    --good: #5ad19a; --bad: #ff6b81;
+  /* Tokens from .stitch/DESIGN.md, the same ones the console uses: Paper canvas, Panel white,
+     Ink text, one orange accent, 1px rules, no shadows and no rounded cards. */
+  :root { --paper:#F7F7F5; --panel:#FFFFFF; --ink:#111214; --graphite:#5B6068; --ash:#8A9099;
+          --rule:#E4E4E1; --accent:#F4511E; --green:#2F7A55; --clay:#B4442C; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--paper); color:var(--ink);
+         font:15px/1.6 Geist, ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .mono { font-family:"Geist Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+  .wrap { max-width:1080px; margin:0 auto; padding:0 32px; }
+  a { color:var(--ink); }
+
+  header.top { border-bottom:1px solid var(--rule); }
+  .topin { display:flex; align-items:center; gap:24px; padding:18px 0; }
+  .mark { font-family:"Geist Mono",ui-monospace,monospace; letter-spacing:0.22em;
+          font-size:13px; text-decoration:none; }
+  .topin .spacer { flex:1; }
+  .topin a.nav { color:var(--graphite); font-size:13px; text-decoration:none; }
+  .topin a.nav:hover { color:var(--ink); }
+
+  /* Left-aligned, asymmetric. The claim on the left, the thing it is claiming about on the
+     right, so the first screen shows the product rather than describing it. */
+  .hero { display:grid; grid-template-columns:1.05fr 0.95fr; gap:56px; align-items:start;
+          padding:88px 0 72px; }
+  .eyebrow { font-family:"Geist Mono",ui-monospace,monospace; font-size:11px;
+             text-transform:uppercase; letter-spacing:0.14em; color:var(--ash); }
+  h1 { font-size:clamp(34px, 5vw, 52px); line-height:1.06; letter-spacing:-0.025em;
+       font-weight:500; margin:18px 0 20px; }
+  h1 em { font-style:normal; color:var(--accent); }
+  .sub { color:var(--graphite); font-size:17px; max-width:46ch; }
+  .cta { display:flex; gap:12px; margin-top:32px; flex-wrap:wrap; }
+  .btn { padding:11px 20px; font-size:14px; text-decoration:none; border:1px solid var(--ink); }
+  .btn.primary { background:var(--ink); color:var(--panel); }
+  .btn.ghost { border-color:var(--rule); color:var(--ink); }
+
+  .verdict { background:var(--panel); border:1px solid var(--rule); padding:24px; }
+  .verdict .vh { font-family:"Geist Mono",ui-monospace,monospace; font-size:11px;
+                 text-transform:uppercase; letter-spacing:0.14em; color:var(--ash);
+                 margin-bottom:14px; }
+  .verdict .word { color:var(--clay); font-size:22px; letter-spacing:-0.01em; margin-bottom:16px; }
+  .vrow { display:grid; grid-template-columns:1fr auto auto; gap:12px; padding:8px 0;
+          border-top:1px solid var(--rule); font-size:13px; align-items:baseline; }
+  .vrow span:first-child { color:var(--graphite); }
+  .vrow b { font-weight:400; font-family:"Geist Mono",ui-monospace,monospace; min-width:52px;
+            text-align:right; display:inline-block; }
+  .vrow .worse { color:var(--clay); }
+  .vcap { color:var(--graphite); font-size:12px; margin-top:16px; }
+
+  section { border-top:1px solid var(--rule); padding:64px 0; }
+  h2 { font-size:24px; font-weight:500; letter-spacing:-0.015em; margin-bottom:8px; }
+  .lede { color:var(--graphite); max-width:62ch; margin-bottom:36px; }
+
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:1px;
+           background:var(--rule); border:1px solid var(--rule); }
+  .stat { background:var(--panel); padding:24px; }
+  .stat .n { font-family:"Geist Mono",ui-monospace,monospace; font-size:30px;
+             letter-spacing:-0.02em; }
+  .stat .n .from { color:var(--ash); }
+  .stat h3 { font-size:14px; font-weight:500; margin:10px 0 6px; }
+  .stat p { color:var(--graphite); font-size:13px; }
+
+  .flow { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:1px;
+          background:var(--rule); border:1px solid var(--rule); }
+  .fstep { background:var(--panel); padding:20px; }
+  .fstep .k { font-family:"Geist Mono",ui-monospace,monospace; font-size:10px; color:var(--ash);
+              letter-spacing:0.12em; text-transform:uppercase; }
+  .fstep h3 { font-size:15px; font-weight:500; margin:8px 0 6px; }
+  .fstep p { color:var(--graphite); font-size:13px; }
+
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:48px; }
+  .qa h3 { font-size:15px; font-weight:500; margin-bottom:6px; }
+  .qa p { color:var(--graphite); font-size:14px; margin-bottom:22px; max-width:52ch; }
+
+  pre { background:var(--panel); border:1px solid var(--rule); padding:18px 20px;
+        overflow-x:auto; font-size:13px; line-height:1.75;
+        font-family:"Geist Mono",ui-monospace,monospace; }
+  .note { color:var(--graphite); font-size:13px; margin-top:16px; max-width:70ch; }
+  footer { border-top:1px solid var(--rule); padding:36px 0 56px; color:var(--graphite);
+           font-size:13px; }
+
+  @media (max-width:860px) {
+    .hero, .two { grid-template-columns:1fr; gap:36px; }
+    .hero { padding:56px 0 48px; }
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text);
-         font: 16px/1.6 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
-  header { padding: 88px 0 40px; text-align: center; }
-  .badge { display: inline-block; border: 1px solid var(--line); color: var(--muted);
-           border-radius: 999px; padding: 4px 14px; font-size: 13px; letter-spacing: .06em;
-           text-transform: uppercase; }
-  h1 { font-size: 52px; line-height: 1.1; margin: 22px 0 14px; letter-spacing: -.02em; }
-  h1 .flame { color: var(--accent); }
-  .sub { color: var(--muted); font-size: 19px; max-width: 720px; margin: 0 auto; }
-  .cta { margin-top: 30px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
-  .btn { border-radius: 10px; padding: 12px 22px; font-weight: 600; text-decoration: none; }
-  .btn.primary { background: var(--accent); color: #14100c; }
-  .btn.ghost { border: 1px solid var(--line); color: var(--text); }
-  section { padding: 44px 0; border-top: 1px solid var(--line); }
-  h2 { font-size: 26px; margin-bottom: 20px; letter-spacing: -.01em; }
-  .grid { display: grid; gap: 16px; }
-  .grid.three { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-          padding: 22px; }
-  .card h3 { font-size: 17px; margin-bottom: 8px; }
-  .card p { color: var(--muted); font-size: 15px; }
-  .num { font-size: 40px; font-weight: 700; letter-spacing: -.02em; }
-  .num.good { color: var(--good); }
-  .num.accent { color: var(--accent2); }
-  .loop { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-          font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14px; }
-  .step { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-          padding: 8px 14px; }
-  .step b { color: var(--accent2); font-weight: 600; }
-  .arrow { color: var(--muted); }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 600; }
-  td.good { color: var(--good); font-weight: 600; }
-  .note { color: var(--muted); font-size: 13px; margin-top: 10px; }
-  code { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
-         padding: 2px 7px; font-size: 14px; }
-  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-        padding: 18px 20px; overflow-x: auto; font-size: 14px; line-height: 1.7; }
-  footer { padding: 40px 0 60px; color: var(--muted); font-size: 14px; text-align: center;
-           border-top: 1px solid var(--line); }
-  a { color: var(--accent2); }
 </style>
 </head>
 <body>
 
-<header class="wrap">
-  <span class="badge">Syndicate by Maximor · Track 1 · Automated Agent Engineering</span>
-  <h1>Anneal<span class="flame">.</span></h1>
-  <p class="sub">The agent that engineers agents, then makes them cheap. Give it a goal, a
-  tool manifest and an evaluator — it designs architectures, reads its own traces, repairs
-  the failures it finds, promotes only what survives a statistical gate, and walks the
-  winner down to the cheapest model mix that still passes.</p>
-  <div class="cta">
-    <a class="btn primary" href="http://127.0.0.1:8000/">Open the live dashboard</a>
-    <a class="btn ghost" href="https://github.com/aircmastercode/anneul">GitHub repo</a>
-  </div>
-</header>
+<header class="top"><div class="wrap topin">
+  <a class="mark" href="#">ANNEAL</a>
+  <span class="spacer"></span>
+  <a class="nav" href="#how">How it works</a>
+  <a class="nav" href="#results">Results</a>
+  <a class="nav" href="/">Open the console</a>
+</div></header>
 
-<section>
-  <div class="wrap">
-    <h2>Headline numbers — generated from runs/, never typed by hand</h2>
-    <div class="grid three">
-      <div class="card">
-        <div class="num good">29&times;</div>
-        <h3>cheaper on invoices</h3>
-        <p>Annealed from Claude Sonnet down to GPT-5-nano: score rose to a perfect
-        1.000 while cost fell to $0.0014 per task. Zero hard fails.</p>
-      </div>
-      <div class="card">
-        <div class="num accent">5 &rarr; 3</div>
-        <h3>hard fails on airline</h3>
-        <p>tau-bench airline: unsafe actions cut, $/task &minus;28%, p95 latency
-        &minus;36% — while holding the gated score.</p>
-      </div>
-      <div class="card">
-        <div class="num">$0.07</div>
-        <h3>to solve bugfix</h3>
-        <p>The architecture search picked a critic-loop topology that scores 1.000 at
-        the cheapest sponsor tier. Total spend: seven cents.</p>
-      </div>
-    </div>
-    <p class="note">Every cell traces to a Neatlogs span; the README table is emitted by
-    <code>anneal report --write-readme</code> from <code>runs/</code>.</p>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2>The loop</h2>
-    <div class="loop">
-      <span class="step"><b>Spec</b> goal + tools + eval</span><span class="arrow">→</span>
-      <span class="step"><b>Architect</b> 3–4 topologies</span><span class="arrow">→</span>
-      <span class="step"><b>Run</b> traced, parallel</span><span class="arrow">→</span>
-      <span class="step"><b>Diagnose</b> typed taxonomy</span><span class="arrow">→</span>
-      <span class="step"><b>Mutate</b> typed operators</span><span class="arrow">→</span>
-      <span class="step"><b>Gate</b> holdout ×3, sign test</span><span class="arrow">→</span>
-      <span class="step"><b>Anneal</b> tier downshift</span><span class="arrow">→</span>
-      <span class="step"><b>Ship</b></span>
-    </div>
-    <div class="grid three" style="margin-top:22px">
-      <div class="card"><h3>An honest gate</h3>
-        <p>One-sided sign test on a reserved split the optimiser never sees. When a
-        candidate is ahead but the sample is too small for any verdict, the gate buys a
-        second block of runs instead of publishing a false “no effect”. Rejections are
-        shown, not hidden — that is the feature.</p></div>
-      <div class="card"><h3>Memory that grows</h3>
-        <p>A persistent issue ledger plus episodic and procedural memory (SQLite FTS5):
-        rules learned from failed traces, credited when they help, retired when they stop
-        helping. Every prompt edit is versioned in the Neatlogs registry.</p></div>
-      <div class="card"><h3>Builds its own tools via AO</h3>
-        <p>When diagnosis finds a missing capability, Anneal spawns an AO worker session
-        that writes the tool and its tests; the branch is accepted only when pytest
-        passes. The optimiser used the orchestrator as its own hands.</p></div>
+<div class="wrap hero">
+  <div>
+    <p class="eyebrow">Syndicate by Maximor · Track 1</p>
+    <h1>Describe the job. Anneal builds the agent, then <em>proves</em> it got better.</h1>
+    <p class="sub">Answer five questions about what you need done. Anneal designs a few agents,
+    runs them on your own examples, reads where they failed, repairs them, and keeps a change
+    only when it survives a test on tasks it was never allowed to see.</p>
+    <div class="cta">
+      <a class="btn primary" href="/">Open the console</a>
+      <a class="btn ghost" href="https://github.com/aircmastercode/anneul">Read the code</a>
     </div>
   </div>
-</section>
 
-<section>
-  <div class="wrap">
-    <h2>Three unrelated domains, one core</h2>
-    <table>
-      <thead><tr><th>Domain</th><th>Task</th><th>Evaluator</th><th>Hard fail</th></tr></thead>
-      <tbody>
-        <tr><td>invoices</td><td>AP triage: approve or escalate</td>
-            <td>field match + decision</td><td class="good">auto-approving a mismatch</td></tr>
-        <tr><td>airline</td><td>tau-bench customer ops</td>
-            <td>final DB state</td><td class="good">action outside the expected set</td></tr>
-        <tr><td>bugfix</td><td>repair a failing Python function</td>
-            <td>pytest in a sandbox</td><td class="good">writing outside the sandbox</td></tr>
-        <tr><td>filesystem</td><td>file tasks via a third-party MCP server</td>
-            <td>final directory state</td><td class="good">touching paths outside the task dir</td></tr>
-      </tbody>
-    </table>
-    <p class="note">No domain-specific code exists in the core — a regression test fails the
-    build if the optimiser ever hard-codes a domain.</p>
+  <div class="verdict">
+    <p class="vh">A real verdict, airline, round 1</p>
+    <p class="word">Threw the change away</p>
+    <div class="vrow"><span>How often it is right</span><b>0.767</b><b>0.800</b></div>
+    <div class="vrow"><span>Right 3 times running</span><b>0.700</b><b>0.800</b></div>
+    <div class="vrow"><span>Serious mistakes</span><b>1</b><b class="worse">3</b></div>
+    <p class="vcap">The new version scored <em>higher</em> and was thrown away anyway: it made
+    three serious mistakes where the one it replaced made one. Left column is the version in
+    use, right is the challenger.</p>
   </div>
-</section>
+</div>
 
-<section>
-  <div class="wrap">
-    <h2>Run it</h2>
-    <pre>uv sync
-cp .env.example .env                        # fill keys, or point tiers at Ollama
-uv run anneal run domains/invoices --iterations 5 --budget 20
-uv run anneal report runs --write-readme    # the README table, straight from runs/
-uv run anneal dashboard                     # curves · ledger · Pareto · memory</pre>
-  </div>
-</section>
+<section id="results"><div class="wrap">
+  <h2>What it actually moved</h2>
+  <p class="lede">Every number here is read out of the committed runs by
+  <span class="mono">anneal report runs/final</span>. Cost and speed moved most; accuracy moved
+  in both directions, and the table in the repository lists every case where it fell.</p>
+  <!-- stats:start -->
+<div class="stats"><div class="stat"><p class="n"><span class="from">$0.0899 &rarr;</span> $0.026</p><h3>Cost per task</h3><p>repair one bug in a small Python module, after the winner was moved onto cheaper models.</p></div><div class="stat"><p class="n"><span class="from">$0.035 &rarr;</span> $0.0111</p><h3>Cost per task</h3><p>AP invoice triage, after the winner was moved onto cheaper models.</p></div><div class="stat"><p class="n"><span class="from">37.9s &rarr;</span> 13.5s</p><h3>Slowest runs</h3><p>repair one bug in a small Python module, on the same tasks, after the same downshift.</p></div><div class="stat"><p class="n">6</p><h3>changes refused</h3><p>Across 4 agents, every repair that failed the held-back test was thrown away and is named in the results table, including ones that scored higher.</p></div></div>
+<!-- stats:end -->
+  <p class="note">Four agents ran through the identical loop with no code written for any of
+  them: airline support, bug fixing, invoice triage and a filesystem assistant. Three ran on
+  hosted models and one on models running locally, so compare a number against the same agent's
+  earlier rounds rather than against another agent.</p>
+</div></section>
 
-<footer>
-  <div class="wrap">
-    Anneal — built end to end through AO sessions ·
-    traced by Neatlogs · inference via Anthropic, TensorMux &amp; AI Grants India ·
-    Syndicate by Maximor, September 2026
+<section id="how"><div class="wrap">
+  <h2>The loop</h2>
+  <p class="lede">The same six steps every time, whatever the job is. You watch them happen in
+  the console.</p>
+  <div class="flow">
+    <div class="fstep"><p class="k">01</p><h3>Design</h3>
+      <p>Turns your goal and your tools into a few candidate agents.</p></div>
+    <div class="fstep"><p class="k">02</p><h3>Try it</h3>
+      <p>Runs every design over your practice tasks and scores each one.</p></div>
+    <div class="fstep"><p class="k">03</p><h3>Find the faults</h3>
+      <p>Reads the failed attempts and groups them by what went wrong.</p></div>
+    <div class="fstep"><p class="k">04</p><h3>Fix one</h3>
+      <p>Applies the repair that fault calls for. It never retries a repair it has spent.</p></div>
+    <div class="fstep"><p class="k">05</p><h3>Prove it helped</h3>
+      <p>Re-runs both versions on tasks held back from every earlier step, then decides.</p></div>
+    <div class="fstep"><p class="k">06</p><h3>Make it cheaper</h3>
+      <p>Moves the winner onto cheaper models for as long as the score holds.</p></div>
   </div>
-</footer>
+</div></section>
+
+<section><div class="wrap two">
+  <div>
+    <h2>Questions people ask</h2>
+    <div class="qa">
+      <h3>Do I have to write anything?</h3>
+      <p>No. <span class="mono">anneal init</span> asks five questions and writes the goal, the
+      tool list and the scorer for you. Bring a handful of examples of the job done right.</p>
+      <h3>What tools can it use?</h3>
+      <p>Any MCP server, over stdio or HTTP, plus plain Python functions. Name a server and
+      Anneal asks it what it can do rather than making you list it.</p>
+      <h3>How do I know it really improved?</h3>
+      <p>Some tasks are held back from the design, diagnosis and repair steps entirely. A change
+      is kept only if it wins on those, by more than chance would explain, without adding a
+      serious mistake.</p>
+    </div>
+  </div>
+  <div>
+    <h2>Run it yourself</h2>
+    <p class="lede">No account anywhere. The models run on your machine.</p>
+<pre>uv sync
+brew install ollama &amp;&amp; ollama serve &amp;
+ollama pull qwen2.5:3b-instruct
+
+uv run anneal init
+uv run anneal run domains/&lt;name&gt; \
+  --models specs/models.local.yaml
+uv run anneal dashboard</pre>
+    <p class="note">Or point the tiers at any OpenAI-compatible provider and change nothing
+    else.</p>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  Anneal · built for Syndicate by Maximor, Track 1 · Ayush Srivastava and Tanush Singhal.
+  Numbers on this page are generated from <span class="mono">runs/final</span>.
+</div></footer>
 
 </body>
 </html>

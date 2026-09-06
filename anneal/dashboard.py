@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -711,15 +710,8 @@ def agent_title(runs_dir: Path | str, domain: str, summary: dict[str, Any]) -> s
     it is what you type to run the thing; it is just no longer the only label.
     """
     root = _domain_dir(runs_dir, domain, summary)
-    line = _goal_line(root / "goal.md") if root else None
-    if not line:
-        return domain.replace("_", " ").replace("-", " ")
-    lowered = line.lower()
-    for prefix in vocab.GOAL_PREFIXES:
-        if lowered.startswith(prefix):
-            line = line[len(prefix):].strip()
-            break
-    return line[:60] or domain
+    title = vocab.title_from_goal(root / "goal.md") if root else ""
+    return title or domain.replace("_", " ").replace("-", " ")
 
 
 def agent_titles(runs_dir: Path | str, domains: list[str]) -> dict[str, str]:
@@ -1115,35 +1107,76 @@ def _gate_side(gate: dict[str, Any], key: str) -> dict[str, Any]:
     return block if isinstance(block, dict) else {}
 
 
-# The field names gate.py writes into its reason line, and how the console says them.
-GATE_REASON_WORDS = (
-    ("hard_fails", "serious mistakes"),
-    ("incumbent", "the current best's"),
-    ("alpha", "the limit"),
-    ("p", "chance it was luck"),
-    ("pass3", "right 3 times running"),
-    ("gen_gap", "the drop on unseen tasks"),
-)
+# How the console says each metric the gate can reject on. The keys are gate.Verdict.metric.
+GATE_REASON_WORDS = {
+    "hard_fails": "serious mistakes",
+    "pass3_rate": "right 3 times running",
+    "p": "the chance this was luck",
+    "gen_gap": "the drop on unseen tasks",
+}
+# each carries its own connector so the sentence reads naturally either way
+GATE_REASON_AGAINST = {"incumbent": "the version in use's", "alpha": "the limit of"}
+GATE_REASON_COMPARATOR = {
+    "<": "is below", ">": "is above", "<=": "is not above", ">=": "is not below",
+}
+
+
+def _legacy_reason_parts(gate: dict[str, Any]) -> dict[str, Any] | None:
+    """Rebuild the verdict's fields for a run recorded before ``reason_parts`` existed.
+
+    Only the metric name and the comparator are taken from the reason line, and both are tokens
+    gate.py writes in a format it owns and that ``tests/test_gate.py`` pins. Every number comes
+    from the structured metrics the same file already records, so nothing here is parsed out of
+    a formatted float or reconstructed by guess. Anything that does not match this exact shape
+    returns None and the sentence is shown as it was written.
+    """
+    tokens = str(gate.get("reason") or "").split()
+    if len(tokens) != 5 or tokens[2] not in GATE_REASON_COMPARATOR:
+        return None
+    metric, comparator, against_label = tokens[0], tokens[2], tokens[3]
+    if metric == "p":
+        value, against = gate.get("p"), gate.get("alpha")
+        fmt, against_fmt = "{:.3f}", "{:g}"
+    else:
+        value = (gate.get("candidate") or {}).get(metric)
+        against = (gate.get("incumbent") or {}).get(metric)
+        fmt = "{:.0f}" if metric == "hard_fails" else "{:.3f}"
+        against_fmt = fmt
+    if not isinstance(value, int | float) or not isinstance(against, int | float):
+        return None
+    return {"metric": metric, "value": value, "comparator": comparator, "against": against,
+            "against_label": against_label, "fmt": fmt, "against_fmt": against_fmt}
 
 
 def _gate_reason(gate: dict[str, Any]) -> str:
-    """The gate's own reason line, with its two field names read out as words.
+    """The condition that settled this gate, said in words.
 
-    gate.py writes a machine-readable reason ("hard_fails 3 > incumbent 1", "p 1.000 >= alpha
-    0.1") because it is also what the report and the tests quote. Showing it verbatim to a
-    reader means showing them two identifiers and a comparison operator, so the two terms are
-    translated here and the sentence is left otherwise exactly as the gate wrote it.
+    gate.py records its verdict twice: ``reason`` is the line the report and the tests quote
+    ("hard_fails 3 > incumbent 1"), and ``reason_parts`` is the same verdict as fields. The
+    console renders the fields, because showing a reader two identifiers and a comparison
+    operator tells them nothing, and taking the sentence apart again to rewrite it would be
+    guessing at our own output.
+
+    Runs made before ``reason_parts`` existed carry only the sentence, and it is shown as it
+    was written rather than half-translated.
     """
-    reason = str(gate.get("reason") or "")
-    if not reason:
-        return DASH
-    # whole words only: a bare replace would rewrite the "p" inside "promoted"
-    for term, phrase in GATE_REASON_WORDS:
-        reason = re.sub(rf"(?<![\w-]){re.escape(term)}(?![\w-])", phrase, reason)
-    for symbol, phrase in ((">=", "is not below"), ("<=", "is not above"),
-                           (">", "is more than"), ("<", "is less than")):
-        reason = reason.replace(symbol, phrase)
-    return escape(reason)
+    parts = gate.get("reason_parts")
+    if not isinstance(parts, dict) or not parts.get("metric"):
+        parts = _legacy_reason_parts(gate)
+    if not parts:
+        return txt(gate.get("reason"))
+    fmt = str(parts.get("fmt") or "{}")
+    metric = str(parts.get("metric"))
+    name = GATE_REASON_WORDS.get(metric, vocab.humanize(metric))
+    against = GATE_REASON_AGAINST.get(str(parts.get("against_label")),
+                                      "the version in use's")
+    comparator = GATE_REASON_COMPARATOR.get(str(parts.get("comparator")), "differs from")
+    try:
+        left = fmt.format(parts.get("value"))
+        right = str(parts.get("against_fmt") or fmt).format(parts.get("against"))
+    except (TypeError, ValueError):  # a malformed record must not blank the panel
+        return txt(gate.get("reason"))
+    return escape(f"{name} {left} {comparator} {against} {right}")
 
 
 def render_gate(gate: dict[str, Any]) -> str:

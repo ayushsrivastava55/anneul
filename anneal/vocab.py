@@ -188,3 +188,28 @@ def design_name(candidate_id: Any) -> str:
         tail = repair[:1].lower() + repair[1:] if repair else humanize("-".join(rest))
         name += f" + {tail}"
     return name
+
+
+def title_from_goal(goal_md: Path | str) -> str:
+    """The plain-English name of an agent, read from the first heading of its goal.md.
+
+    Every goal.md opens "# Goal: <what the agent is for>", including the ones ``anneal init``
+    writes from the user's own answer. That line is the only place a domain states its purpose
+    in words, so both the console's switcher and the landing page's headline figures name an
+    agent from it rather than from its directory slug. A file that cannot be read returns "",
+    and the caller falls back to the slug.
+    """
+    try:
+        text = Path(goal_md).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("#").strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        for prefix in GOAL_PREFIXES:
+            if lowered.startswith(prefix):
+                return line[len(prefix):].strip()[:60]
+        return line[:60]
+    return ""

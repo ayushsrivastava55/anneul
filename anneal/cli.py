@@ -28,7 +28,18 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec, tracing
+from anneal import (
+    __version__,
+    architect,
+    diagnose,
+    gate,
+    landing,
+    llm,
+    mutate,
+    runner,
+    spec,
+    tracing,
+)
 from anneal import anneal as anneal_stage
 from anneal import memory as memory_mod
 from anneal.domain import load_domain
@@ -986,6 +997,19 @@ def cmd_report(args: argparse.Namespace, console: Console) -> int:
         console.print(f"[red]no summary.json under {args.runs_dir}[/red]")
         return 1
     block = render_block(runs_dir, summaries)
+    if args.write_landing:
+        # the landing page's headline figures obey the same rule the table does: generated
+        # from these summaries, never typed into the HTML by hand
+        try:
+            landing.write_landing(
+                Path(args.write_landing),
+                landing.render_stats(runs_dir, summaries,
+                                     lambda body: _gate_json(runs_dir, body)),
+            )
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return 1
+        Console(stderr=True).print(f"[green]wrote[/green] {args.write_landing}")
     if args.write_readme:
         try:
             write_readme(Path(args.write_readme), block)
@@ -1046,6 +1070,10 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--write-readme", nargs="?", const="README.md", default=None,
                         metavar="PATH",
                         help="replace the <!-- results --> block in PATH (default README.md)")
+    report.add_argument("--write-landing", nargs="?", const="landing/index.html", default=None,
+                        metavar="PATH",
+                        help="replace the <!-- stats --> block in PATH "
+                             "(default landing/index.html)")
 
     dash = sub.choices["dashboard"]
     dash.add_argument("--runs-dir", default=str(runner.RUNS_DIR))
