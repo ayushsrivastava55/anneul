@@ -27,12 +27,15 @@ import pytest
 # this; full-suite runs masked it because test_cli.py imports config first.
 import anneal.config  # noqa: E402,F401  (import order is load-bearing here)
 
-# Credentials that flip a module from its local/offline path to a live sponsor API.
+# Credentials that flip a module from its local/offline path to a live sponsor API,
+# plus machine-local configuration (AO_AGENT) that would otherwise change what the
+# suite asserts depending on whose laptop runs it.
 LIVE_KEYS = (
     "NEATLOGS_API_KEY",
     "DODO_API_KEY",
     "DODO_CUSTOMER_ID",
     "DODO_CUSTOMER_EMAIL",
+    "AO_AGENT",
 )
 
 
