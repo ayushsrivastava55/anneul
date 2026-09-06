@@ -12,8 +12,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from anneal import cli
 
 # --- fixtures ----------------------------------------------------------------------------
@@ -263,16 +261,26 @@ def test_markdown_flag_emits_exactly_what_write_readme_writes(tmp_path, capsys):
     assert written.split(cli.RESULTS_END)[0].strip() == printed.strip()
 
 
-def test_the_repo_readme_block_is_what_the_tool_emits():
-    """The committed README block must be byte-identical to the tool's output for runs/.
+REPORTED_RUNS = "runs/final"
 
-    Skipped on a checkout with no runs (they are gitignored); wherever the run data lives,
-    this is what proves no cell in the README was typed by hand.
+
+def test_the_repo_readme_block_is_what_the_tool_emits():
+    """The committed README block must be byte-identical to the tool's output for runs/final.
+
+    ``runs/final`` is the reported set and the only run directory git tracks (see .gitignore),
+    which is exactly why the README names it in the line under the table. This test previously
+    read ``runs/``, one level above, so it compared the README against whatever uncommitted
+    experiment happened to be lying around and passed or failed for reasons a fresh clone could
+    not reproduce. Reading the same path the README claims is the point: it proves a judge who
+    runs that command gets these numbers.
     """
     repo = Path(__file__).resolve().parents[1]
-    summaries = cli._summaries(repo / "runs")
-    if not summaries:
-        pytest.skip("runs/ has no summaries on this checkout")
+    runs = repo / REPORTED_RUNS
+    summaries = cli._summaries(runs)
+    assert summaries, (
+        f"{REPORTED_RUNS} has no summary.json. It is the committed, reported run set; the "
+        "README table is generated from it and must stay reproducible from a clean clone."
+    )
     text = (repo / "README.md").read_text(encoding="utf-8")
     body = text.split(cli.RESULTS_START)[1].split(cli.RESULTS_END)[0]
-    assert body.strip() == cli.render_block(repo / "runs", summaries).strip()
+    assert body.strip() == cli.render_block(runs, summaries).strip()

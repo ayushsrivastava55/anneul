@@ -15,28 +15,27 @@ domains, four numbers.
 <!-- results:start -->
 | Domain | Stage | Holdout acc | pass^3 | Gen gap | Hard fails | $/task | p95 s | p (gate) |
 |---|---|---|---|---|---|---|---|---|
-| airline | iteration 0 | 0.733 | 0.700 | -0.033 | 5 | 0.367 | 298.2 | 0.875 |
-| airline | final | 0.767 | 0.700 | -0.067 | 4 | 0.367 | 298.2 | 0.750 |
-| airline | annealed | 0.733 | 0.700 | — | 3 | 0.266 | 190.9 | — |
-| bugfix | iteration 0 | 1.000 | 1.000 | -0.100 | 0 | 0.00148 | 93.7 | 1.000 |
-| bugfix | final | 0.800 | 0.700 | 0.100 | 0 | 0.00148 | 93.7 | 0.125 |
-| invoices | iteration 0 | — | — | — | — | 0.0393 | 12.3 | — |
-| invoices | final | — | — | — | — | 0.0393 | 12.3 | — |
-| invoices | annealed | 1.000 | 1.000 | — | 0 | 0.00145 | 23.9 | — |
+| airline | iteration 0 | 0.800 | 0.800 | -0.100 | 0 | 0.363 | 421.7 | 1.000 |
+| airline | final | 0.767 | 0.700 | -0.067 | 1 | 0.363 | 421.7 | 1.000 |
+| bugfix | iteration 0 | 0.333 | 0.100 | 0.067 | 0 | 0.0899 | 37.9 | 1.000 |
+| bugfix | final | 0.133 | 0.100 | 0.267 | 0 | 0.0899 | 37.9 | 1.000 |
+| bugfix | annealed | 0.233 | 0.100 | — | 0 | 0.026 | 13.5 | — |
+| filesystem | iteration 0 | 0.111 | 0.000 | 0.222 | 7 | 0.00027 | 31.6 | 0.750 |
+| filesystem | final | 0.222 | 0.000 | 0.111 | 3 | 0.00027 | 31.6 | 0.875 |
+| invoices | iteration 0 | — | — | — | — | 0.035 | 8.9 | — |
+| invoices | final | — | — | — | — | 0.035 | 8.9 | — |
+| invoices | annealed | 1.000 | 1.000 | — | 0 | 0.0111 | 6.4 | — |
 
 **Rejected mutations** — the gate refusing to promote, and which condition failed.
 
 | Domain | Iteration | Operator | Gate condition that failed |
 |---|---|---|---|
-| airline | 0 | add_escalation_node | pass3_rate 0.600 < incumbent 0.700 |
-| airline | 1 | add_validator_node | pass3_rate 0.500 < incumbent 0.700 |
-| airline | 2 | rewrite_tool_desc | p 1.000 >= alpha 0.1 |
-| airline | 3 | add_memory | p 0.750 >= alpha 0.1 |
-| bugfix | 0 | add_cite_or_abstain | pass3_rate 0.800 < incumbent 1.000 |
-| bugfix | 1 | rewrite_tool_desc | pass3_rate 0.800 < incumbent 1.000 |
-| bugfix | 2 | add_fewshots | pass3_rate 0.800 < incumbent 1.000 |
-| bugfix | 3 | switch_topology | pass3_rate 0.900 < incumbent 1.000 |
-| bugfix | 4 | add_fewshots | p 0.125 >= alpha 0.1 |
+| airline | 0 | add_escalation_node | hard_fails 1 > incumbent 0 |
+| airline | 1 | add_validator_node | hard_fails 3 > incumbent 1 |
+| bugfix | 0 | add_step_budget_and_critic | p 1.000 >= alpha 0.1 |
+| bugfix | 1 | switch_topology | p 1.000 >= alpha 0.1 |
+| filesystem | 0 | switch_topology | p 0.750 >= alpha 0.1 |
+| filesystem | 1 | add_escalation_node | hard_fails 4 > incumbent 3 |
 
 `—` means the value does not exist in the runs (no gate ran at that iteration, or the
 spec was never scored on that split) — it is never a zero and never a rounded-away number.
@@ -44,11 +43,17 @@ Holdout accuracy, pass^3, hard fails and p come from the gate's `gate.json`; `$/
 are measured on the search split. Gen gap is the search mean minus the gated mean, recomputed
 from those two recorded means when the gate stored it only for the candidate.
 
-Inference is **local** (Ollama, qwen2.5 3b / 1.5b / 0.5b), so these runs cost $0 in real money.
-Tokens and latency are measured. USD is those measured tokens priced at the reference rates in
-`specs/models.yaml`, where each tier carries a `price_source` (`published` or `scaled`); the
-sub-7B rates are scaled from a published 7B rate, not quoted. Do not read `$/task` as the cost
-of a hosted provider.
+Tokens and latency are measured. USD is those tokens priced at the rates the run's ladder declares; that ladder is listed below, never assumed. `price_source` is what each tier recorded: `published` is the provider's list price, `scaled` is derived from a published rate for a different model size, and `unrecorded` means the tier carries no provenance. A local provider costs nothing in money; the column is still what those tokens would cost at the listed rate, so rows stay comparable across ladders.
+
+Ladder `specs/models.yaml`:
+
+| Tier | Provider | Model | $/1M in | $/1M out | price_source |
+|---|---|---|---|---|---|
+| frontier | frontier | `claude-opus-5` | 5 | 25 | published |
+| mid | frontier | `claude-sonnet-5` | 3 | 15 | published |
+| cheap | frontier | `claude-haiku-4-5-20251001` | 1 | 5 | published |
+| flash | tensormux | `glm-4-7-flash` | 0.06 | 0.4 | published |
+| nano | aigi | `gpt-5-nano` | 0.05 | 0.4 | published |
 <!-- results:end -->
 
 Every cell above is emitted by `uv run anneal report runs/final --write-readme`, which reads

@@ -1,0 +1,33 @@
+[
+  {
+    "id": "L-0001",
+    "class": "loop_or_timeout",
+    "node": "executor",
+    "count": 10,
+    "evidence": [
+      "bugfix_01",
+      "bugfix_06",
+      "bugfix_09",
+      "bugfix_16",
+      "bugfix_33"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "add_step_budget_and_critic",
+      "switch_topology"
+    ],
+    "fallback": false
+  },
+  {
+    "id": "L-0002",
+    "class": "missing_capability",
+    "node": "executor",
+    "count": 2,
+    "evidence": [
+      "bugfix_25"
+    ],
+    "status": "open",
+    "operators_tried": [],
+    "fallback": false
+  }
+]

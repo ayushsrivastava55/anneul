@@ -1,0 +1,37 @@
+[
+  {
+    "id": "L-0001",
+    "class": "wrong_tool",
+    "node": "executor",
+    "count": 6,
+    "evidence": [
+      "fs-07",
+      "fs-09"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "rewrite_tool_desc",
+      "add_fewshots",
+      "switch_topology"
+    ],
+    "fallback": true,
+    "confidence": 1.0,
+    "confidence_n": 2
+  },
+  {
+    "id": "L-0002",
+    "class": "unsafe_action",
+    "node": "executor",
+    "count": 2,
+    "evidence": [
+      "fs-08"
+    ],
+    "status": "open",
+    "operators_tried": [
+      "add_escalation_node"
+    ],
+    "fallback": false,
+    "confidence": 1.0,
+    "confidence_n": 2
+  }
+]

@@ -1,0 +1,29 @@
+id: cand-01
+topology: single
+step_budget: 12
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/filesystem/executor@v1
+  tools:
+  - read_text_file
+  - list_directory
+  - get_file_info
+  - write_file
+  - edit_file
+  - create_directory
+  - move_file
+  max_steps: 12
+  schema_ref: null
+  prompt_source: elaborated
+lineage:
+  parent: cand-01
+  iteration: 1
+  operator: architect
+  ledger_issue: null
+tool_overrides: {}
