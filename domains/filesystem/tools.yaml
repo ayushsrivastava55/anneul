@@ -14,6 +14,12 @@ servers:
     - -y
     - '@modelcontextprotocol/server-filesystem'
     - ${ANNEAL_FS_SANDBOX}
+discover:
+  # Also take everything else this server publishes. The `tools:` list below is the offline
+  # fallback -- it keeps the domain loadable (and the tests runnable) when npx or the server
+  # is unavailable, and its curated descriptions win over the discovered ones. Discovery adds
+  # the rest, so the domain never has to track a third party's growing tool list by hand.
+  - fs
 tools:
 - name: read_text_file
   description: Read the complete contents of a file from the file system as text.

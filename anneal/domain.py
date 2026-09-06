@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
-from anneal.spec import ToolsManifest, load_tools
+from anneal import mcp
+from anneal.spec import ToolsManifest, ToolSpec, load_tools
 
 logger = logging.getLogger("anneal.domain")
 
@@ -66,9 +67,54 @@ def _import_eval(domain_dir: Path) -> ModuleType:
     return module
 
 
+def _discovered_tools(manifest: ToolsManifest) -> list[ToolSpec]:
+    """Every tool published by each server named in ``discover:``.
+
+    Declaring a server is enough: this asks it what it can do rather than making the domain
+    restate a list the server already publishes. Names are how the runtime routes a call, so
+    they must be known before the architect assigns tools to nodes -- which is why this runs at
+    load time rather than lazily. The descriptions and schemas fetched here are the same ones
+    the runtime later uses, so a discovered tool needs no offline fallback text.
+
+    A server that will not start is logged and skipped, never fatal: the domain still loads
+    with whatever it listed explicitly, exactly as an unreachable server degrades to a readable
+    tool error during a run.
+    """
+    if not manifest.discover:
+        return []
+    pool = mcp.get_pool(mcp.parse_servers(manifest.servers))
+    found: list[ToolSpec] = []
+    for server in manifest.discover:
+        if server not in manifest.servers:
+            raise ValueError(f"discover names server {server!r}, which servers: does not define")
+        try:
+            listing = pool.list_tools(server)
+        except mcp.MCPError as exc:
+            logger.warning("discovery skipped for server %r: %s", server, exc)
+            continue
+        for name, info in listing.items():
+            found.append(
+                ToolSpec(
+                    name=name,
+                    description=info.description,
+                    args=info.input_schema or {"type": "object", "properties": {}},
+                    impl=f"{mcp.IMPL_PREFIX}{server}/{name}",
+                )
+            )
+        logger.info("discovered %d tools from server %r", len(listing), server)
+    return found
+
+
 def load_tools_manifest(domain_dir: Path) -> ToolsManifest:
     """tools.yaml merged with tools.generated.yaml (if any). tools.yaml is never modified."""
     manifest = load_tools(domain_dir / "tools.yaml")
+    discovered = _discovered_tools(manifest)
+    if discovered:
+        listed = {t.name for t in manifest.tools}
+        manifest = ToolsManifest(
+            tools=[*manifest.tools, *(t for t in discovered if t.name not in listed)],
+            servers=manifest.servers,
+        )
     generated_path = domain_dir / GENERATED_TOOLS_FILE
     if not generated_path.is_file():
         return manifest
@@ -88,7 +134,9 @@ def load_tools_manifest(domain_dir: Path) -> ToolsManifest:
             )
             continue
         merged.append(tool)
-    return ToolsManifest(tools=merged)
+    # servers must survive the merge: dropping it silently unroutes every mcp: impl the moment
+    # a domain grows a tools.generated.yaml.
+    return ToolsManifest(tools=merged, servers=manifest.servers)
 
 
 def load_domain(path: str | Path) -> Domain:

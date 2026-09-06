@@ -338,6 +338,9 @@ class ToolInfo:
 # Meta keywords real servers ship in inputSchema that strict tool-calling backends reject.
 SCHEMA_META_KEYS = ("$schema", "$id", "additionalProperties")
 
+# tools/list is paginated; bound a server that keeps handing back a cursor.
+MAX_TOOL_PAGES = 20
+
 
 def _clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Drop top-level JSON-schema meta keys the model's provider may refuse."""
@@ -403,13 +406,32 @@ class Client:
         self._ready = True
 
     def list_tools(self) -> dict[str, ToolInfo]:
-        """The server's own tool schemas, fetched once and cached for this client's life."""
+        """The server's own tool schemas, fetched once and cached for this client's life.
+
+        ``tools/list`` is paginated: the result may carry ``nextCursor``, and the client is
+        expected to request the next page with ``{"cursor": <that value>}`` until the field is
+        absent (MCP spec 2025-06-18, "Listing Tools" / "Pagination"). Reading only the first
+        page silently hides a large server's later tools, which looks like the model choosing
+        not to use them. ``MAX_TOOL_PAGES`` bounds a server that returns a cursor forever.
+        """
         with self._lock:
             if self._tools is None:
                 self._handshake()
-                self._tools = parse_tools_list(
-                    self._rpc("tools/list", {}, self.cfg.startup_timeout_s)
-                )
+                tools: dict[str, ToolInfo] = {}
+                params: dict[str, Any] = {}
+                for page in range(MAX_TOOL_PAGES):
+                    result = self._rpc("tools/list", params, self.cfg.startup_timeout_s)
+                    tools.update(parse_tools_list(result))
+                    cursor = result.get("nextCursor") if isinstance(result, dict) else None
+                    if not cursor:
+                        break
+                    params = {"cursor": cursor}
+                    if page == MAX_TOOL_PAGES - 1:
+                        logger.warning(
+                            "mcp server %s still paginating after %d pages; stopping",
+                            self.cfg.name, MAX_TOOL_PAGES,
+                        )
+                self._tools = tools
                 logger.info(
                     "mcp server %s exposes %d tools", self.cfg.name, len(self._tools)
                 )

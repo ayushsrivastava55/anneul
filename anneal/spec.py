@@ -127,6 +127,11 @@ class ToolsManifest(BaseModel):
     # MCP server definitions for `impl: mcp:<server>/<tool>` entries. Opaque here; parsed by
     # anneal.mcp.parse_servers into stdio ({command,args,env,cwd}) or http ({url,api_key_env}).
     servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Servers whose ENTIRE tool set should be pulled in, so a domain does not have to restate
+    # what the server already publishes. `anneal.domain.load_tools_manifest` expands these by
+    # calling tools/list; an entry written out under `tools:` always wins over a discovered one
+    # of the same name, so a domain can still override a single description or schema by hand.
+    discover: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_unique(self) -> ToolsManifest:
