@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,8 +19,11 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from anneal import __version__, architect, diagnose, gate, mutate, runner, spec
+from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec
 from anneal.domain import load_domain
+from anneal.spec import HarnessSpec
+
+logger = logging.getLogger("anneal.cli")
 
 COMMANDS: dict[str, str] = {
     "run": "generate, run, diagnose, mutate and gate candidates for a domain",
@@ -59,6 +63,8 @@ class Loop:
     concurrency: int | None
     seed: int
     candidates: int = DEFAULT_CANDIDATES
+    models_path: str | None = None
+    node_models: dict[str, dict[str, str]] = field(default_factory=dict)
     spend: float = 0.0
     rejects: int = 0
     search: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -72,9 +78,37 @@ def _threshold(domain: Any) -> float:
     return float(domain.eval.THRESHOLD)
 
 
-def _charge(loop: Loop, rows: list[dict]) -> float:
+def _node_models(loop: Loop, candidate: Any) -> dict[str, str]:
+    """node name -> the model id the node requested, cached per spec.
+
+    ``runner.cost_by_node`` prices a node by the backend that served it and falls back to
+    this map when that backend has no entry in ``models.yaml`` -- which is every offline run
+    and any backend TensorMux routes to that we do not list. Without it, cost is always 0.
+    """
+    if candidate.id not in loop.node_models:
+        try:
+            loop.node_models[candidate.id] = {
+                n.name: llm.resolve_model(n.model_tier, loop.models_path) for n in candidate.nodes
+            }
+        except (KeyError, FileNotFoundError, ValueError, TypeError) as exc:
+            logger.warning(
+                json.dumps({"event": "unresolved_tiers", "spec": candidate.id, "error": str(exc)})
+            )
+            loop.node_models[candidate.id] = {}
+    return loop.node_models[candidate.id]
+
+
+def _summarize(loop: Loop, candidate: Any, rows: list[dict]) -> dict[str, Any]:
+    """``runner.summarize`` with this run's price table and per-node model fallback."""
+    return runner.summarize(
+        rows, _threshold(loop.domain),
+        models_path=loop.models_path, node_models=_node_models(loop, candidate),
+    )
+
+
+def _charge(loop: Loop, candidate: Any, rows: list[dict]) -> float:
     """Add the cost of ``rows`` to cumulative spend and raise once the budget is reached."""
-    cost = float(runner.summarize(rows, _threshold(loop.domain))["cost_usd"])
+    cost = float(_summarize(loop, candidate, rows)["cost_usd"])
     loop.spend += cost
     if loop.spend >= loop.budget:
         raise BudgetExceeded(
@@ -96,27 +130,51 @@ def _budgeted_run(loop: Loop) -> Any:
             spec_, domain, split, iteration=iteration, seed=seed,
             concurrency=loop.concurrency, runs_dir=loop.runs_dir,
         )
-        _charge(loop, rows)
+        _charge(loop, spec_, rows)
         return rows
 
     return run
 
 
-def _run_search(loop: Loop, candidate: Any, iteration: int) -> list[dict]:
-    """Run one spec on the search split, persist its yaml and record its search metrics."""
+def _stamp(candidate: HarnessSpec, iteration: int) -> HarnessSpec:
+    """Return ``candidate`` with ``lineage.iteration`` set to the loop iteration.
+
+    ``runtime.run_task`` opens its span context with ``spec.lineage.iteration`` while
+    ``runner.run`` stamps rows with the iteration it is handed, so rows and spans only join
+    on ``(candidate_id, iteration)`` if the two agree. The loop index is authoritative here:
+    it keys ``runs/<domain>/<iter>/`` and every number in summary.json. A mutant arrives from
+    ``mutate.apply`` numbered parent+1, which is only the loop index when every iteration
+    promotes, so the loop re-stamps whatever it is about to run.
+    """
+    if candidate.lineage is None or candidate.lineage.iteration == iteration:
+        return candidate
+    data = candidate.model_dump()
+    data["lineage"]["iteration"] = iteration
+    return HarnessSpec.model_validate(data)
+
+
+def _persist(loop: Loop, candidate: HarnessSpec, iteration: int) -> HarnessSpec:
+    """Stamp ``candidate`` with the loop iteration and write its yaml under that iteration."""
+    candidate = _stamp(candidate, iteration)
     path = loop.runs_dir / loop.domain.name / str(iteration) / f"{candidate.id}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     spec.dump_spec(candidate, path)
     loop.specs[candidate.id] = str(path)
+    return candidate
+
+
+def _run_search(
+    loop: Loop, candidate: HarnessSpec, iteration: int
+) -> tuple[HarnessSpec, list[dict]]:
+    """Run one spec on the search split, persist its yaml and record its search metrics."""
+    candidate = _persist(loop, candidate, iteration)
     rows = _budgeted_run(loop)(
         candidate, loop.domain, SEARCH_SPLIT, iteration=iteration, seed=loop.seed
     )
-    metrics = runner.summarize(rows, _threshold(loop.domain))
-    n = len(rows)
-    metrics["n_tasks"] = n
-    metrics["cost_per_task"] = round(metrics["cost_usd"] / n, 6) if n else 0.0
+    metrics = _summarize(loop, candidate, rows)
+    metrics["n_tasks"] = len(rows)
     loop.search[candidate.id] = metrics
-    return rows
+    return candidate, rows
 
 
 # --- one iteration -----------------------------------------------------------------------
@@ -225,7 +283,7 @@ def _pick_incumbent(loop: Loop, console: Console) -> tuple[Any, list[dict]]:
     candidates = architect.propose(loop.domain, n=loop.candidates)
     best: tuple[float, Any, list[dict]] | None = None
     for candidate in candidates:
-        rows = _run_search(loop, candidate, 0)
+        candidate, rows = _run_search(loop, candidate, 0)
         score = loop.search[candidate.id]["mean_score"]
         console.print(f"  [dim]{candidate.id} ({candidate.topology}) mean={score:.3f}[/dim]")
         if best is None or score > best[0]:
@@ -245,9 +303,10 @@ def _iteration(
             reason="every ranked issue has exhausted its implemented operators",
         )
     candidate, issue = proposed
-    cand_rows = _run_search(loop, candidate, i)
+    candidate, cand_rows = _run_search(loop, candidate, i)
+    # the gate runs the incumbent again at this iteration, so it needs the same stamp
     result = gate.gate(
-        incumbent, candidate, loop.domain, i, loop.runs_dir,
+        _persist(loop, incumbent, i), candidate, loop.domain, i, loop.runs_dir,
         search_rows=cand_rows, run=_budgeted_run(loop),
     )
     body = _gate_summary(loop, i, incumbent, candidate, issue, result, loop.search[candidate.id])
@@ -293,6 +352,7 @@ def cmd_run(args: argparse.Namespace, console: Console) -> int:
         concurrency=args.concurrency,
         seed=args.seed,
         candidates=args.candidates,
+        models_path=args.models,
     )
     loop.ledger.parent.mkdir(parents=True, exist_ok=True)
     gate.clear_cache()
@@ -363,6 +423,7 @@ def _regate(bodies: Any, args: argparse.Namespace, console: Console) -> None:
             domain=domain, runs_dir=Path(args.runs_dir),
             ledger=Path(args.runs_dir) / domain.name / "ledger.json",
             budget=float(args.budget), concurrency=args.concurrency, seed=0,
+            models_path=args.models,
         )
         result = gate.gate(
             spec.load_spec(specs[body["incumbent_id"]]),
@@ -445,12 +506,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--candidates", type=int, default=DEFAULT_CANDIDATES)
     run.add_argument("--runs-dir", default=str(runner.RUNS_DIR))
     run.add_argument("--ledger", default=None, help="issue ledger path")
+    run.add_argument("--models", default=None, help="price table (default specs/models.yaml)")
 
     for name in ("gate", "report"):
         sub.choices[name].add_argument("runs_dir", help="runs/ directory to read")
     sub.choices["gate"].add_argument("--budget", type=float, default=DEFAULT_BUDGET,
                                      metavar="USD")
     sub.choices["gate"].add_argument("--concurrency", type=int, default=None)
+    sub.choices["gate"].add_argument("--models", default=None)
     return parser
 
 

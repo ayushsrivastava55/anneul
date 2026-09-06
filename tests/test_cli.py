@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from anneal import cli, diagnose, gate
+from anneal import cli, diagnose, gate, llm
+from anneal import spec as spec_mod
 from anneal.spec import HarnessSpec, Node
 
 SEARCH = "search"
@@ -347,6 +348,87 @@ def test_report_ignores_non_numeric_dirs(tmp_path, capsys):
 
 def test_report_on_an_empty_dir_is_an_error(tmp_path):
     assert cli.main(["report", str(tmp_path)]) == 1
+
+
+# --- cost attribution and iteration tagging (regressions) -------------------------------
+
+MODELS_YAML = """\
+tiers:
+  frontier: {provider: tensormux, model: test-frontier, price_in: 1000.0, price_out: 1000.0}
+  mid: {provider: tensormux, model: test-mid, price_in: 1000.0, price_out: 1000.0}
+  cheap: {provider: tensormux, model: test-cheap, price_in: 1000.0, price_out: 1000.0}
+downshift_order: [frontier, mid, cheap]
+providers:
+  tensormux: {base_url_env: TENSORMUX_BASE_URL, api_key_env: TENSORMUX_API_KEY}
+"""
+
+
+@pytest.fixture
+def priced(loop, tmp_path, monkeypatch):
+    """A price table plus rows whose backend is unknown, so only the tier fallback can price."""
+    models = tmp_path / "models.yaml"
+    models.write_text(MODELS_YAML)
+    llm.load_models.cache_clear()
+    base = cli.runner.run
+
+    def run_with_usage(spec_, domain, split, **kw):
+        rows = base(spec_, domain, split, **kw)
+        for row in rows:
+            # backend None is what every offline run records; pricing must fall back to the
+            # model the node's tier requested, not silently charge 0.
+            row["per_node"] = {
+                "executor": {"tokens_in": 1000, "tokens_out": 1000, "backend": None, "ms": 1.0}
+            }
+        return rows
+
+    monkeypatch.setattr(cli.runner, "run", run_with_usage)
+    yield str(models)
+    llm.load_models.cache_clear()
+
+
+def test_cost_falls_back_to_the_requested_model_when_the_backend_is_unpriced(priced, tmp_path):
+    """Regression: summarize was called without models_path/node_models, so cost was always 0."""
+    run_cli(tmp_path, "--iterations", "1", "--budget", "1000", "--models", priced)
+    summary = summaries(tmp_path)[0]
+    # 1000 in + 1000 out at $1000/1M each = $2.00 per task, 10 search tasks per spec
+    assert summary["search"]["cand-1"]["cost_usd"] == pytest.approx(20.0)
+    assert summary["search"]["cand-1"]["cost_per_task"] == pytest.approx(2.0)
+    assert summary["cost_usd"] == pytest.approx(20.0)
+    assert summary["spend_usd"] > 0
+
+
+def test_budget_halts_on_real_prices(priced, tmp_path):
+    """With cost attributed, --budget actually bites; before the fix nothing ever halted."""
+    assert run_cli(tmp_path, "--iterations", "3", "--budget", "25.00", "--models", priced) == 1
+    assert summaries(tmp_path)[-1]["stop_reason"] == "budget"
+
+
+def test_row_iteration_matches_the_span_iteration(loop, tmp_path, monkeypatch):
+    """Regression: a mutant's rows said 0 while runtime opened its spans at lineage 1."""
+    seen: list[tuple[str, int, int]] = []
+    base = cli.runner.run
+
+    def recording_run(spec_, domain, split, *, iteration=0, **kw):
+        lineage = spec_.lineage.iteration if spec_.lineage else 0
+        seen.append((spec_.id, iteration, lineage))
+        return base(spec_, domain, split, iteration=iteration, **kw)
+
+    monkeypatch.setattr(cli.runner, "run", recording_run)
+    run_cli(tmp_path, "--iterations", "2")
+    assert seen, "no runs recorded"
+    mutants = [s for s in seen if "-m" in s[0]]
+    assert mutants, "the loop never ran a mutated spec"
+    for spec_id, iteration, lineage in seen:
+        assert iteration == lineage, f"{spec_id}: rows say {iteration}, spans say {lineage}"
+
+
+def test_persisted_spec_carries_the_loop_iteration(loop, tmp_path):
+    """The yaml the gate subcommand reloads is stamped with the iteration it ran under."""
+    run_cli(tmp_path, "--iterations", "1")
+    summary = summaries(tmp_path)[0]
+    mutant = spec_mod.load_spec(summary["specs"][summary["candidate_id"]])
+    assert mutant.lineage.iteration == 0
+    assert Path(summary["specs"][summary["candidate_id"]]).parent.name == "0"
 
 
 # --- surface -----------------------------------------------------------------------------
