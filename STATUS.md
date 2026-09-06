@@ -110,6 +110,22 @@ Unit tests passed on every module; these only appeared when the modules ran toge
 5. Row `iteration` disagreed with span `iteration`, breaking any join from runs to traces.
    Fixed; the loop counter is authoritative.
 
+## First real run (invoices, local qwen2.5 3b, 6 Sep)
+The loop ran end to end on a real model and produced real artifacts in runs/invoices/.
+Iteration 0: cand-01 search mean 0.40 (1 hard fail), cand-02 0.20, mutant 0.03.
+Gate REJECTED the rewrite_tool_desc mutant (p=1.0). The gate working is real evidence.
+
+BUT the run exposed two blocking defects in our own system:
+1. The architect trusted the LLM to write node prompts. On a small model it emitted 172 bytes
+   of bare JSON schema with no instructions and no mention of tools. Result: 15/15 tasks made
+   ZERO tool calls and 11/15 returned prose. The 0.40 came from lucky extraction, not from
+   doing the task.
+2. The architect never sets schema_ref, so runtime's schema_error can never fire, so
+   output_format failures are invisible and diagnose logs them as wrong_tool (18 counts).
+   The wrong operator is then applied and correctly rejected - which is why nothing is ever
+   promoted.
+Fix in flight: anneal-37 (architect-fix). Until it lands, no number here is a capability claim.
+
 ## Latest numbers
 main: 412 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
