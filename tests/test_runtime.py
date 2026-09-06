@@ -7,6 +7,7 @@ used (holdout is sacred).
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from anneal.domain import Domain, load_domain
 from anneal.runtime import TaskResult, run_task, shallow_check
 from anneal.spec import HarnessSpec
 from tests.fakes import FakeClient
+from tests.test_domain import GENERATED_TOOLS, make_toy_domain
 
 ROOT = Path(__file__).resolve().parents[1]
 AIRLINE = ROOT / "domains" / "airline"
@@ -334,3 +336,26 @@ def test_setup_is_called_before_each_run(domain: Domain, monkeypatch: pytest.Mon
     task = _task(domain, "airline-01")
     run_task(single_spec(domain), task, domain, client_factory=factory_for(FakeClient(["ok"])))
     assert calls == ["airline-01"]
+
+
+# --- generated tools ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToyTask:
+    id: str
+    input: dict[str, Any]
+    split: str = "train"
+
+
+def test_runtime_dispatches_generated_python_tool(tmp_path: Path) -> None:
+    toy = load_domain(make_toy_domain(tmp_path, GENERATED_TOOLS))
+    spec = single_spec(toy)  # node.tools now includes the generated "double"
+    assert "double" in spec.nodes[0].tools
+    client = FakeClient([tool_turn("double", n=21), "The answer is 42."])
+
+    result = run_task(spec, ToyTask("toy-1", {"n": 21}), toy, client_factory=factory_for(client))
+
+    assert result.trace == [{"tool": "double", "args": {"n": 21}, "result": "42"}]
+    assert result.output == "The answer is 42."
+    assert {t["function"]["name"] for t in client.calls[0]["tools"]} == {"lookup", "double"}

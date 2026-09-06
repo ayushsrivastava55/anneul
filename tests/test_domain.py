@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import textwrap
 from pathlib import Path
 
@@ -69,3 +70,117 @@ def test_domain_outside_repo_is_loaded_by_file_path(tmp_path: Path) -> None:
     assert domain.name == "toy"
     assert domain.tools.tools == []
     assert domain.eval.score(None, 42) == 1.0
+
+
+# --- tools.generated.yaml merge -----------------------------------------------------------
+
+TOY_EVAL = textwrap.dedent(
+    """
+    THRESHOLD = 1.0
+
+    def load_tasks(split=None):
+        return []
+
+    def score(task, output):
+        return 1.0
+
+    def is_hard_fail(task, trace):
+        return False
+    """
+)
+
+HUMAN_TOOLS = textwrap.dedent(
+    """
+    tools:
+    - name: lookup
+      description: human-written lookup
+      args: {type: object, properties: {id: {type: string}}, required: [id]}
+      impl: python:tests.test_domain.human_lookup
+    """
+)
+
+
+def human_lookup(id: str) -> str:  # noqa: A002 - mirrors the manifest arg name
+    return f"human:{id}"
+
+
+def generated_double(n: int) -> str:
+    return str(n * 2)
+
+
+def make_toy_domain(tmp_path: Path, generated: str | None = None) -> Path:
+    domain_dir = tmp_path / "toy"
+    domain_dir.mkdir()
+    (domain_dir / "goal.md").write_text("Toy goal.")
+    (domain_dir / "tools.yaml").write_text(HUMAN_TOOLS)
+    (domain_dir / "eval.py").write_text(TOY_EVAL)
+    if generated is not None:
+        (domain_dir / "tools.generated.yaml").write_text(generated)
+    return domain_dir
+
+
+GENERATED_TOOLS = textwrap.dedent(
+    """
+    # written by synthesize_tool
+    tools:
+    - name: double
+      description: generated doubling tool
+      args: {type: object, properties: {n: {type: integer}}, required: [n]}
+      impl: python:tests.test_domain.generated_double
+      mutates: false
+    """
+)
+
+
+def test_generated_tools_are_appended_after_human_tools(tmp_path: Path) -> None:
+    domain = load_domain(make_toy_domain(tmp_path, GENERATED_TOOLS))
+    assert [t.name for t in domain.tools.tools] == ["lookup", "double"]
+    assert domain.tools.tools[1].impl == "python:tests.test_domain.generated_double"
+    # tools.yaml itself is untouched
+    assert (domain.path / "tools.yaml").read_text() == HUMAN_TOOLS
+
+
+def test_without_generated_file_manifest_is_unchanged(tmp_path: Path) -> None:
+    domain = load_domain(make_toy_domain(tmp_path))
+    assert [t.name for t in domain.tools.tools] == ["lookup"]
+
+
+def test_generated_tool_never_overrides_human_tool(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    clash = textwrap.dedent(
+        """
+        tools:
+        - name: lookup
+          description: machine rewrite of lookup
+          args: {type: object, properties: {}}
+          impl: python:tests.test_domain.generated_double
+        - name: double
+          description: generated doubling tool
+          args: {type: object, properties: {n: {type: integer}}, required: [n]}
+          impl: python:tests.test_domain.generated_double
+        """
+    )
+    with caplog.at_level(logging.WARNING, logger="anneal.domain"):
+        domain = load_domain(make_toy_domain(tmp_path, clash))
+    names = [t.name for t in domain.tools.tools]
+    assert names == ["lookup", "double"]
+    assert domain.tools.tools[0].description == "human-written lookup"
+    assert any("collides" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "tools: [\n  - name: {{{{",  # invalid YAML
+        "tools:\n- name: x\n  impl: shell:rm\n",  # fails ToolSpec validation
+        "not: a manifest\n",  # wrong shape
+    ],
+)
+def test_malformed_generated_yaml_does_not_crash(
+    tmp_path: Path, broken: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="anneal.domain"):
+        domain = load_domain(make_toy_domain(tmp_path, broken))
+    assert [t.name for t in domain.tools.tools] == ["lookup"]
+    assert any("malformed" in r.message for r in caplog.records)
