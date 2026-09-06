@@ -454,13 +454,17 @@ def _anneal_domain(summaries: list[dict[str, Any]], args: argparse.Namespace,
     last = summaries[-1]
     name, winner_id = last["domain"], last["winner_id"]
     spec_path = last["specs"].get(winner_id)
-    peak = _peak_score(summaries)
-    if spec_path is None or peak is None:
-        console.print(
-            f"[yellow]{name}: {winner_id} has no gated score to anneal against; "
-            f"run `anneal gate {args.runs_dir}` first[/yellow]"
-        )
+    if spec_path is None:
+        console.print(f"[yellow]{name}: no spec was recorded for {winner_id}[/yellow]")
         return 1
+    # None when the optimiser never gated this domain (it saturated at iteration 0 with no
+    # failures to diagnose). downshift then measures its own baseline to hold against.
+    peak = _peak_score(summaries)
+    if peak is None:
+        console.print(
+            f"[dim]{name}: no gate result for {winner_id}; "
+            f"holding against its own measured baseline[/dim]"
+        )
     domain = load_domain(last["domain_path"])
     runs_dir = Path(args.runs_dir)
     loop = Loop(
@@ -473,7 +477,7 @@ def _anneal_domain(summaries: list[dict[str, Any]], args: argparse.Namespace,
         peak_score=peak, runs_dir=runs_dir, iteration=int(last["iteration"]),
         run=_budgeted_run(loop), models_path=args.models,
     )
-    _anneal_table(console, name, peak, result)
+    _anneal_table(console, name, result.points[0].score if peak is None else peak, result)
     console.print(f"  pareto: {result.pareto_path}\n  winner: {result.spec_path}")
     return 0
 
@@ -550,7 +554,33 @@ def _winner_block(summaries: list[dict[str, Any]]) -> tuple[dict[str, Any], Any]
     return {}, None
 
 
-def _report_rows(summaries: list[dict[str, Any]]) -> list[str]:
+def _annealed_row(runs_dir: Path, domain: str) -> str | None:
+    """The `annealed` row from the downshift stage, or None if it has not run for ``domain``.
+
+    ``anneal anneal`` scores its configurations on the reserved split through the gate, so the
+    winning Pareto point carries the same accuracy/pass^3/hard-fail meaning as the rows above
+    it. Its cost and latency come from that same measurement rather than from the search split.
+    """
+    path = runs_dir / domain / "anneal" / "pareto.json"
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    winner = data.get("winner")
+    point = next((p for p in data.get("points", []) if p.get("config_id") == winner), None)
+    if point is None:
+        return None
+    block = {
+        "mean_score": point.get("score"), "pass3_rate": point.get("pass3"),
+        "gen_gap": None, "hard_fails": point.get("hard_fails"),
+    }
+    search = {
+        "cost_per_task": point.get("cost_per_task"),
+        "p95_latency_ms": point.get("p95_latency_ms"),
+    }
+    return _row(domain, "annealed", block, search, None)
+
+
+def _report_rows(summaries: list[dict[str, Any]], runs_dir: Path) -> list[str]:
     rows: list[str] = []
     for name in dict.fromkeys(b["domain"] for b in summaries):
         got = [b for b in summaries if b["domain"] == name]
@@ -561,6 +591,9 @@ def _report_rows(summaries: list[dict[str, Any]]) -> list[str]:
         )
         block, p = _winner_block(got)
         rows.append(_row(name, "final", block, last["search"].get(last["winner_id"], {}), p))
+        annealed = _annealed_row(runs_dir, name)
+        if annealed is not None:
+            rows.append(annealed)
     return rows
 
 
@@ -569,7 +602,7 @@ def cmd_report(args: argparse.Namespace, console: Console) -> int:
     if not summaries:
         console.print(f"[red]no summary.json under {args.runs_dir}[/red]")
         return 1
-    for line in _report_rows(summaries):
+    for line in _report_rows(summaries, Path(args.runs_dir)):
         print(line)
     return 0
 

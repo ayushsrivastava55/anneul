@@ -333,6 +333,40 @@ def test_report_renders_iteration_zero_and_final_rows(tmp_path, capsys):
     assert lines[0].split("|")[9].strip() == "—"  # no gate p-value for iteration 0
 
 
+def write_pareto(root: Path, **point: Any) -> None:
+    body = {
+        "config_id": "cand-1-m1-anneal-2", "node_tiers": {"executor": "cheap"},
+        "score": 0.88, "pass3": 0.8, "cost_per_task": 0.004, "p95_latency_ms": 700.0,
+        "kept": True, "hard_fails": 0,
+    }
+    body.update(point)
+    path = root / "airline" / "anneal" / "pareto.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"winner": body["config_id"], "points": [body]}))
+
+
+def test_report_adds_an_annealed_row_when_the_downshift_has_run(tmp_path, capsys):
+    """The third README stage comes from pareto.json, not from a summary."""
+    root = tmp_path / "runs"
+    write_summary(root, 0)
+    write_pareto(root)
+    assert cli.main(["report", str(root)]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    assert [ln.split("|")[2].strip() for ln in lines] == ["iteration 0", "final", "annealed"]
+    annealed = lines[2].split("|")
+    assert annealed[3].strip() == "0.880"
+    assert annealed[7].strip() == "0.004"  # cheaper $/task than the search rows above
+    assert annealed[8].strip() == "700"
+
+
+def test_report_omits_the_annealed_row_before_the_downshift_runs(tmp_path, capsys):
+    root = tmp_path / "runs"
+    write_summary(root, 0)
+    assert cli.main(["report", str(root)]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("|")]
+    assert [ln.split("|")[2].strip() for ln in lines] == ["iteration 0", "final"]
+
+
 def test_report_final_row_is_the_last_winner(tmp_path, capsys):
     root = tmp_path / "runs"
     write_summary(root, 0)
