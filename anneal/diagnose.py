@@ -50,7 +50,13 @@ ROOT = Path(__file__).resolve().parent.parent
 TAXONOMY_PATH = ROOT / "specs" / "failure_taxonomy.yaml"
 MCP_URL = "https://ingest.neatlogs.com/mcp"
 SEARCH_SPLIT = "search"
-CLASSIFIER_TIER = "cheap"
+# Classification is the reasoning step the whole improvement loop turns on: a misread failure
+# selects the wrong operator, the gate correctly rejects the result, and the loop learns
+# nothing. Running it on the weakest tier was a design error -- in a live run the cheap tier
+# returned an unusable class repeatedly and fell back to a deterministic guess. Diagnosis is
+# one call per failed task, so the strongest tier is the right trade even under a budget.
+# Override with ANNEAL_CLASSIFIER_TIER when a domain proves a cheaper tier is sufficient.
+CLASSIFIER_TIER = os.environ.get("ANNEAL_CLASSIFIER_TIER") or "frontier"
 MAX_CONTEXT_CHARS = 6000
 
 # Row ``tokens_in``/``tokens_out`` are cumulative over every step of the task, not the peak
