@@ -668,6 +668,18 @@ def main(argv: list[str] | None = None) -> int:
         "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
         "anneal": cmd_anneal, "dashboard": cmd_dashboard,
     }[args.command]
+    # Nothing on the run path used to call this -- only mutate.py did, for the prompt
+    # registry -- so a fully configured Neatlogs project still received zero traces, and
+    # Diagnose would ask the MCP for spans that were never sent. No-op without a key.
+    if args.command in ("run", "gate", "anneal"):
+        from anneal.tracing import init_tracing, shutdown
+
+        init_tracing()
+        try:
+            return handler(args, console)
+        finally:
+            # Traces are batched; without this the last iteration's spans die with the process.
+            shutdown()
     return handler(args, console)
 
 

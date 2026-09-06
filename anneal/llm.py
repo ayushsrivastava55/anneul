@@ -82,12 +82,18 @@ def resolve_model(tier: str, path: Path | str | None = None) -> str:
     return str(_tier(tier, path)["model"])
 
 
+@lru_cache(maxsize=16)
 def get_client(tier: str = "mid", path: Path | str | None = None) -> OpenAI:
-    """OpenAI-compatible client for the provider backing ``tier`` (TensorMux by default).
+    """OpenAI-compatible client for the provider backing ``tier``, wrapped for tracing.
 
     Catches the shipped ``REPLACE_ME`` placeholder on the way out to a real provider, which
     would otherwise come back as an opaque model-not-found from somebody else's API. Offline
     tests inject a fake client and never reach here, so they keep running on the placeholder.
+
+    ``neatlogs.wrap`` is what emits the per-request LLM span (model, tokens, messages); an
+    unwrapped client produces no LLM evidence at all, which is what the whole Diagnose stage
+    reads. Cached per tier so each client is wrapped once and connections are reused rather
+    than rebuilt on every call.
     """
     if resolve_model(tier, path) == PLACEHOLDER:
         raise RuntimeError(
@@ -99,7 +105,10 @@ def get_client(tier: str = "mid", path: Path | str | None = None) -> OpenAI:
     if provider_name not in providers:
         raise KeyError(f"tier {tier!r} names unknown provider {provider_name!r}")
     provider = providers[provider_name]
-    return OpenAI(base_url=_env(provider["base_url_env"]), api_key=_env(provider["api_key_env"]))
+    client = OpenAI(base_url=_env(provider["base_url_env"]), api_key=_env(provider["api_key_env"]))
+    from anneal.tracing import wrap_client
+
+    return wrap_client(client)
 
 
 def _price_table(path: Path | str | None = None) -> dict[str, tuple[float, float]]:

@@ -96,6 +96,7 @@ def test_real_models_yaml_parses() -> None:
     assert models["downshift_order"][0] == "frontier"
 
 
+@pytest.mark.live
 @pytest.mark.skipif(
     not os.getenv("TENSORMUX_API_KEY"), reason="ready pending key: TENSORMUX_API_KEY unset"
 )

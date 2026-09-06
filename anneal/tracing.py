@@ -33,7 +33,6 @@ import contextvars
 import dataclasses
 import functools
 import logging
-import os
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -133,13 +132,18 @@ def init_tracing(
     global _enabled
     if _enabled:
         return True
-    api_key = (os.environ.get("NEATLOGS_API_KEY") or "").strip()
+    # via config, not os.environ: config owns .env loading and drops blank exported vars,
+    # which otherwise shadow a filled-in .env and disable tracing with only this warning to
+    # go on -- the console then sits on "waiting for your first trace" and nothing says why.
+    from anneal import config
+
+    api_key = (config.env("NEATLOGS_API_KEY") or "").strip()
     if not api_key:
         logger.warning("NEATLOGS_API_KEY is empty; tracing disabled, spans degrade to plain calls")
         return False
     import neatlogs
 
-    workflow = (os.environ.get("NEATLOGS_WORKFLOW") or "").strip() or "anneal"
+    workflow = (config.env("NEATLOGS_WORKFLOW") or "").strip() or "anneal"
     neatlogs.init(
         api_key=api_key,
         workflow_name=workflow,
@@ -334,9 +338,8 @@ def llm_span(name: str, tags: list[str] | None = None) -> Callable[[Callable[...
 def _smoke() -> int:
     """Emit one traced span, or report 'ready pending key' when the key is empty."""
     with contextlib.suppress(ImportError):
-        from dotenv import load_dotenv
+        from anneal import config  # noqa: F401  imported for its .env-loading side effect
 
-        load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if not init_tracing(tags=["smoke"]):
         print("ready pending key: set NEATLOGS_API_KEY in .env then run:")
