@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from anneal import vocab
+from anneal import newagent, onboard, vocab
 
 log = logging.getLogger("anneal.dashboard")
 
@@ -1349,6 +1349,44 @@ def render_topbar(
 
 CSS = """
 
+/* --- the new-agent form ---------------------------------------------------------------
+   Label above the control, helper text below it, errors above the form and in words. No
+   placeholder-as-label anywhere: a placeholder disappears the moment someone starts typing. */
+.newform { max-width:760px; padding-bottom:64px; }
+.field { display:block; margin-bottom:32px; }
+.flabel { display:block; font-size:14px; color:var(--ink); margin-bottom:8px; }
+.finput { width:100%; padding:11px 12px; font:inherit; font-size:14px; color:var(--ink);
+  background:var(--panel); border:1px solid var(--rule); border-radius:0; }
+.finput:focus { outline:2px solid var(--ink); outline-offset:-1px; }
+.fhelp { margin:8px 0 0; font-size:12px; color:var(--graphite); max-width:65ch; }
+.choices { display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule); }
+.choice { display:flex; align-items:center; gap:10px; padding:12px 14px; background:var(--panel);
+  font-size:14px; cursor:pointer; }
+.choice:hover { background:var(--paper); }
+.extable { border:1px solid var(--rule); background:var(--rule); display:grid; gap:1px; }
+.exhead { display:grid; grid-template-columns:1fr 1fr; gap:1px; }
+.exhead span { background:var(--panel); padding:10px 12px; font-size:11px;
+  text-transform:uppercase; letter-spacing:0.1em; color:var(--ash); }
+.exrow { display:grid; grid-template-columns:1fr 1fr; gap:1px; }
+.exrow textarea { font:inherit; font-size:13px; color:var(--ink); padding:10px 12px;
+  border:0; background:var(--panel); resize:vertical; }
+.exrow textarea:focus { outline:2px solid var(--ink); outline-offset:-2px; }
+.fsubmit { display:inline-block; padding:12px 22px; font:inherit; font-size:14px;
+  background:var(--ink); color:var(--panel); border:1px solid var(--ink); cursor:pointer;
+  text-decoration:none; }
+.fsubmit:active { transform:translateY(1px); }
+.fsubmit.link { background:var(--panel); color:var(--ink); }
+.formerror { max-width:65ch; margin:0 0 28px; padding:12px 14px; font-size:14px;
+  color:var(--clay); background:var(--panel); border:1px solid var(--clay); }
+.donebox { border:1px solid var(--rule); background:var(--panel); padding:24px;
+  margin-bottom:64px; }
+.filelist { list-style:none; margin:0 0 20px; padding:0; display:flex; flex-wrap:wrap; gap:14px;
+  font-size:12px; color:var(--ash); }
+.cmd { margin:0 0 20px; padding:16px; background:var(--paper); border:1px solid var(--rule);
+  font-family:"Geist Mono",ui-monospace,monospace; font-size:13px; overflow-x:auto; }
+.pagehead .fsubmit { margin-top:18px; }
+@media (max-width:700px) { .exhead, .exrow { grid-template-columns:1fr; } }
+
 /* --- the two reading levels ----------------------------------------------------------
    Plain is the default and hides every internal identifier: run directories, candidate
    ids, domain slugs, tool function names, the evaluator's filename and threshold. None of
@@ -1719,7 +1757,10 @@ def render_page(
     )
 
 
-NAV = (("/", "Home"), ("/agents", "Agents"), ("/console", "Console"))
+DOMAINS_DIR = Path(__file__).resolve().parent.parent / "domains"
+
+NAV = (("/", "Home"), ("/agents", "Agents"), ("/new", "New agent"),
+       ("/console", "Console"))
 
 # Two reading levels, one page. Everything the loop needs to name a thing precisely -- run
 # directories, candidate ids, domain slugs, evaluator filenames, tool function names -- is
@@ -1764,6 +1805,22 @@ def render_nav(active: str, level: str = "plain", query: str = "") -> str:
     )
 
 
+def page(title: str, active: str, body: str, level: str = "plain") -> str:
+    """One document shell for every page that is not the console.
+
+    The agents index shipped once as a bare fragment with no <html> around it and rendered
+    completely unstyled. Going through here means a new page cannot repeat that.
+    """
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>{escape(title)}</title>"
+        f"<style>{CSS}</style></head>"
+        f'<body class="{escape(level)}">{render_nav(active, level)}'
+        f'<div class="wrap">{body}</div></body></html>'
+    )
+
+
 def render_agents(state: AppState, level: str = "plain") -> str:
     """The agents index: every agent that has run, what it does, and where it got to.
 
@@ -1800,19 +1857,17 @@ def render_agents(state: AppState, level: str = "plain") -> str:
             f'<span class="av">{escape(step_now)}</span></span></a>'
         )
     body = "".join(rows) or _note(
-        "No agents yet — <code>uv run anneal init</code> asks five questions and writes one."
+        'No agents yet. <a href="/new">Answer five questions</a> and Anneal writes one, '
+        "or run <code>uv run anneal init</code> in a terminal."
     )
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        "<title>Anneal — your agents</title>"
-        f"<style>{CSS}</style></head>"
-        f'<body class="{escape(level)}">'
-        f'{render_nav("/agents", level)}<div class="wrap">'
+    return page(
+        "Anneal - your agents", "/agents",
         '<div class="pagehead"><h1>Your agents</h1>'
         '<p>Each one was built from a goal, a set of tools and a way to score it. '
-        "Open one to watch the round it is on.</p></div>"
-        f'<div class="agents">{body}</div></div></body></html>'
+        "Open one to watch the round it is on.</p>"
+        '<a class="fsubmit link" href="/new">New agent</a></div>'
+        f'<div class="agents">{body}</div>',
+        level,
     )
 
 
@@ -1841,6 +1896,30 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
     @app.get("/agents", response_class=HTMLResponse)
     def agents(detail: str | None = None) -> str:
         return render_agents(state, detail_level(detail))
+
+    @app.get("/new", response_class=HTMLResponse)
+    def new_agent(detail: str | None = None) -> str:
+        return page("Anneal - new agent", "/new", newagent.form_body(), detail_level(detail))
+
+    @app.post("/new", response_class=HTMLResponse)
+    async def create_agent(request: Request) -> HTMLResponse:
+        """Run the same interview `anneal init` runs, over a posted form.
+
+        Everything the interview refuses -- too few examples, a name already taken, a tool
+        module that will not import -- comes back as its own message on the form rather than a
+        traceback, because the person filling this in is not reading our logs.
+        """
+        submission = newagent.parse(dict(await request.form()))
+        try:
+            path = newagent.create(submission, DOMAINS_DIR)
+        except onboard.OnboardError as exc:
+            body = newagent.form_body(str(exc))
+            return HTMLResponse(page("Anneal - new agent", "/new", body), status_code=400)
+        except Exception as exc:  # noqa: BLE001 - any failure is the form's to report
+            log.warning("new agent failed: %s", exc)
+            body = newagent.form_body(f"Could not create the agent: {exc}")
+            return HTMLResponse(page("Anneal - new agent", "/new", body), status_code=400)
+        return HTMLResponse(page("Anneal - agent created", "/new", newagent.done_body(path)))
 
     @app.get("/console", response_class=HTMLResponse)
     def console(

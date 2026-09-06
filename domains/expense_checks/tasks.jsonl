@@ -1,0 +1,6 @@
+{"expected": {"label": "pay"}, "id": "expense_checks-00", "input": {"request": "Taxi to airport, 42 GBP, receipt attached."}, "split": "holdout", "tags": ["label"]}
+{"expected": {"label": "manager"}, "id": "expense_checks-01", "input": {"request": "Dinner for 8 people, 310 GBP, no receipt."}, "split": "search", "tags": ["label"]}
+{"expected": {"label": "pay"}, "id": "expense_checks-02", "input": {"request": "Train ticket, 18 GBP, receipt attached."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "manager"}, "id": "expense_checks-03", "input": {"request": "New laptop, 1400 GBP, receipt attached."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "pay"}, "id": "expense_checks-04", "input": {"request": "Coffee with a client, 9 GBP, receipt attached."}, "split": "holdout", "tags": ["label"]}
+{"expected": {"label": "manager"}, "id": "expense_checks-05", "input": {"request": "Hotel, 620 GBP, receipt missing."}, "split": "search", "tags": ["label"]}
