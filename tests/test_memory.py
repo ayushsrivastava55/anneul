@@ -223,6 +223,17 @@ def test_reflect_writes_a_procedure_from_a_successful_multi_step_run(tmp_path: P
     assert "1. get_reservation_details" in prompt and "5. confirm_payment" in prompt
 
 
+def test_the_routers_pseudo_step_does_not_count_as_a_tool_call(tmp_path: Path) -> None:
+    """tool_router records its choice in the trace; it is not a step of any procedure."""
+    trace = [{"tool": "route", "args": {}, "result": "booking"},
+             *({"tool": t, "args": {}, "result": "{}"} for t in BOOKING_TOOLS)]
+    assert memory_mod.tool_steps(trace) == BOOKING_TOOLS
+    mem = Memory(tmp_path / "memory.json")
+    client = FakeClient(turns=[procedure_reply(["route", *BOOKING_TOOLS])])
+    # a "procedure" that starts by calling the router is not grounded in any real tool call
+    assert mem.reflect([winning_row("w1", trace=trace)], StubDomain(), client=client) == []
+
+
 def test_short_successful_runs_are_not_worth_a_procedure(tmp_path: Path) -> None:
     mem = Memory(tmp_path / "memory.json")
     client = FakeClient(turns=[procedure_reply(BOOKING_TOOLS[:2])])

@@ -554,7 +554,7 @@ CREATE TABLE IF NOT EXISTS entries (
 
 def _write_db(path: Path, rows: list[dict[str, Any]]) -> None:
     """Replace the store's contents in one transaction."""
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(_DB_SCHEMA)
         conn.execute("DELETE FROM entries")
         conn.executemany(
@@ -565,7 +565,6 @@ def _write_db(path: Path, rows: list[dict[str, Any]]) -> None:
                 for r in rows
             ],
         )
-    conn.close()
 
 
 def _read_db(path: Path) -> list[dict[str, Any]] | None:
@@ -573,9 +572,8 @@ def _read_db(path: Path) -> list[dict[str, Any]] | None:
     if not path.is_file():
         return None
     try:
-        with sqlite3.connect(path) as conn:
+        with contextlib.closing(sqlite3.connect(path)) as conn, conn:
             raw = conn.execute("SELECT data FROM entries ORDER BY rowid").fetchall()
-        conn.close()
         return [json.loads(row[0]) for row in raw]
     except (sqlite3.Error, json.JSONDecodeError) as exc:
         logger.warning(json.dumps({"event": "memory_db_unreadable", "path": str(path),
