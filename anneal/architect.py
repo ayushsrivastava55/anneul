@@ -166,9 +166,9 @@ def _contract_section(schema: dict[str, Any] | None) -> str:
     lines = [
         "## Output contract",
         "",
-        "Your final message must be exactly the output the goal asks for under"
-        ' "What done means" — nothing before it, nothing after it, no explanation,'
-        " no markdown code fences, no apology.",
+        "Your final message must be exactly the finished result the goal above describes,"
+        " in exactly the shape it specifies — nothing before it, nothing after it, no"
+        " explanation, no markdown code fences, no apology.",
     ]
     required = [k for k in (schema or {}).get("required", []) or []]
     if required:
@@ -197,7 +197,7 @@ def build_template(domain: DomainLike, node: str, schema: dict[str, Any] | None 
         "",
         _tools_section(domain.tools, node),
         "",
-        "## Working rules",
+        "## How to work",
         "",
         "1. Call tools instead of guessing. Any fact a tool can return must come from that"
         " tool, never from memory or assumption.",

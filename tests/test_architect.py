@@ -121,7 +121,7 @@ def test_prompts_written_once_per_node(domain: FakeDomain, tmp_path: Path) -> No
         assert path.is_file()
         text = path.read_text()
         # the deterministic template is always there, the elaboration only on top of it
-        assert "## Output contract" in text and "## Working rules" in text
+        assert "## Output contract" in text and "## How to work" in text
         assert "get_user_details" in text
         assert text.startswith(f"# You are the {node.upper()}")
         assert text.endswith(GOOD)
@@ -240,3 +240,33 @@ def test_bad_n_raises(domain: FakeDomain, tmp_path: Path) -> None:
         architect.propose(domain, 0, client=FakeClient([GOOD]), prompts_root=tmp_path)
     with pytest.raises(ValueError):
         architect.propose(domain, 99, client=FakeClient([GOOD]), prompts_root=tmp_path)
+
+
+def test_template_is_domain_agnostic(tmp_path: Path) -> None:
+    """CLAUDE.md rule 4: nothing in the core may be phrased for one domain's goal.md."""
+    goal_headings = {
+        line.strip()
+        for path in (ROOT / "domains").glob("*/goal.md")
+        for line in path.read_text().splitlines()
+        if line.startswith("## ")
+    }
+    for name in ("airline", "invoices", "bugfix", "filesystem"):
+        domain_dir = ROOT / "domains" / name
+        if not (domain_dir / "goal.md").is_file():
+            continue
+        d = FakeDomain(
+            name=name,
+            goal=(domain_dir / "goal.md").read_text(),
+            tools=load_tools(domain_dir / "tools.yaml"),
+        )
+        template = architect.build_template(d, "executor")
+        # every tool the domain declares is named, whatever the domain is
+        for tool in d.tools.tools:
+            assert tool.name in template, f"{name}: {tool.name} missing from template"
+        # the template must not quote a heading that only some goal.md files use
+        boilerplate = template.replace(d.goal.strip(), "")
+        assert '"' not in boilerplate, f"{name}: template quotes domain wording"
+        for heading in goal_headings:
+            assert heading not in boilerplate.splitlines(), (
+                f"{name}: template repeats the goal heading {heading!r}"
+            )
