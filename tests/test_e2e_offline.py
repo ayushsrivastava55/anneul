@@ -108,17 +108,13 @@ class ScriptedGateway(FakeClient):
         return self._executor_turn(task, messages)
 
     def _executor_turn(self, task: Any, messages: list[dict[str, Any]]) -> Any:
-        already_acted = any(
-            m.get("role") == "assistant" and m.get("tool_calls") for m in messages
-        )
+        already_acted = any(m.get("role") == "assistant" and m.get("tool_calls") for m in messages)
         actions = list(task.expected.get("actions") or [])
         if already_acted or not actions or task.id in self.failing:
             if task.id in self.failing and not already_acted:
                 return "I was not able to complete this request."
             return _final_text(task)
-        return [
-            {"name": a["name"], "arguments": json.dumps(a["kwargs"])} for a in actions
-        ]
+        return [{"name": a["name"], "arguments": json.dumps(a["kwargs"])} for a in actions]
 
     def _task_of(self, messages: list[dict[str, Any]]) -> Any:
         for message in messages:
@@ -174,11 +170,16 @@ def offline_loop(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str,
         runs_dir = tmp_path / "runs"
         status = cli.main(
             [
-                "run", str(DOMAIN_DIR),
-                "--runs-dir", str(runs_dir),
-                "--iterations", "1",
-                "--concurrency", "1",
-                "--budget", "5.00",
+                "run",
+                str(DOMAIN_DIR),
+                "--runs-dir",
+                str(runs_dir),
+                "--iterations",
+                "1",
+                "--concurrency",
+                "1",
+                "--budget",
+                "5.00",
             ]
         )
         iteration_dir = runs_dir / "airline" / "0"
@@ -219,7 +220,7 @@ def test_jsonl_rows_match_the_contract_schema(offline_loop: dict[str, Any]) -> N
             row = json.loads(line)
             assert tuple(row) == runner.ROW_KEYS, (path.name, list(row))
             assert isinstance(row["task_id"], str) and row["task_id"]
-            assert row["candidate_id"] == path.stem
+            assert row["candidate_id"] == runner.parse_run_name(path)[0]
             assert isinstance(row["iteration"], int)
             assert isinstance(row["score"], float)
             for flag in ("hard_fail", "hit_step_budget", "schema_error"):
@@ -271,8 +272,9 @@ def test_mutant_spec_has_lineage_back_to_the_incumbent(offline_loop: dict[str, A
     assert mutant.lineage.parent == summary["incumbent_id"]
     assert mutant.lineage.operator == summary["operator"]
     assert mutant.lineage.operator in mutate.OPERATORS
-    ledger_ids = {i["id"] for i in diagnose.load_ledger(
-        offline_loop["runs_dir"] / "airline" / "ledger.json")}
+    ledger_ids = {
+        i["id"] for i in diagnose.load_ledger(offline_loop["runs_dir"] / "airline" / "ledger.json")
+    }
     assert mutant.lineage.ledger_issue in ledger_ids
     incumbent = spec.load_spec(summary["specs"][summary["incumbent_id"]])
     assert mutant.model_dump() != incumbent.model_dump(), "the mutation changed nothing"
@@ -295,10 +297,29 @@ def test_gate_json_records_pass3_hard_fails_p_and_a_decision(offline_loop: dict[
 def test_summary_has_every_field_report_needs(offline_loop: dict[str, Any]) -> None:
     summary = offline_loop["summary"]
     required = {
-        "domain", "domain_path", "iteration", "incumbent_id", "candidate_id", "winner_id",
-        "operator", "issue", "mean_score", "pass3_rate", "hard_fails", "gen_gap", "p_value",
-        "cost_usd", "p95_latency_ms", "decision", "reason", "spend_usd", "budget_usd",
-        "search", "specs", "incumbent", "candidate",
+        "domain",
+        "domain_path",
+        "iteration",
+        "incumbent_id",
+        "candidate_id",
+        "winner_id",
+        "operator",
+        "issue",
+        "mean_score",
+        "pass3_rate",
+        "hard_fails",
+        "gen_gap",
+        "p_value",
+        "cost_usd",
+        "p95_latency_ms",
+        "decision",
+        "reason",
+        "spend_usd",
+        "budget_usd",
+        "search",
+        "specs",
+        "incumbent",
+        "candidate",
     }
     assert required <= set(summary)
     assert summary["winner_id"] in (summary["incumbent_id"], summary["candidate_id"])
@@ -323,30 +344,21 @@ def test_report_renders_a_markdown_row_from_the_summary(
         assert cells[2] != cli.DASH  # accuracy came from the summary, not a placeholder
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="INTEGRATION BUG: runner names jsonl <candidate_id>.jsonl with no split or seed, "
-           "so gate's three holdout runs overwrite the incumbent's search rows in the same "
-           "iteration directory. Path is pinned in docs/CONTRACTS.md; orchestrator must "
-           "decide the rename.",
-)
 def test_incumbent_search_jsonl_survives_the_gate(offline_loop: dict[str, Any]) -> None:
     """The incumbent's iteration-0 jsonl should still hold its search rows after the gate."""
     summary = offline_loop["summary"]
-    path = offline_loop["dir"] / f"{summary['incumbent_id']}.jsonl"
+    path = runner.run_path(
+        offline_loop["runs_dir"], "airline", 0, summary["incumbent_id"], cli.SEARCH_SPLIT, 0
+    )
     written = {json.loads(line)["task_id"] for line in path.read_text().splitlines()}
     expected = {t.id for t in offline_loop["domain"].eval.load_tasks(cli.SEARCH_SPLIT)}
     assert written == expected
 
 
 def _search_rows(offline_loop: dict[str, Any]) -> list[dict[str, Any]]:
-    """Rows of a candidate whose search jsonl the gate did not overwrite."""
-    summary = offline_loop["summary"]
-    clobbered = {summary["incumbent_id"], summary["candidate_id"]}
+    """Rows of any candidate's search-split jsonl."""
     search_ids = {t.id for t in offline_loop["domain"].eval.load_tasks(cli.SEARCH_SPLIT)}
-    for path in sorted(offline_loop["dir"].glob("cand-*.jsonl")):
-        if path.stem in clobbered:
-            continue
+    for path in runner.find_runs(offline_loop["runs_dir"], "airline", 0, split=cli.SEARCH_SPLIT):
         rows = [json.loads(line) for line in path.read_text().splitlines()]
         if {r["task_id"] for r in rows} == search_ids:
             return rows

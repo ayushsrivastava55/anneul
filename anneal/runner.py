@@ -3,7 +3,9 @@
 The runner is the only place that scores: it calls ``runtime.run_task`` for every task in
 ``domain.eval.load_tasks(split)``, scores the output with ``domain.eval.score``, flags hard
 failures with ``domain.eval.is_hard_fail`` and writes one JSON line per task to
-``runs/<domain>/<iteration>/<candidate_id>.jsonl`` (keys: ``ROW_KEYS``, in that order).
+``runs/<domain>/<iteration>/<candidate_id>.<split>.s<seed>.jsonl`` (keys: ``ROW_KEYS``, in
+that order). Split and seed are part of the name so repeated runs of one candidate at the
+same iteration (e.g. the gate's seeded re-runs on another split) never overwrite each other.
 
 ``split`` is an opaque parameter here. Which split is safe to read is decided by callers.
 """
@@ -162,6 +164,43 @@ async def _run_all(
         return list(await asyncio.gather(*(submit(t) for t in tasks)))
 
 
+def run_path(
+    runs_dir: Path | str | None,
+    domain_name: str,
+    iteration: int,
+    candidate_id: str,
+    split: str,
+    seed: int,
+) -> Path:
+    """``<runs_dir>/<domain>/<iteration>/<candidate_id>.<split>.s<seed>.jsonl``."""
+    name = f"{candidate_id}.{split}.s{seed}.jsonl"
+    return Path(runs_dir or RUNS_DIR) / domain_name / str(iteration) / name
+
+
+def find_runs(
+    runs_dir: Path | str | None,
+    domain_name: str,
+    iteration: int,
+    candidate_id: str = "*",
+    split: str = "*",
+    seed: int | str = "*",
+) -> list[Path]:
+    """Sorted jsonl files matching the pattern; ``*`` wildcards any component."""
+    pattern = run_path(runs_dir, domain_name, iteration, candidate_id, split, seed)  # type: ignore[arg-type]
+    return sorted(pattern.parent.glob(pattern.name))
+
+
+def parse_run_name(path: Path | str) -> tuple[str, str, int]:
+    """Inverse of ``run_path``: ``(candidate_id, split, seed)`` from a run file name."""
+    name = Path(path).name
+    if not name.endswith(".jsonl"):
+        raise ValueError(f"not a run file: {name!r}")
+    candidate_id, split, seed = name[: -len(".jsonl")].rsplit(".", 2)
+    if not seed.startswith("s") or not seed[1:].isdigit():
+        raise ValueError(f"not a run file: {name!r}")
+    return candidate_id, split, int(seed[1:])
+
+
 def write_rows(rows: list[dict], path: Path) -> Path:
     """Write ``rows`` as JSON lines to ``path`` (parents created)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,7 +240,7 @@ def run(
             concurrency if concurrency is not None else default_concurrency(),
         )
     )
-    path = Path(runs_dir or RUNS_DIR) / domain.name / str(iteration) / f"{spec.id}.jsonl"
+    path = run_path(runs_dir, domain.name, iteration, spec.id, split, seed)
     write_rows(rows, path)
     logger.info(json.dumps({"event": "run_complete", "path": str(path), "tasks": len(rows)}))
     return rows

@@ -256,7 +256,7 @@ def test_downshift_reads_prior_rows_from_runs_dir_when_not_given(tmp_path: Path)
     no_rows = _anneal(tmp_path, FakeRun(lambda tiers: 1.0), prior_rows=None)
     assert no_rows.points[1].node_tiers == {"planner": "mid", "executor": "frontier"}
 
-    runner.write_rows(_prior_rows(), runs_dir / "fakedom" / "2" / "cand-1.jsonl")
+    runner.write_rows(_prior_rows(), runner.run_path(runs_dir, "fakedom", 2, "cand-1", "search", 0))
     from_disk = _anneal(tmp_path, FakeRun(lambda tiers: 1.0), prior_rows=None)
     assert from_disk.points[1].node_tiers == {"planner": "frontier", "executor": "mid"}
 
