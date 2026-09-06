@@ -1,74 +1,74 @@
 {
   "scenes": {
     "01-title": {
-      "seconds": 20.19,
+      "seconds": 12.71,
       "source": "audio"
     },
     "02-problem": {
-      "seconds": 18.842,
+      "seconds": 13.113,
       "source": "audio"
     },
     "03-loop": {
-      "seconds": 31.702,
+      "seconds": 20.637,
       "source": "audio"
     },
     "04-evidence": {
-      "seconds": 31.972,
+      "seconds": 20.691,
       "source": "audio"
     },
     "05-landing": {
-      "seconds": 8.871,
+      "seconds": 6.006,
       "source": "audio"
     },
     "06-new": {
-      "seconds": 17.585,
+      "seconds": 11.065,
       "source": "audio"
     },
     "07-tools": {
-      "seconds": 21.088,
+      "seconds": 13.743,
       "source": "audio"
     },
     "08-examples": {
-      "seconds": 17.854,
+      "seconds": 11.353,
       "source": "audio"
     },
     "09-agents": {
-      "seconds": 19.65,
+      "seconds": 11.577,
       "source": "audio"
     },
     "10-design": {
-      "seconds": 14.081,
+      "seconds": 8.965,
       "source": "audio"
     },
     "11-run": {
-      "seconds": 13.812,
+      "seconds": 9.066,
       "source": "audio"
     },
     "12-faults": {
-      "seconds": 19.291,
+      "seconds": 12.889,
       "source": "audio"
     },
     "13-gate": {
-      "seconds": 26.673,
+      "seconds": 15.84,
       "source": "audio"
     },
     "14-unseen": {
-      "seconds": 36.562,
+      "seconds": 23.861,
       "source": "audio"
     },
     "15-built": {
-      "seconds": 28.289,
+      "seconds": 17.035,
       "source": "audio"
     },
     "16-github": {
-      "seconds": 12.195,
+      "seconds": 8.569,
       "source": "audio"
     },
     "17-close": {
-      "seconds": 10.937,
+      "seconds": 8.164,
       "source": "audio"
     }
   },
   "voiced": 17,
-  "total_seconds": 349.59
+  "total_seconds": 225.28
 }

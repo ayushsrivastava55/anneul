@@ -1,9 +1,9 @@
 {
   "voice": {
     "model": "bulbul:v3",
-    "speaker": "aditya",
+    "speaker": "priya",
     "language_code": "en-IN",
-    "pace": 0.95,
+    "pace": 1.5,
     "speech_sample_rate": 24000,
     "output_audio_codec": "wav"
   },
