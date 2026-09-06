@@ -1,0 +1,80 @@
+{
+  "budget_usd": 50.0,
+  "candidate_id": null,
+  "cost_usd": null,
+  "decision": "no_candidate",
+  "domain": "bugfix",
+  "domain_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/domains/bugfix",
+  "gen_gap": null,
+  "hard_fails": null,
+  "incumbent_id": "cand-03",
+  "issue": null,
+  "iteration": 0,
+  "ledger": {
+    "by_class": {},
+    "by_status": {},
+    "issues": 0,
+    "observations": 0,
+    "operators_tried": 0
+  },
+  "mean_score": null,
+  "operator": null,
+  "p95_latency_ms": null,
+  "p_value": null,
+  "pass3_rate": null,
+  "reason": "every ranked issue has exhausted its implemented operators",
+  "search": {
+    "cand-01": {
+      "cost_by_node": {
+        "executor": 0.011134
+      },
+      "cost_per_task": 0.001113,
+      "cost_usd": 0.011134,
+      "hard_fails": 0,
+      "mean_score": 0.9,
+      "n_tasks": 10,
+      "p95_latency_ms": 67231.4,
+      "pass_rate": 0.9,
+      "tokens_in": 96195,
+      "tokens_out": 13405
+    },
+    "cand-02": {
+      "cost_by_node": {
+        "executor": 0.013247,
+        "planner": 0.013189
+      },
+      "cost_per_task": 0.002644,
+      "cost_usd": 0.026436,
+      "hard_fails": 0,
+      "mean_score": 0.9,
+      "n_tasks": 10,
+      "p95_latency_ms": 162229.9,
+      "pass_rate": 0.9,
+      "tokens_in": 143930,
+      "tokens_out": 44500
+    },
+    "cand-03": {
+      "cost_by_node": {
+        "critic": 0.016908,
+        "executor": 0.013352
+      },
+      "cost_per_task": 0.003026,
+      "cost_usd": 0.03026,
+      "hard_fails": 0,
+      "mean_score": 1.0,
+      "n_tasks": 10,
+      "p95_latency_ms": 271359.2,
+      "pass_rate": 1.0,
+      "tokens_in": 130149,
+      "tokens_out": 56129
+    }
+  },
+  "specs": {
+    "cand-01": "runs-learning/bugfix/0/cand-01.yaml",
+    "cand-02": "runs-learning/bugfix/0/cand-02.yaml",
+    "cand-03": "runs-learning/bugfix/0/cand-03.yaml"
+  },
+  "spend_usd": 0.06783,
+  "stop_reason": "no_candidate",
+  "winner_id": "cand-03"
+}

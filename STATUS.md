@@ -274,7 +274,13 @@ Live results (README table is generated from `runs/` by the AO-built splicer):
   gate.
 - **runs-learning/airline** (cheap baseline, escalating gate): five rejects; iteration 3
   escalated 2-0 -> 3-2 (p=0.5), a false promotion avoided in the field.
-- **runs-learning/bugfix** (flash, escalating gate): in flight at freeze time.
+- **runs-learning/bugfix** (flash, escalating gate): the architecture search won at
+  iteration 0 - critic_loop scored 1.000 on search vs 0.900 for single, at the cheapest
+  sponsor tier for $0.07 total, so the loop had no failures to learn from
+  (`no_candidate`). Bugfix is genuinely solved at floor price post sandbox fix.
+- **runs-learning-flash/airline** (flash, escalating gate): final promotion attempt, in
+  flight at freeze time - GLM struggles on tau-bench, which is exactly the headroom the
+  typed operators need.
 
 ## Old latest numbers
 none
