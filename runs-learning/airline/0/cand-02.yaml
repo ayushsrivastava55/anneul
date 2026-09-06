@@ -9,14 +9,14 @@ nodes:
 - name: planner
   role: planner
   model_tier: cheap
-  system_prompt_ref: anneal/airline/planner@v3
+  system_prompt_ref: anneal/airline/planner@v5
   tools: []
   max_steps: 2
   schema_ref: null
 - name: executor
   role: executor
   model_tier: cheap
-  system_prompt_ref: anneal/airline/executor@v6
+  system_prompt_ref: anneal/airline/executor@v12
   tools:
   - calculate
   - get_reservation_details

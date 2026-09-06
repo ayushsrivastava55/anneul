@@ -1,6 +1,6 @@
-id: cand-03
-topology: critic_loop
-step_budget: 12
+id: cand-01-add_escalation_node-i1
+topology: single
+step_budget: 13
 memory:
   enabled: false
   kind: none
@@ -9,7 +9,7 @@ nodes:
 - name: executor
   role: executor
   model_tier: cheap
-  system_prompt_ref: anneal/airline/executor@v12
+  system_prompt_ref: anneal/airline/executor@v13
   tools:
   - calculate
   - get_reservation_details
@@ -24,18 +24,18 @@ nodes:
   - update_reservation_baggages
   - update_reservation_flights
   - update_reservation_passengers
-  max_steps: 8
+  max_steps: 12
   schema_ref: null
-- name: critic
-  role: critic
+- name: escalate
+  role: escalate
   model_tier: cheap
-  system_prompt_ref: anneal/airline/critic@v5
+  system_prompt_ref: anneal/airline/escalate@v5
   tools: []
-  max_steps: 4
+  max_steps: 1
   schema_ref: null
 lineage:
-  parent: cand-03
+  parent: cand-01
   iteration: 0
-  operator: architect
-  ledger_issue: null
+  operator: add_escalation_node
+  ledger_issue: L-0001
 tool_overrides: {}

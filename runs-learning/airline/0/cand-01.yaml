@@ -9,7 +9,7 @@ nodes:
 - name: executor
   role: executor
   model_tier: cheap
-  system_prompt_ref: anneal/airline/executor@v6
+  system_prompt_ref: anneal/airline/executor@v12
   tools:
   - calculate
   - get_reservation_details

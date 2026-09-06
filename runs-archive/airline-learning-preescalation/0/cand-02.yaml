@@ -1,15 +1,22 @@
-id: cand-03
-topology: critic_loop
+id: cand-02
+topology: planner_executor
 step_budget: 12
 memory:
   enabled: false
   kind: none
   top_k: 3
 nodes:
+- name: planner
+  role: planner
+  model_tier: cheap
+  system_prompt_ref: anneal/airline/planner@v3
+  tools: []
+  max_steps: 2
+  schema_ref: null
 - name: executor
   role: executor
   model_tier: cheap
-  system_prompt_ref: anneal/airline/executor@v12
+  system_prompt_ref: anneal/airline/executor@v6
   tools:
   - calculate
   - get_reservation_details
@@ -24,17 +31,10 @@ nodes:
   - update_reservation_baggages
   - update_reservation_flights
   - update_reservation_passengers
-  max_steps: 8
-  schema_ref: null
-- name: critic
-  role: critic
-  model_tier: cheap
-  system_prompt_ref: anneal/airline/critic@v5
-  tools: []
-  max_steps: 4
+  max_steps: 10
   schema_ref: null
 lineage:
-  parent: cand-03
+  parent: cand-02
   iteration: 0
   operator: architect
   ledger_issue: null
