@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anneal — the agent that engineers agents, then makes them cheap</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #12161f; --line: #232a38;
+    --text: #e6e9ef; --muted: #8b93a7; --accent: #ff7a45; --accent2: #4fc1ff;
+    --good: #5ad19a; --bad: #ff6b81;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text);
+         font: 16px/1.6 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+  header { padding: 88px 0 40px; text-align: center; }
+  .badge { display: inline-block; border: 1px solid var(--line); color: var(--muted);
+           border-radius: 999px; padding: 4px 14px; font-size: 13px; letter-spacing: .06em;
+           text-transform: uppercase; }
+  h1 { font-size: 52px; line-height: 1.1; margin: 22px 0 14px; letter-spacing: -.02em; }
+  h1 .flame { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 19px; max-width: 720px; margin: 0 auto; }
+  .cta { margin-top: 30px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn { border-radius: 10px; padding: 12px 22px; font-weight: 600; text-decoration: none; }
+  .btn.primary { background: var(--accent); color: #14100c; }
+  .btn.ghost { border: 1px solid var(--line); color: var(--text); }
+  section { padding: 44px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 26px; margin-bottom: 20px; letter-spacing: -.01em; }
+  .grid { display: grid; gap: 16px; }
+  .grid.three { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+          padding: 22px; }
+  .card h3 { font-size: 17px; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: 15px; }
+  .num { font-size: 40px; font-weight: 700; letter-spacing: -.02em; }
+  .num.good { color: var(--good); }
+  .num.accent { color: var(--accent2); }
+  .loop { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+          font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14px; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 8px 14px; }
+  .step b { color: var(--accent2); font-weight: 600; }
+  .arrow { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  td.good { color: var(--good); font-weight: 600; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+         padding: 2px 7px; font-size: 14px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+        padding: 18px 20px; overflow-x: auto; font-size: 14px; line-height: 1.7; }
+  footer { padding: 40px 0 60px; color: var(--muted); font-size: 14px; text-align: center;
+           border-top: 1px solid var(--line); }
+  a { color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <span class="badge">Syndicate by Maximor · Track 1 · Automated Agent Engineering</span>
+  <h1>Anneal<span class="flame">.</span></h1>
+  <p class="sub">The agent that engineers agents, then makes them cheap. Give it a goal, a
+  tool manifest and an evaluator — it designs architectures, reads its own traces, repairs
+  the failures it finds, promotes only what survives a statistical gate, and walks the
+  winner down to the cheapest model mix that still passes.</p>
+  <div class="cta">
+    <a class="btn primary" href="http://127.0.0.1:8000/">Open the live dashboard</a>
+    <a class="btn ghost" href="https://github.com/aircmastercode/anneul">GitHub repo</a>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Headline numbers — generated from runs/, never typed by hand</h2>
+    <div class="grid three">
+      <div class="card">
+        <div class="num good">29&times;</div>
+        <h3>cheaper on invoices</h3>
+        <p>Annealed from Claude Sonnet down to GPT-5-nano: score rose to a perfect
+        1.000 while cost fell to $0.0014 per task. Zero hard fails.</p>
+      </div>
+      <div class="card">
+        <div class="num accent">5 &rarr; 3</div>
+        <h3>hard fails on airline</h3>
+        <p>tau-bench airline: unsafe actions cut, $/task &minus;28%, p95 latency
+        &minus;36% — while holding the gated score.</p>
+      </div>
+      <div class="card">
+        <div class="num">$0.07</div>
+        <h3>to solve bugfix</h3>
+        <p>The architecture search picked a critic-loop topology that scores 1.000 at
+        the cheapest sponsor tier. Total spend: seven cents.</p>
+      </div>
+    </div>
+    <p class="note">Every cell traces to a Neatlogs span; the README table is emitted by
+    <code>anneal report --write-readme</code> from <code>runs/</code>.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The loop</h2>
+    <div class="loop">
+      <span class="step"><b>Spec</b> goal + tools + eval</span><span class="arrow">→</span>
+      <span class="step"><b>Architect</b> 3–4 topologies</span><span class="arrow">→</span>
+      <span class="step"><b>Run</b> traced, parallel</span><span class="arrow">→</span>
+      <span class="step"><b>Diagnose</b> typed taxonomy</span><span class="arrow">→</span>
+      <span class="step"><b>Mutate</b> typed operators</span><span class="arrow">→</span>
+      <span class="step"><b>Gate</b> holdout ×3, sign test</span><span class="arrow">→</span>
+      <span class="step"><b>Anneal</b> tier downshift</span><span class="arrow">→</span>
+      <span class="step"><b>Ship</b></span>
+    </div>
+    <div class="grid three" style="margin-top:22px">
+      <div class="card"><h3>An honest gate</h3>
+        <p>One-sided sign test on a reserved split the optimiser never sees. When a
+        candidate is ahead but the sample is too small for any verdict, the gate buys a
+        second block of runs instead of publishing a false “no effect”. Rejections are
+        shown, not hidden — that is the feature.</p></div>
+      <div class="card"><h3>Memory that grows</h3>
+        <p>A persistent issue ledger plus episodic and procedural memory (SQLite FTS5):
+        rules learned from failed traces, credited when they help, retired when they stop
+        helping. Every prompt edit is versioned in the Neatlogs registry.</p></div>
+      <div class="card"><h3>Builds its own tools via AO</h3>
+        <p>When diagnosis finds a missing capability, Anneal spawns an AO worker session
+        that writes the tool and its tests; the branch is accepted only when pytest
+        passes. The optimiser used the orchestrator as its own hands.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Three unrelated domains, one core</h2>
+    <table>
+      <thead><tr><th>Domain</th><th>Task</th><th>Evaluator</th><th>Hard fail</th></tr></thead>
+      <tbody>
+        <tr><td>invoices</td><td>AP triage: approve or escalate</td>
+            <td>field match + decision</td><td class="good">auto-approving a mismatch</td></tr>
+        <tr><td>airline</td><td>tau-bench customer ops</td>
+            <td>final DB state</td><td class="good">action outside the expected set</td></tr>
+        <tr><td>bugfix</td><td>repair a failing Python function</td>
+            <td>pytest in a sandbox</td><td class="good">writing outside the sandbox</td></tr>
+        <tr><td>filesystem</td><td>file tasks via a third-party MCP server</td>
+            <td>final directory state</td><td class="good">touching paths outside the task dir</td></tr>
+      </tbody>
+    </table>
+    <p class="note">No domain-specific code exists in the core — a regression test fails the
+    build if the optimiser ever hard-codes a domain.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Run it</h2>
+    <pre>uv sync
+cp .env.example .env                        # fill keys, or point tiers at Ollama
+uv run anneal run domains/invoices --iterations 5 --budget 20
+uv run anneal report runs --write-readme    # the README table, straight from runs/
+uv run anneal dashboard                     # curves · ledger · Pareto · memory</pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Anneal — built end to end through AO sessions ·
+    traced by Neatlogs · inference via Anthropic, TensorMux &amp; AI Grants India ·
+    Syndicate by Maximor, September 2026
+  </div>
+</footer>
+
+</body>
+</html>

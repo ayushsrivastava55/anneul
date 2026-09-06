@@ -455,6 +455,14 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
     def index() -> str:
         return render_page(state)
 
+    @app.get("/landing", response_class=HTMLResponse)
+    def landing() -> str:
+        """The product landing page (also openable directly from landing/index.html)."""
+        path = Path(__file__).resolve().parent.parent / "landing" / "index.html"
+        if not path.exists():
+            return "<html><body><p>landing/index.html is missing; see the repo.</p></body></html>"
+        return path.read_text(encoding="utf-8")
+
     @app.get("/fragments/curves", response_class=HTMLResponse)
     def curves() -> str:
         return render_curves(load_summaries(state.runs_dir))

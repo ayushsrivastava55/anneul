@@ -270,3 +270,11 @@ def test_reads_anneal_pareto_payload_and_marks_the_front(tmp_path: Path) -> None
     svg = dashboard.pareto_chart(points)
     assert svg.count('class="pt front"') == 2
     assert "cfg-2 (front): score 0.720, $0.0041/task, p95 5100ms" in svg
+
+
+def test_landing_page_is_served_and_names_the_product(client: TestClient) -> None:
+    """/landing serves the static product page; the file is the single source of truth."""
+    response = client.get("/landing")
+    assert response.status_code == 200
+    assert "Anneal" in response.text
+    assert "the agent that engineers agents" in response.text.lower()
