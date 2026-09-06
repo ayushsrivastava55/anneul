@@ -24,7 +24,29 @@ tiers:
     model: claude-haiku-4-5-20251001
     price_in: 1.0
     price_out: 5.0
-downshift_order: [frontier, mid, cheap]
+  # --- sponsor-backed floor of the ladder -------------------------------------------------
+  # Architect never assigns these (architect.NODE_TIER only names frontier/mid/cheap); the
+  # downshift walks into them. Both are reasoning models that return content=None on a
+  # tool-call turn, which is fine: llm.complete drops None via model_dump(exclude_none=True)
+  # and we never set max_tokens, so reasoning cannot starve the visible answer.
+  #
+  # glm-4-7-flash is FREE on our TensorMux hackathon allocation (50M tokens). Pricing it at
+  # $0 would make it trivially dominate every Pareto front, so we price it at the third-party
+  # market rate for the same weights ($0.06/$0.40, Venice/OpenRouter/Cloudflare all agree,
+  # checked 6 Sep 2026). Reported $/task is therefore what this config WOULD cost anyone, not
+  # what we were charged. Said plainly in the README.
+  flash:
+    provider: tensormux
+    model: glm-4-7-flash
+    price_in: 0.06
+    price_out: 0.40
+  # gpt-5-nano via the AI Grants India key. Official OpenAI list price, checked 6 Sep 2026.
+  nano:
+    provider: aigi
+    model: gpt-5-nano
+    price_in: 0.05
+    price_out: 0.40
+downshift_order: [frontier, mid, cheap, flash, nano]
 providers:
   tensormux: {base_url_env: TENSORMUX_BASE_URL, api_key_env: TENSORMUX_API_KEY}
   frontier:  {base_url_env: FRONTIER_BASE_URL,  api_key_env: FRONTIER_API_KEY}

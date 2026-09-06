@@ -14,7 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 Topology = Literal["single", "planner_executor", "critic_loop", "tool_router"]
 Role = Literal["planner", "executor", "critic", "router", "validator", "escalate"]
-ModelTier = Literal["frontier", "mid", "cheap"]
+# Ordered most to least capable. `flash` and `nano` are the sponsor-backed floor of the
+# ladder; Architect never proposes them (see architect.NODE_TIER), only the downshift walks
+# down into them, which is the heat/cool split the whole design rests on.
+ModelTier = Literal["frontier", "mid", "cheap", "flash", "nano"]
 MemoryKind = Literal["none", "episodic"]
 
 IMPL_PREFIXES = ("python:", "mcp:")

@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -20,8 +19,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 from openai import OpenAI
+
+# anneal.config is the single owner of .env loading. Importing it for the side effect is
+# the point: this module is runnable on its own (`python -m anneal.llm --tier flash ...`)
+# and calling dotenv itself here meant a second loader that missed config's blank-var
+# handling, so a blank exported var silently beat a filled-in .env.
+from anneal import config as _config
 
 try:  # anneal.tracing is task 0.4; until it lands, spans are a no-op seam.
     from anneal.tracing import span
@@ -31,7 +35,13 @@ except ImportError:  # pragma: no cover - exercised only before tracing merges
         return contextlib.nullcontext()
 
 
-load_dotenv()
+def _env(name: str) -> str:
+    """Required env var, via config so blank-shadowing is handled in exactly one place."""
+    value = (_config.env(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"environment variable {name} is unset or empty (see .env.example)")
+    return value
+
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_PATH = ROOT / "specs" / "models.yaml"
@@ -70,13 +80,6 @@ def _tier(tier: str, path: Path | str | None = None) -> dict[str, Any]:
 def resolve_model(tier: str, path: Path | str | None = None) -> str:
     """Return the model id configured for ``tier``."""
     return str(_tier(tier, path)["model"])
-
-
-def _env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise RuntimeError(f"environment variable {name} is unset or empty (see .env.example)")
-    return value
 
 
 def get_client(tier: str = "mid", path: Path | str | None = None) -> OpenAI:
