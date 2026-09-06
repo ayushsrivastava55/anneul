@@ -165,6 +165,26 @@ Ollama now runs with OLLAMA_MAX_LOADED_MODELS=1, NUM_PARALLEL=1, KEEP_ALIVE=30s,
 sessions are killed before any run. Runs are sequential, never parallel across domains.
 p95 latency ~148 s/task on the 3b, so a 2-iteration run on the largest domain is ~1 hour.
 
+## State after merging PR #1 (teammate) — 6 Sep, ~5h to deadline
+Merged clean; 530 tests pass. Brought the sponsor keys we lacked, a five-tier hosted ladder,
+rate-limit backoff, live Neatlogs wrapping, and a real in-product AO tool synthesis
+(session tool-run_pytest-9b51 wrote run_pytest.py). Post-merge, three rules were written into
+docs/ARCHITECTURE.md 'Configuration' and the code aligned to them (commit 380cb3b):
+one env loader, one model ladder per process, reports compute provider facts.
+
+### The one blocking defect
+README's results table is NOT reproducible from the repo. It was generated from a runs/
+directory that was never committed; no committed directory (runs-archive, runs-learning*,
+runs-pregate-1442) regenerates it. tests/test_report.py::test_the_repo_readme_block_is_what_
+the_tool_emits is red for exactly this reason and must stay red until fixed.
+Fix: teammate commits the exact runs/ that produced the table into runs/final/, then
+`uv run anneal report runs/final --write-readme`. Keys are empty on this machine, so the
+orchestrator cannot regenerate hosted numbers itself.
+
+### Fallback if that cannot happen
+`specs/models.local.yaml` (verified Ollama ladder) + `ANNEAL_MODELS_PATH` reproduce weaker but
+fully committed numbers. A filesystem run on it is in progress in runs/final/.
+
 ## Blockers
 - ~~THE blocker: the system has never run against a real model.~~ **Cleared 6 Sep**: all
   five tiers live (`.env` filled, `specs/models.yaml` real), `runs/` holds completed
