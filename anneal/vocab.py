@@ -210,6 +210,14 @@ def title_from_goal(goal_md: Path | str) -> str:
         lowered = line.lower()
         for prefix in GOAL_PREFIXES:
             if lowered.startswith(prefix):
-                return line[len(prefix):].strip()[:60]
-        return line[:60]
+                return _clip(line[len(prefix):].strip())
+        return _clip(line)
     return ""
+
+
+def _clip(text: str, limit: int = 60) -> str:
+    """Trim a title to fit a switcher tab, on a word boundary rather than mid-word."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(",;:")
+    return f"{cut or text[:limit]}…"

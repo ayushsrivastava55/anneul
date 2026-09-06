@@ -508,3 +508,36 @@ def test_a_generated_domain_runs_through_anneal_run(
     ]
     assert rows, "no task rows were written"
     assert any(row["score"] >= domain.eval.THRESHOLD for row in rows)
+
+
+def test_the_goal_heading_is_the_job_not_the_directory_name(tmp_path: Path) -> None:
+    """The console names every agent from this heading, so it must say what the agent is for.
+
+    It used to be the slug, which meant an agent built through the interview appeared as
+    "order desk" everywhere in the product -- the exact directory-name problem the interview
+    exists to spare a non-developer.
+    """
+    transport = onboard.ScriptedTransport(answers())
+    interview = onboard.run_interview(transport, domains_dir=tmp_path)
+    path = onboard.generate_domain(interview, domains_dir=tmp_path)
+    heading = (path / "goal.md").read_text(encoding="utf-8").splitlines()[0]
+    assert heading == (
+        "# Goal: Read one order line and pull out the order number and the customer name"
+    )
+    # and the console reads exactly that back as the agent's name
+    from anneal import vocab
+
+    assert vocab.title_from_goal(path / "goal.md").startswith("Read one order line")
+
+
+def test_the_goal_heading_falls_back_to_the_name_when_the_job_adds_nothing(
+    tmp_path: Path,
+) -> None:
+    """A job answer that repeats the name, or is far too long for a heading, is not a title."""
+    transport = onboard.ScriptedTransport(answers(job="order desk"))
+    interview = onboard.run_interview(transport, domains_dir=tmp_path)
+    assert onboard._goal_title(interview) == "order desk"
+    long_job = "Do " + ("a very particular thing " * 8)
+    transport = onboard.ScriptedTransport(answers(name="wide", job=long_job))
+    interview = onboard.run_interview(transport, domains_dir=tmp_path / "b")
+    assert onboard._goal_title(interview) == "wide"

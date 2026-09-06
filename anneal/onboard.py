@@ -848,7 +848,21 @@ GOAL_SYSTEM = (
 
 
 def _goal_title(interview: Interview) -> str:
-    return interview.slug.replace("_", " ").strip() or "the agent"
+    """The heading of goal.md: what this agent is for, in the words the person used.
+
+    It used to be the slug, so an agent the interview created was titled "ticketdesk" -- and
+    since the console names every agent from this heading, every agent built through the
+    interview showed up under its directory name. The job answer is the only place the person
+    said what the thing is for, so its first sentence is the title; the slug remains the
+    fallback for a job answer that is empty or is itself just the name.
+    """
+    job = " ".join((interview.job or "").split())
+    sentence = job.split(". ")[0].rstrip(".").strip()
+    slug = interview.slug.replace("_", " ").strip()
+    if not sentence or sentence.lower() == slug.lower():
+        return slug or "the agent"
+    # a heading, not a paragraph: past this the sentence is prose and the name is better
+    return sentence if len(sentence) <= 90 else slug or sentence[:90]
 
 
 def _done_text(interview: Interview, fields: tuple[str, ...], labels: list[str]) -> str:
