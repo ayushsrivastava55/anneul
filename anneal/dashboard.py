@@ -1404,82 +1404,9 @@ def render_topbar(
 
 CSS = """
 
-.agent { grid-template-columns:minmax(180px,2fr) repeat(4, minmax(0,1fr)) auto; }
-.aopen { color:var(--ink); text-decoration:none; }
-.arun { padding:8px 14px; font:inherit; font-size:13px; background:var(--panel);
-  color:var(--ink); border:1px solid var(--ink); cursor:pointer; }
-.arun:hover { background:var(--ink); color:var(--panel); }
-.arun:active { transform:translateY(1px); }
-.agoing, .running { color:var(--orange); }
-.failed { color:var(--clay); }
-.afield.right { text-align:right; }
 
-/* --- the new-agent form ---------------------------------------------------------------
-   Label above the control, helper text below it, errors above the form and in words. No
-   placeholder-as-label anywhere: a placeholder disappears the moment someone starts typing. */
-.newform { max-width:760px; padding-bottom:64px; }
-.field { display:block; margin-bottom:32px; }
-.flabel { display:block; font-size:14px; color:var(--ink); margin-bottom:8px; }
-.finput { width:100%; padding:11px 12px; font:inherit; font-size:14px; color:var(--ink);
-  background:var(--panel); border:1px solid var(--rule); border-radius:0; }
-.finput:focus { outline:2px solid var(--ink); outline-offset:-1px; }
-.fhelp { margin:8px 0 0; font-size:12px; color:var(--graphite); max-width:65ch; }
-.choices { display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule); }
-.choice { display:flex; align-items:center; gap:10px; padding:12px 14px; background:var(--panel);
-  font-size:14px; cursor:pointer; }
-.choice:hover { background:var(--paper); }
-.extable { border:1px solid var(--rule); background:var(--rule); display:grid; gap:1px; }
-.exhead { display:grid; grid-template-columns:1fr 1fr; gap:1px; }
-.exhead span { background:var(--panel); padding:10px 12px; font-size:11px;
-  text-transform:uppercase; letter-spacing:0.1em; color:var(--ash); }
-.exrow { display:grid; grid-template-columns:1fr 1fr; gap:1px; }
-.exrow textarea { font:inherit; font-size:13px; color:var(--ink); padding:10px 12px;
-  border:0; background:var(--panel); resize:vertical; }
-.exrow textarea:focus { outline:2px solid var(--ink); outline-offset:-2px; }
-.fsubmit { display:inline-block; padding:12px 22px; font:inherit; font-size:14px;
-  background:var(--ink); color:var(--panel); border:1px solid var(--ink); cursor:pointer;
-  text-decoration:none; }
-.fsubmit:active { transform:translateY(1px); }
-.fsubmit.link { background:var(--panel); color:var(--ink); }
-.formerror { max-width:65ch; margin:0 0 28px; padding:12px 14px; font-size:14px;
-  color:var(--clay); background:var(--panel); border:1px solid var(--clay); }
-.donebox { border:1px solid var(--rule); background:var(--panel); padding:24px;
-  margin-bottom:64px; }
-.filelist { list-style:none; margin:0 0 20px; padding:0; display:flex; flex-wrap:wrap; gap:14px;
-  font-size:12px; color:var(--ash); }
-.cmd { margin:0 0 20px; padding:16px; background:var(--paper); border:1px solid var(--rule);
-  font-family:"Geist Mono",ui-monospace,monospace; font-size:13px; overflow-x:auto; }
-.pagehead .fsubmit { margin-top:18px; }
-@media (max-width:700px) { .exhead, .exrow { grid-template-columns:1fr; } }
 
-/* --- the two reading levels ----------------------------------------------------------
-   Plain is the default and hides every internal identifier: run directories, candidate
-   ids, domain slugs, tool function names, the evaluator's filename and threshold. None of
-   it is removed from the document, so the switch is instant and the technical view is the
-   same page with the machinery shown rather than a different page. */
-body.plain .dslug,
-body.plain .cid,
-body.plain .strip,
-body.plain .techonly { display:none !important; }
-.switch { margin-left:auto; display:inline-flex; align-items:center; gap:8px; font-size:12px;
-  color:var(--ash); text-decoration:none; }
-.switch:hover { color:var(--ink); }
-.switch .knob { width:26px; height:14px; border:1px solid var(--rule); border-radius:999px;
-  position:relative; background:var(--paper); }
-.switch .knob::after { content:""; position:absolute; top:2px; left:2px; width:8px; height:8px;
-  border-radius:50%; background:var(--ash); transition:left .15s, background .15s; }
-.switch.on { color:var(--ink); }
-.switch.on .knob { border-color:var(--ink); }
-.switch.on .knob::after { left:14px; background:var(--ink); }
 
-/* --- product chrome: the bar that makes three pages one application ------------------- */
-.chrome { display:flex; align-items:center; gap:28px; padding:16px 48px;
-  border-bottom:1px solid var(--rule); background:var(--panel); }
-.chrome .mark { font-family:"Geist Mono",ui-monospace,monospace; letter-spacing:0.22em;
-  font-size:13px; color:var(--ink); text-decoration:none; }
-.navlinks { display:flex; gap:20px; }
-.navlink { font-size:13px; color:var(--ash); text-decoration:none; }
-.navlink:hover, .navlink.on { color:var(--ink); }
 
 .pagehead { padding:48px 0 28px; }
 .pagehead h1 { font-size:26px; font-weight:500; letter-spacing:-0.015em; margin:0 0 6px; }
@@ -1702,6 +1629,86 @@ circle.hollow { fill:var(--panel); stroke:var(--ash); stroke-width:1; }
   .stats { grid-template-columns:repeat(2,1fr); }
   .charts { gap:24px; }
 }
+
+/* === overrides: these come last so they win over the base rules above === */
+/* --- the new-agent form ---------------------------------------------------------------
+   Label above the control, helper text below it, errors above the form and in words. No
+   placeholder-as-label anywhere: a placeholder disappears the moment someone starts typing. */
+.newform { max-width:760px; padding-bottom:64px; }
+.field { display:block; margin-bottom:32px; }
+.flabel { display:block; font-size:14px; color:var(--ink); margin-bottom:8px; }
+.finput { width:100%; padding:11px 12px; font:inherit; font-size:14px; color:var(--ink);
+  background:var(--panel); border:1px solid var(--rule); border-radius:0; }
+.finput:focus { outline:2px solid var(--ink); outline-offset:-1px; }
+.fhelp { margin:8px 0 0; font-size:12px; color:var(--graphite); max-width:65ch; }
+.choices { display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule); }
+.choice { display:flex; align-items:center; gap:10px; padding:12px 14px; background:var(--panel);
+  font-size:14px; cursor:pointer; }
+.choice:hover { background:var(--paper); }
+.extable { border:1px solid var(--rule); background:var(--rule); display:grid; gap:1px; }
+.exhead { display:grid; grid-template-columns:1fr 1fr; gap:1px; }
+.exhead span { background:var(--panel); padding:10px 12px; font-size:11px;
+  text-transform:uppercase; letter-spacing:0.1em; color:var(--ash); }
+.exrow { display:grid; grid-template-columns:1fr 1fr; gap:1px; }
+.exrow textarea { font:inherit; font-size:13px; color:var(--ink); padding:10px 12px;
+  border:0; background:var(--panel); resize:vertical; }
+.exrow textarea:focus { outline:2px solid var(--ink); outline-offset:-2px; }
+.fsubmit { display:inline-block; padding:12px 22px; font:inherit; font-size:14px;
+  background:var(--ink); color:var(--panel); border:1px solid var(--ink); cursor:pointer;
+  text-decoration:none; }
+.fsubmit:active { transform:translateY(1px); }
+/* "link" was already taken by the connector between node pills, whose rule sets
+   width:10px; a button wearing it collapsed to 46px with the label spilling out. */
+.fsubmit.quiet { background:var(--panel); color:var(--ink); }
+.formerror { max-width:65ch; margin:0 0 28px; padding:12px 14px; font-size:14px;
+  color:var(--clay); background:var(--panel); border:1px solid var(--clay); }
+.donebox { border:1px solid var(--rule); background:var(--panel); padding:24px;
+  margin-bottom:64px; }
+.filelist { list-style:none; margin:0 0 20px; padding:0; display:flex; flex-wrap:wrap; gap:14px;
+  font-size:12px; color:var(--ash); }
+.cmd { margin:0 0 20px; padding:16px; background:var(--paper); border:1px solid var(--rule);
+  font-family:"Geist Mono",ui-monospace,monospace; font-size:13px; overflow-x:auto; }
+.pagehead .fsubmit { margin-top:18px; }
+@media (max-width:700px) { .exhead, .exrow { grid-template-columns:1fr; } }
+
+/* --- product chrome: the bar that makes three pages one application ------------------- */
+.chrome { display:flex; align-items:center; gap:28px; padding:16px 48px;
+  border-bottom:1px solid var(--rule); background:var(--panel); }
+.chrome .mark { font-family:"Geist Mono",ui-monospace,monospace; letter-spacing:0.22em;
+  font-size:13px; color:var(--ink); text-decoration:none; }
+.navlinks { display:flex; gap:20px; }
+.navlink { font-size:13px; color:var(--ash); text-decoration:none; }
+.navlink:hover, .navlink.on { color:var(--ink); }
+
+/* --- the two reading levels ----------------------------------------------------------
+   Plain is the default and hides every internal identifier: run directories, candidate
+   ids, domain slugs, tool function names, the evaluator's filename and threshold. None of
+   it is removed from the document, so the switch is instant and the technical view is the
+   same page with the machinery shown rather than a different page. */
+body.plain .dslug,
+body.plain .cid,
+body.plain .strip,
+body.plain .techonly { display:none !important; }
+.switch { margin-left:auto; display:inline-flex; align-items:center; gap:8px; font-size:12px;
+  color:var(--ash); text-decoration:none; }
+.switch:hover { color:var(--ink); }
+.switch .knob { width:26px; height:14px; border:1px solid var(--rule); border-radius:999px;
+  position:relative; background:var(--paper); }
+.switch .knob::after { content:""; position:absolute; top:2px; left:2px; width:8px; height:8px;
+  border-radius:50%; background:var(--ash); transition:left .15s, background .15s; }
+.switch.on { color:var(--ink); }
+.switch.on .knob { border-color:var(--ink); }
+.switch.on .knob::after { left:14px; background:var(--ink); }
+
+.agent { grid-template-columns:minmax(180px,2fr) repeat(4, minmax(0,1fr)) auto; }
+.aopen { color:var(--ink); text-decoration:none; }
+.arun { padding:8px 14px; font:inherit; font-size:13px; background:var(--panel);
+  color:var(--ink); border:1px solid var(--ink); cursor:pointer; }
+.arun:hover { background:var(--ink); color:var(--panel); }
+.arun:active { transform:translateY(1px); }
+.agoing, .running { color:var(--orange); }
+.failed { color:var(--clay); }
+.afield.right { text-align:right; }
 """
 
 SCRIPT = """
@@ -1968,7 +1975,7 @@ def render_agents(state: AppState, level: str = "plain") -> str:
         '<div class="pagehead"><h1>Your agents</h1>'
         '<p>Each one was built from a goal, a set of tools and a way to score it. '
         "Open one to watch the round it is on.</p>"
-        '<a class="fsubmit link" href="/new">New agent</a></div>'
+        '<a class="fsubmit quiet" href="/new">New agent</a></div>'
         f'<form method="post" class="agents">{body}</form>'
         '<p class="note">A run takes a few minutes. This page refreshes itself.</p>'
         '<script>setTimeout(()=>location.reload(),10000)</script>',
@@ -1997,7 +2004,7 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
         body = (
             '<div class="pagehead"><h1>No such page</h1>'
             "<p>That address does not exist here.</p>"
-            '<a class="fsubmit link" href="/agents">Go to your agents</a></div>'
+            '<a class="fsubmit quiet" href="/agents">Go to your agents</a></div>'
         )
         return HTMLResponse(page("Anneal - not found", "", body), status_code=404)
 

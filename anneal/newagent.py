@@ -175,5 +175,5 @@ def done_body(path: Path) -> str:
         f'<div class="donebox"><ul class="filelist">{files}</ul>'
         f'<pre class="cmd">uv run anneal run {escape(str(path))} \\\n'
         "  --models specs/models.local.yaml</pre>"
-        '<a class="fsubmit link" href="/agents">Back to your agents</a></div>'
+        '<a class="fsubmit quiet" href="/agents">Back to your agents</a></div>'
     )
