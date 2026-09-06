@@ -1,0 +1,37 @@
+id: cand-02-switch_topology-i1
+topology: critic_loop
+step_budget: 16
+memory:
+  enabled: false
+  kind: none
+  top_k: 3
+nodes:
+- name: planner
+  role: planner
+  model_tier: frontier
+  system_prompt_ref: anneal/bugfix/planner@v3
+  tools: []
+  max_steps: 2
+  schema_ref: null
+- name: executor
+  role: executor
+  model_tier: mid
+  system_prompt_ref: anneal/bugfix/executor@v2
+  tools:
+  - read_file
+  - write_file
+  max_steps: 10
+  schema_ref: null
+- name: critic
+  role: critic
+  model_tier: mid
+  system_prompt_ref: anneal/bugfix/critic@v5
+  tools: []
+  max_steps: 4
+  schema_ref: null
+lineage:
+  parent: cand-02
+  iteration: 1
+  operator: switch_topology
+  ledger_issue: L-0001
+tool_overrides: {}

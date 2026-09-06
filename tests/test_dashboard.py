@@ -189,6 +189,27 @@ def test_ledger_accepts_dict_wrapper(tmp_path: Path) -> None:
     assert [row["id"] for row in dashboard.load_ledger(path)] == ["L-0001", "L-0002"]
 
 
+def test_ledgers_aggregate_per_domain_files_when_no_explicit_ledger_exists(
+    tmp_path: Path,
+) -> None:
+    """The run loop writes runs/<domain>/ledger.json; the dashboard must find those."""
+    runs = tmp_path / "runs"
+    for domain, issues in (("airline", LEDGER[:1]), ("bugfix", LEDGER[1:])):
+        (runs / domain).mkdir(parents=True)
+        (runs / domain / "ledger.json").write_text(json.dumps(issues), encoding="utf-8")
+    rows = dashboard.load_ledgers(runs, tmp_path / "nonexistent-ledger.json")
+    assert [(r["domain"], r["id"]) for r in rows] == [
+        ("airline", "L-0001"),
+        ("bugfix", "L-0002"),
+    ]
+    # an explicit file that exists still wins
+    explicit = tmp_path / "ledger.json"
+    explicit.write_text(json.dumps(LEDGER), encoding="utf-8")
+    rows = dashboard.load_ledgers(runs, explicit)
+    assert [r["id"] for r in rows] == ["L-0001", "L-0002"]
+    assert all(r["domain"] == tmp_path.name for r in rows)
+
+
 REAL_SUMMARY = {
     "domain": "airline",
     "iteration": 1,

@@ -1,0 +1,73 @@
+{
+  "budget_usd": 100.0,
+  "candidate_id": null,
+  "cost_usd": null,
+  "decision": "no_candidate",
+  "domain": "invoices",
+  "domain_path": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/domains/invoices",
+  "gen_gap": null,
+  "hard_fails": null,
+  "incumbent_id": "cand-01",
+  "issue": null,
+  "iteration": 0,
+  "mean_score": null,
+  "operator": null,
+  "p95_latency_ms": null,
+  "p_value": null,
+  "pass3_rate": null,
+  "reason": "every ranked issue has exhausted its implemented operators",
+  "search": {
+    "cand-01": {
+      "cost_by_node": {
+        "executor": 0.511512
+      },
+      "cost_per_task": 0.034101,
+      "cost_usd": 0.511512,
+      "hard_fails": 0,
+      "mean_score": 1.0,
+      "n_tasks": 15,
+      "p95_latency_ms": 8756.5,
+      "pass_rate": 1.0,
+      "tokens_in": 137594,
+      "tokens_out": 6582
+    },
+    "cand-02": {
+      "cost_by_node": {
+        "executor": 0.670464,
+        "planner": 1.020745
+      },
+      "cost_per_task": 0.112747,
+      "cost_usd": 1.691209,
+      "hard_fails": 0,
+      "mean_score": 1.0,
+      "n_tasks": 15,
+      "p95_latency_ms": 38710.5,
+      "pass_rate": 1.0,
+      "tokens_in": 261417,
+      "tokens_out": 33244
+    },
+    "cand-03": {
+      "cost_by_node": {
+        "critic": 0.066447,
+        "executor": 0.697443
+      },
+      "cost_per_task": 0.050926,
+      "cost_usd": 0.76389,
+      "hard_fails": 0,
+      "mean_score": 1.0,
+      "n_tasks": 15,
+      "p95_latency_ms": 26872.6,
+      "pass_rate": 1.0,
+      "tokens_in": 229428,
+      "tokens_out": 13900
+    }
+  },
+  "specs": {
+    "cand-01": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/invoices/0/cand-01.yaml",
+    "cand-02": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/invoices/0/cand-02.yaml",
+    "cand-03": "/Users/tanushairc/Documents/Projects/Hackathons/Syndicate-Maximor/anneul/runs/invoices/0/cand-03.yaml"
+  },
+  "spend_usd": 2.966611,
+  "stop_reason": "no_candidate",
+  "winner_id": "cand-01"
+}
