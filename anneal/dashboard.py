@@ -1,11 +1,12 @@
-"""Single-page FastAPI + HTMX dashboard over ``runs/``, ``ledger.json`` and the credit balance.
+"""The Anneal console: a single server-rendered page showing the loop as it runs.
 
 Everything rendered here is read from disk: ``runs/<domain>/<iter>/summary.json`` for the
 iteration curves, ``ledger.json`` for the issue table and ``runs/<domain>/anneal/pareto.json``
 for the Pareto scatter. No number is ever hardcoded; a missing file renders an empty state.
 
 Charts are plain inline SVG built server-side, so the page is fully readable with JavaScript
-disabled. HTMX is used only to poll the four fragments; without it the page is static.
+disabled. One short inline script re-fetches the fragments every 10s; there is no CDN, no
+framework and no build step. Presentation follows ``.stitch/DESIGN.md``.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+import yaml
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
@@ -38,7 +40,17 @@ METRICS: tuple[tuple[str, str, str], ...] = (
     ("p95_latency_ms", "p95 latency (ms)", "{:.0f}"),
 )
 
-LEDGER_COLUMNS = ("domain", "id", "class", "node", "count", "status", "operators_tried")
+# Ledger table: the class, how bad it is, how often it fired, and the operator Mutate would
+# reach for next. Severity and the operator ladder come from specs/failure_taxonomy.yaml.
+LEDGER_COLUMNS = (
+    "domain", "id", "class", "node", "severity", "count", "status", "next operator", "tried",
+)
+
+TAXONOMY_PATH = Path(__file__).resolve().parent.parent / "specs" / "failure_taxonomy.yaml"
+
+STAGES = ("Architect", "Run", "Diagnose", "Mutate", "Gate", "Anneal")
+
+DASH = "\u2014"  # every absent value renders as this, never as a zero
 
 
 @dataclass(frozen=True)
@@ -237,6 +249,224 @@ def credit_balance() -> float | None:
     return None
 
 
+
+# --- the current iteration ----------------------------------------------------------------
+
+
+def _read_yaml(path: Path) -> dict[str, Any] | None:
+    """Parse a candidate spec; malformed yaml is logged and skipped, exactly like _read_json."""
+    if not path.is_file():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        event = {"event": "dashboard_bad_yaml", "path": str(path), "error": str(exc)}
+        log.warning(json.dumps(event))
+        return None
+    return data if isinstance(data, dict) else None
+
+
+_TAXONOMY: dict[str, dict[str, Any]] = {}
+
+
+def taxonomy() -> dict[str, dict[str, Any]]:
+    """``{class_id: {severity, operators}}`` from specs/failure_taxonomy.yaml, read once.
+
+    A class the taxonomy does not know still renders — its severity and next operator are
+    em-dashes rather than a guess.
+    """
+    if _TAXONOMY:
+        return _TAXONOMY
+    data = _read_yaml(TAXONOMY_PATH) or {}
+    for row in data.get("classes") or []:
+        if isinstance(row, dict) and row.get("id"):
+            _TAXONOMY[str(row["id"])] = row
+    return _TAXONOMY
+
+
+def list_domains(runs_dir: Path | str) -> list[str]:
+    """Domains that have at least one iteration summary under ``runs/``."""
+    root = Path(runs_dir)
+    if not root.is_dir():
+        return []
+    return [d.name for d in sorted(root.iterdir()) if d.is_dir() and any(d.glob("*/summary.json"))]
+
+
+def _iteration_dirs(runs_dir: Path | str, domain: str) -> list[Path]:
+    root = Path(runs_dir) / domain
+    if not root.is_dir():
+        return []
+    return [p.parent for p in sorted(root.glob("*/summary.json"), key=_iteration_sort_key)]
+
+
+LIVE_KEYS = (
+    "task_id", "score", "hard_fail", "hit_step_budget", "schema_error", "latency_ms", "trace_id",
+)
+
+
+def load_live_rows(iter_dir: Path, candidate_id: str | None) -> tuple[str | None, list[dict]]:
+    """Per-task rows for one candidate's search run: ``(candidate_id, rows)``.
+
+    Only the ``search`` split is ever opened here; the reserved split belongs to the gate and
+    this module must never read it. ``output`` and ``trace`` are dropped on the way in — the
+    console shows a score, a latency and a status, and those payloads are megabytes.
+    """
+    files = sorted(iter_dir.glob(f"{candidate_id}.search.s*.jsonl")) if candidate_id else []
+    if not files:
+        files = sorted(iter_dir.glob("*.search.s*.jsonl"))
+    if not files:
+        return None, []
+    path = files[0]
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        event = {"event": "dashboard_bad_jsonl", "path": str(path), "error": str(exc)}
+        log.warning(json.dumps(event))
+        return None, []
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            log.warning(json.dumps({"event": "dashboard_bad_jsonl_row", "path": str(path)}))
+            continue
+        if isinstance(row, dict):
+            rows.append({key: row.get(key) for key in LIVE_KEYS})
+    return path.name.split(".search.")[0], rows
+
+
+@dataclass(frozen=True)
+class Iteration:
+    """Everything the console shows for one domain's latest iteration."""
+
+    domain: str
+    path: Path | None
+    label: str
+    summary: dict[str, Any]
+    gate: dict[str, Any]
+    specs: dict[str, dict[str, Any]]
+    live_candidate: str | None
+    live: list[dict[str, Any]]
+    has_pareto: bool
+
+    @property
+    def search(self) -> dict[str, dict[str, Any]]:
+        block = self.summary.get("search")
+        return block if isinstance(block, dict) else {}
+
+
+def _find_spec(runs_dir: Path | str, domain: str, candidate_id: str) -> dict[str, Any] | None:
+    """The candidate's spec yaml, newest iteration first.
+
+    ``summary["specs"]`` holds paths relative to whatever directory the run was launched
+    from, so they are not resolvable here; globbing the runs tree is.
+    """
+    root = Path(runs_dir) / domain
+    for parent in [*reversed(_iteration_dirs(runs_dir, domain)), root / "anneal", root]:
+        spec = _read_yaml(parent / f"{candidate_id}.yaml")
+        if spec is not None:
+            return spec
+    return None
+
+
+def load_iteration(runs_dir: Path | str, domain: str) -> Iteration:
+    """The latest iteration for ``domain``: summary, gate, specs and the live run rows."""
+    dirs = _iteration_dirs(runs_dir, domain)
+    path = dirs[-1] if dirs else None
+    summary = (_read_json(path / "summary.json") if path else None) or {}
+    summary = summary if isinstance(summary, dict) else {}
+    gate = (_read_json(path / "gate.json") if path else None) or {}
+    gate = gate if isinstance(gate, dict) else {}
+    ids = [str(cid) for cid in (summary.get("search") or {})] if isinstance(
+        summary.get("search"), dict
+    ) else []
+    specs = {cid: spec for cid in ids if (spec := _find_spec(runs_dir, domain, cid)) is not None}
+    challenger = summary.get("candidate_id") or summary.get("winner_id")
+    live_id, live = load_live_rows(path, str(challenger) if challenger else None) if path else (
+        None, [],
+    )
+    return Iteration(
+        domain=domain,
+        path=path,
+        label=str(summary.get("iteration", path.name if path else DASH)),
+        summary=summary,
+        gate=gate,
+        specs=specs,
+        live_candidate=live_id,
+        live=live,
+        has_pareto=(Path(runs_dir) / domain / "anneal" / "pareto.json").is_file(),
+    )
+
+
+def pipeline_stages(
+    it: Iteration, issues: list[dict[str, Any]]
+) -> list[tuple[str, str, str]]:
+    """``[(stage, state, detail)]`` derived only from the artefacts that exist on disk.
+
+    A stage is ``done`` when its artefact is there, the first stage without one is ``active``
+    and everything after it is ``todo``. Nothing here is hardcoded to an iteration number.
+    """
+    specs_on_disk = len(list(it.path.glob("cand-*.yaml"))) if it.path else 0
+    # only this domain's own issues count: the ledger panel may fall back to every domain's
+    # rows, but a stage that says "done" must point at an artefact in this domain's directory.
+    mine = [row for row in issues if row.get("domain") in (None, it.domain)]
+    issue = it.summary.get("issue")
+    diagnosed = f"{len(mine)} issues" if mine else (
+        str(issue.get("class")) if isinstance(issue, dict) and issue.get("class") else DASH
+    )
+    search = it.search
+    facts: list[tuple[str, bool, str]] = [
+        ("Architect", specs_on_disk > 0, f"{specs_on_disk} specs" if specs_on_disk else DASH),
+        ("Run", bool(search), f"{len(search)} candidates" if search else DASH),
+        ("Diagnose", diagnosed != DASH, diagnosed),
+        ("Mutate", bool(it.summary.get("operator")), str(it.summary.get("operator") or DASH)),
+        ("Gate", bool(it.gate), str(it.gate.get("decision") or DASH) if it.gate else DASH),
+        ("Anneal", it.has_pareto, "pareto.json" if it.has_pareto else DASH),
+    ]
+    stages: list[tuple[str, str, str]] = []
+    active_taken = False
+    for name, present, detail in facts:
+        if present:
+            state = "done"
+        elif not active_taken:
+            state, active_taken = "active", True
+        else:
+            state = "todo"
+        stages.append((name, state, detail))
+    return stages
+
+
+# --- value formatting ---------------------------------------------------------------------
+
+
+def num(value: Any, fmt: str = "{:.3f}") -> str:
+    """A number as the console shows it, or an em-dash. Never a stand-in zero."""
+    if value is None or isinstance(value, bool) or not isinstance(value, int | float):
+        return DASH
+    return fmt.format(value)
+
+
+def txt(value: Any) -> str:
+    """A string as the console shows it, escaped, or an em-dash when it is absent."""
+    if value is None or value == "":
+        return DASH
+    return escape(str(value))
+
+
+def _panel(pid: str, title: str, body: str, meta: str = "") -> str:
+    return (
+        f'<section id="{pid}" class="panel"><header class="ph"><h2>{escape(title)}</h2>'
+        f'<span class="meta mono">{meta}</span></header>{body}</section>'
+    )
+
+
+def _note(text: str) -> str:
+    """An empty state: a composed line saying what happens next, never the bare word."""
+    return f'<p class="note">{text}</p>'
+
+
 # --- svg ----------------------------------------------------------------------------------
 
 
@@ -251,7 +481,10 @@ def line_chart(points: list[Point], metric: str, title: str, fmt: str) -> str:
     pairs = [(p.label, p.get(metric)) for p in points]
     known = [(label, v) for label, v in pairs if v is not None]
     if not known:
-        return f'<div class="chart empty"><h4>{escape(title)}</h4><p>no data</p></div>'
+        return (
+            f'<div class="chart empty"><h4>{escape(title)}</h4>'
+            f'<p class="note">no {escape(title)} recorded in these summaries</p></div>'
+        )
     w, h, pad = 260.0, 130.0, 26.0
     values = [v for _, v in known]
     lo, hi = min(values), max(values)
@@ -274,141 +507,531 @@ def line_chart(points: list[Point], metric: str, title: str, fmt: str) -> str:
         f'<text x="{pad}" y="{pad / 2 - 2}" class="tick">{escape(fmt.format(hi))}</text>'
         f'<text x="{pad}" y="{h - pad + 12}" class="tick">{escape(fmt.format(lo))}</text>'
         f"</svg>"
-        f'<p class="latest">latest {escape(fmt.format(known[-1][1]))} @ iter '
-        f"{escape(known[-1][0])}</p></div>"
+        f'<p class="latest">latest <b class="mono">{escape(fmt.format(known[-1][1]))}</b> @ iter '
+        f'<b class="mono">{escape(known[-1][0])}</b></p></div>'
     )
 
 
 def pareto_chart(points: list[Point]) -> str:
-    """Score against $/task, point radius by p95 latency."""
+    """Score against $/task: dominated points dim, the front connected, radius by p95.
+
+    Nothing with an ``r="`` attribute may precede the marks in this SVG — the radius test
+    reads them positionally.
+    """
     usable = [p for p in points if p.score is not None and p.cost_per_task is not None]
     if not usable:
-        return '<div class="chart empty"><h4>Pareto</h4><p>no pareto.json yet</p></div>'
-    w, h, pad = 420.0, 240.0, 40.0
+        return (
+            '<div class="chart empty"><h4>Pareto</h4>'
+            '<p class="note">No pareto.json yet — run <code>anneal anneal</code> to cool the '
+            "winner down a model tier at a time.</p></div>"
+        )
+    w, h, pad = 720.0, 260.0, 44.0
     costs = [p.cost_per_task or 0.0 for p in usable]
     scores = [p.score or 0.0 for p in usable]
     p95s = [p.p95_latency_ms for p in usable if p.p95_latency_ms is not None]
     lo_p, hi_p = (min(p95s), max(p95s)) if p95s else (0.0, 0.0)
-    marks = []
+    marks, front_xy = [], []
     for point in usable:
         x = _scale(point.cost_per_task or 0.0, min(costs), max(costs), pad, w - pad)
         y = _scale(point.score or 0.0, min(scores), max(scores), h - pad, pad)
         r = 5.0 if point.p95_latency_ms is None else _scale(point.p95_latency_ms, lo_p, hi_p, 4, 13)
         p95_text = "n/a" if point.p95_latency_ms is None else f"{point.p95_latency_ms:.0f}ms"
         on_front = bool(point.extra.get("on_front"))
+        if on_front:
+            front_xy.append((point.cost_per_task or 0.0, x, y))
         marks.append(
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" '
             f'class="pt{" front" if on_front else ""}"><title>'
             f"{escape(point.label)}{' (front)' if on_front else ''}: score {point.score:.3f}, "
             f"${point.cost_per_task:.4f}/task, p95 {escape(p95_text)}</title></circle>"
         )
+    line = ""
+    if len(front_xy) > 1:
+        pts = " ".join(f"{x:.1f},{y:.1f}" for _, x, y in sorted(front_xy))
+        line = f'<polyline points="{pts}" class="front-line"/>'
     return (
-        '<div class="chart wide">'
-        "<h4>Pareto — score vs $/task (radius = p95, filled = on the front)</h4>"
+        '<div class="chart wide"><h4>score vs $/task &mdash; point size is p95, '
+        "filled points are the front</h4>"
         f'<svg viewBox="0 0 {w:.0f} {h:.0f}" role="img" aria-label="Pareto scatter">'
         f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad}" y2="{h - pad}" class="axis"/>'
         f'<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{h - pad}" class="axis"/>'
-        f'<text x="{pad}" y="{pad - 8}" class="tick">score {max(scores):.3f}</text>'
-        f'<text x="{pad}" y="{h - pad + 14}" class="tick">${min(costs):.4f}</text>'
-        f'<text x="{w - pad - 50}" y="{h - pad + 14}" class="tick">${max(costs):.4f}</text>'
-        f"{''.join(marks)}</svg></div>"
+        f'<text x="{pad}" y="{pad - 10}" class="tick">score {max(scores):.3f}</text>'
+        f'<text x="{pad}" y="{h - pad + 16}" class="tick">${min(costs):.4f}</text>'
+        f'<text x="{w - pad - 60}" y="{h - pad + 16}" class="tick">${max(costs):.4f}</text>'
+        f"{''.join(marks)}{line}</svg></div>"
     )
 
 
-# --- fragments ----------------------------------------------------------------------------
+# --- panels ---------------------------------------------------------------------------------
+
+
+def render_rail(stages: list[tuple[str, str, str]]) -> str:
+    """The six loop stages. State comes from the artefacts on disk, never from a constant."""
+    items = "".join(
+        f'<li class="stage" data-state="{state}" style="--i:{i}">'
+        f'<span class="dot"></span><span class="sname">{escape(name)}</span>'
+        f'<span class="sdetail mono">{escape(detail)}</span></li>'
+        for i, (name, state, detail) in enumerate(stages)
+    )
+    return f'<nav id="rail" class="rail"><ol>{items}</ol></nav>'
+
+
+def _node_pills(spec: dict[str, Any] | None) -> str:
+    """The topology as connected node pills, each carrying its model tier badge."""
+    nodes = (spec or {}).get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return f'<span class="pills"><span class="pill mono absent">{DASH}</span></span>'
+    pills = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        name = txt(node.get("name") or node.get("role"))
+        tier = node.get("model_tier")
+        cls = "tier" if tier else "tier absent"
+        pills.append(f'<span class="pill mono">{name}<b class="{cls}">{txt(tier)}</b></span>')
+    return '<span class="pills">' + '<i class="link"></i>'.join(pills) + "</span>"
+
+
+def _roles(it: Iteration, cid: str) -> str:
+    summary = it.summary
+    chips = []
+    if cid == summary.get("incumbent_id"):
+        chips.append('<span class="chip">incumbent</span>')
+    if cid == summary.get("candidate_id"):
+        decision = str(summary.get("decision") or "")
+        cls = {"promote": "chip ok", "reject": "chip bad"}.get(decision, "chip")
+        chips.append('<span class="chip">challenger</span>')
+        if decision:
+            chips.append(f'<span class="{cls}">{escape(decision)}</span>')
+    if cid == summary.get("winner_id"):
+        chips.append('<span class="chip ok">winner</span>')
+    return "".join(chips)
+
+
+def _candidate_row(it: Iteration, cid: str, metrics: dict[str, Any], index: int) -> str:
+    score = _num(metrics, SCORE_KEYS)
+    bar = "" if score is None else f'<i style="width:{max(0.0, min(1.0, score)) * 100:.1f}%"></i>'
+    verdict = ""
+    if cid == it.summary.get("candidate_id"):
+        verdict = {"promote": " promote", "reject": " reject"}.get(
+            str(it.summary.get("decision") or ""), ""
+        )
+    spec = it.specs.get(cid)
+    return (
+        f'<tr class="crow{verdict}" style="--i:{index}">'
+        f'<td class="mono id">{escape(cid)}{_roles(it, cid)}</td>'
+        f'<td class="topo"><span class="mono topo-name">{txt((spec or {}).get("topology"))}</span>'
+        f"{_node_pills(spec)}</td>"
+        f'<td class="scorecell"><span class="bar">{bar}</span>'
+        f'<span class="mono">{num(score)}</span></td>'
+        f'<td class="mono num">{num(_num(metrics, COST_KEYS), "${:.4f}")}</td>'
+        f'<td class="mono num">{num(_num(metrics, P95_KEYS), "{:.0f}ms")}</td>'
+        f'<td class="mono num">{num(metrics.get("hard_fails"), "{:.0f}")}</td></tr>'
+    )
+
+
+def render_candidates(it: Iteration) -> str:
+    """One row per candidate scored in this iteration, read from summary["search"]."""
+    search = it.search
+    if not search:
+        body = _note(
+            "No candidates scored yet — <code>anneal run domains/&lt;name&gt;</code> asks the "
+            "architect for specs and fills this in."
+        )
+    else:
+        rows = "".join(
+            _candidate_row(it, cid, metrics if isinstance(metrics, dict) else {}, i)
+            for i, (cid, metrics) in enumerate(sorted(search.items()))
+        )
+        body = (
+            '<table class="tbl"><thead><tr><th>candidate</th><th>topology</th><th>score</th>'
+            "<th>$/task</th><th>p95</th><th>hard fails</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+    meta = f"{escape(it.domain)} · iter {escape(it.label)}"
+    return _panel("candidates", "Candidates", body, meta)
+
+
+def _pips(score: Any) -> str:
+    if score is None or isinstance(score, bool) or not isinstance(score, int | float):
+        return f'<span class="pips"><span class="mono absent">{DASH}</span></span>'
+    filled = round(max(0.0, min(1.0, float(score))) * 5)
+    dots = "".join(f'<i class="{"on" if i < filled else ""}"></i>' for i in range(5))
+    return f'<span class="pips">{dots}</span>'
+
+
+def _status(row: dict[str, Any]) -> str:
+    flags = [
+        ("hard_fail", "chip bad", "hard fail"),
+        ("hit_step_budget", "chip warn", "step budget"),
+        ("schema_error", "chip warn", "schema"),
+    ]
+    chips = [f'<span class="{cls}">{label}</span>' for key, cls, label in flags if row.get(key)]
+    return "".join(chips) or f'<span class="mono absent">{DASH}</span>'
+
+
+def render_live(it: Iteration) -> str:
+    """Per-task rows from the candidate's search jsonl; hard-fail rows carry a clay border."""
+    if not it.live:
+        body = _note(
+            "No task rows on disk for this iteration yet — the runner writes one line per "
+            "task as it finishes."
+        )
+    else:
+        rows = "".join(
+            f'<tr class="lrow{" bad" if row.get("hard_fail") else ""}" style="--i:{i}">'
+            f'<td class="mono">{txt(row.get("task_id"))}</td>'
+            f"<td>{_pips(row.get('score'))}</td>"
+            f'<td class="mono num">{num(row.get("score"))}</td>'
+            f'<td class="mono num">{num(row.get("latency_ms"), "{:.0f}ms")}</td>'
+            f'<td class="st">{_status(row)}</td></tr>'
+            for i, row in enumerate(it.live[:60])
+        )
+        body = (
+            '<div class="scroll"><table class="tbl"><thead><tr><th>task</th><th>score</th>'
+            "<th></th><th>latency</th><th>status</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
+        )
+    hard = sum(1 for row in it.live if row.get("hard_fail"))
+    meta = (
+        f"{escape(it.live_candidate or DASH)} · {len(it.live)} tasks · {hard} hard fails"
+        if it.live
+        else escape(DASH)
+    )
+    return _panel("live", "Live run", body, meta)
+
+
+def _next_operator(row: dict[str, Any]) -> str:
+    """The operator Mutate would reach for next: first in the class ladder not yet tried."""
+    entry = taxonomy().get(str(row.get("class")))
+    operators = (entry or {}).get("operators")
+    tried = row.get("operators_tried")
+    tried = tried if isinstance(tried, list) else []
+    if not isinstance(operators, list) or not operators:
+        return DASH  # a class the taxonomy does not carry; guessing an operator would be a lie
+    remaining = [op for op in operators if op not in tried]
+    return escape(str(remaining[0])) if remaining else "all tried"
+
+
+def _severity(row: dict[str, Any]) -> Any:
+    return (taxonomy().get(str(row.get("class"))) or {}).get("severity")
+
+
+def _rank(row: dict[str, Any]) -> float:
+    """severity x count, so the class costing the most accuracy sits at the top."""
+    count = row.get("count")
+    count = float(count) if isinstance(count, int | float) and not isinstance(count, bool) else 0.0
+    severity = _severity(row)
+    severity = float(severity) if isinstance(severity, int | float) else 0.0
+    return severity * count
+
+
+def render_ledger(ledger: list[dict[str, Any]]) -> str:
+    """Failure classes ranked by severity x count, each pointing at its next operator."""
+    if not ledger:
+        return _panel(
+            "ledger",
+            "Failure ledger",
+            _note("Ledger is empty — no failures have been diagnosed from traces yet."),
+        )
+    ranked = sorted(ledger, key=_rank, reverse=True)
+    head = "".join(f"<th>{escape(c)}</th>" for c in LEDGER_COLUMNS[2:])
+    rows = "".join(
+        f'<tr class="lgrow" style="--i:{i}" title="{escape(str(row.get("id") or ""))} · '
+        f'{escape(str(row.get("domain") or ""))}">'
+        f'<td class="mono cls">{txt(row.get("class"))}</td>'
+        f'<td class="mono">{txt(row.get("node"))}</td>'
+        f'<td class="mono num">{num(_severity(row), "{:.0f}")}</td>'
+        f'<td class="mono num">{txt(row.get("count"))}</td>'
+        f'<td class="mono">{txt(row.get("status"))}</td>'
+        f'<td class="mono op">&rarr; {_next_operator(row)}</td>'
+        f'<td class="mono tried">{txt(", ".join(str(o) for o in row.get("operators_tried") or []))}'
+        f"</td></tr>"
+        for i, row in enumerate(ranked)
+    )
+    body = f'<table class="tbl"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table>'
+    return _panel("ledger", "Failure ledger", body, f"{len(ledger)} issues")
+
+
+GATE_SIDES = (
+    ("mean_score", "score", "{:.3f}"),
+    ("pass3_rate", "pass^3", "{:.3f}"),
+    ("hard_fails", "hard fails", "{:.0f}"),
+    ("gen_gap", "gen gap", "{:+.3f}"),
+)
+
+GATE_STATS = (
+    ("p", "p", "{:.3f}"),
+    ("alpha", "alpha", "{:.2f}"),
+    ("wins", "wins", "{:.0f}"),
+    ("losses", "losses", "{:.0f}"),
+    ("min_discordant_to_promote", "need", "{:.0f}"),
+)
+
+
+def _gate_side(gate: dict[str, Any], key: str) -> dict[str, Any]:
+    block = gate.get(key)
+    return block if isinstance(block, dict) else {}
+
+
+def render_gate(gate: dict[str, Any]) -> str:
+    """The verdict, the paired-test grid and the one line the gate wrote to explain itself."""
+    if not gate:
+        return _panel(
+            "gate",
+            "Gate decision",
+            _note("No gate.json for this iteration — the gate runs once a mutation exists."),
+        )
+    decision = str(gate.get("decision") or "")
+    cls = {"promote": "verdict ok", "reject": "verdict bad"}.get(decision, "verdict")
+    candidate, incumbent = _gate_side(gate, "candidate"), _gate_side(gate, "incumbent")
+    sides = "".join(
+        f'<tr><th>{escape(label)}</th><td class="mono num">{num(incumbent.get(key), fmt)}</td>'
+        f'<td class="mono num">{num(candidate.get(key), fmt)}</td></tr>'
+        for key, label, fmt in GATE_SIDES
+    )
+    stats = "".join(
+        f'<div class="stat"><span class="k">{escape(label)}</span>'
+        f'<span class="v mono">{num(gate.get(key), fmt)}</span></div>'
+        for key, label, fmt in GATE_STATS
+    )
+    if gate.get("underpowered"):
+        stats += (
+            '<div class="stat"><span class="k">power</span>'
+            '<span class="v mono">underpowered</span></div>'
+        )
+    body = (
+        f'<p class="{cls}">{txt(decision).upper()}</p>'
+        f'<table class="tbl gate"><thead><tr><th></th><th>incumbent</th><th>candidate</th></tr>'
+        f"</thead><tbody>{sides}</tbody></table>"
+        f'<div class="stats">{stats}</div>'
+        f'<p class="reason mono">{txt(gate.get("reason"))}</p>'
+    )
+    ids = f'{escape(str(_gate_side(gate, "candidate").get("candidate_id") or DASH))}'
+    return _panel("gate", "Gate decision", body, ids)
+
+
+def render_pareto(fronts: dict[str, list[Point]]) -> str:
+    if not fronts:
+        return _panel(
+            "pareto",
+            "Anneal",
+            _note(
+                "No pareto.json yet — <code>anneal anneal</code> walks the winner down the "
+                "model ladder and writes the front here."
+            ),
+        )
+    body = "".join(
+        f'<div class="pblock"><h3 class="mono">{escape(d)}</h3>{pareto_chart(pts)}</div>'
+        for d, pts in fronts.items()
+    )
+    return _panel("pareto", "Anneal", body, "cost / score front")
 
 
 def _curves_for(domain: str, points: list[Point]) -> str:
     charts = "".join(line_chart(points, key, title, fmt) for key, title, fmt in METRICS)
     return (
-        f'<section class="domain"><h3>{escape(domain)}</h3>'
-        f'<div class="row">{charts}</div></section>'
+        f'<div class="pblock"><h3 class="mono">{escape(domain)}</h3>'
+        f'<div class="charts">{charts}</div></div>'
     )
 
 
 def render_curves(summaries: dict[str, list[Point]]) -> str:
     if not summaries:
-        return (
-            '<div id="curves" class="card"><h2>Iterations</h2>'
-            '<p class="empty">No runs yet. Run <code>uv run anneal run domains/&lt;name&gt;</code>'
-            " and this fills in.</p></div>"
+        return _panel(
+            "curves",
+            "Iterations",
+            _note(
+                "No runs yet — <code>uv run anneal run domains/&lt;name&gt;</code> and this "
+                "fills in one point per iteration."
+            ),
         )
     body = "".join(_curves_for(d, pts) for d, pts in summaries.items())
-    return f'<div id="curves" class="card"><h2>Iterations</h2>{body}</div>'
-
-
-def _cell(row: dict[str, Any], column: str) -> str:
-    value = row.get(column, "")
-    if isinstance(value, list):
-        value = ", ".join(str(v) for v in value)
-    return escape(str(value))
-
-
-def render_ledger(ledger: list[dict[str, Any]]) -> str:
-    if not ledger:
-        return (
-            '<div id="ledger" class="card"><h2>Ledger</h2>'
-            '<p class="empty">Ledger is empty.</p></div>'
-        )
-    head = "".join(f"<th>{escape(c)}</th>" for c in LEDGER_COLUMNS)
-    rows = "".join(
-        "<tr>" + "".join(f"<td>{_cell(row, c)}</td>" for c in LEDGER_COLUMNS) + "</tr>"
-        for row in ledger
-    )
-    return (
-        f'<div id="ledger" class="card"><h2>Ledger <span class="muted">{len(ledger)} issues</span>'
-        f"</h2><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>"
-    )
-
-
-def render_pareto(fronts: dict[str, list[Point]]) -> str:
-    if not fronts:
-        return (
-            '<div id="pareto" class="card"><h2>Pareto</h2>'
-            '<p class="empty">No pareto.json yet — run <code>anneal anneal</code>.</p></div>'
-        )
-    body = "".join(
-        f'<section class="domain"><h3>{escape(d)}</h3>{pareto_chart(pts)}</section>'
-        for d, pts in fronts.items()
-    )
-    return f'<div id="pareto" class="card"><h2>Pareto</h2>{body}</div>'
+    iters = sum(len(pts) for pts in summaries.values())
+    return _panel("curves", "Iterations", body, f"{iters} summaries")
 
 
 def render_balance(balance: float | None) -> str:
-    text = "—" if balance is None else f"${balance:,.2f}"
+    """The Dodo credit balance, or an em-dash when billing has not cached one."""
+    text = DASH if balance is None else f"${balance:,.2f}"
     return (
-        f'<div id="balance" class="card balance"><h2>Dodo credits</h2>'
-        f'<p class="big">{escape(text)}</p></div>'
+        '<div id="balance" class="meter"><span class="k">credits</span>'
+        f'<span class="v mono">{escape(text)}</span></div>'
+    )
+
+
+def render_topbar(domain: str | None, domains: list[str], it: Iteration | None) -> str:
+    """Wordmark, the domains present in runs/, the budget meter and the credit balance."""
+    if domains:
+        links = "".join(
+            f'<a class="dom mono{" on" if d == domain else ""}" href="?domain={escape(d)}">'
+            f"{escape(d)}</a>"
+            for d in domains
+        )
+    else:
+        links = f'<span class="dom mono absent">{DASH}</span>'
+    summary = it.summary if it else {}
+    spend, budget = summary.get("spend_usd"), summary.get("budget_usd")
+    used = 0.0
+    if isinstance(spend, int | float) and isinstance(budget, int | float) and budget:
+        used = max(0.0, min(1.0, float(spend) / float(budget)))
+    meter = (
+        '<div class="meter"><span class="k">budget</span>'
+        f'<span class="v mono">{num(spend, "${:.2f}")} / {num(budget, "${:.2f}")}</span>'
+        f'<span class="bar wide"><i style="width:{used * 100:.1f}%"></i></span></div>'
+    )
+    return (
+        '<header id="topbar" class="topbar"><a class="mark" href="/">ANNEAL</a>'
+        f'<nav class="doms">{links}</nav>'
+        f'<div class="meters">{meter}{render_balance(credit_balance())}</div></header>'
     )
 
 
 CSS = """
-:root { color-scheme: dark; }
-body { margin:0; padding:24px; background:#0f1115; color:#e8e8ea;
-  font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
-h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:0 0 12px; color:#9fb3ff; }
-h3 { font-size:13px; margin:12px 0 6px; color:#cfd3dc; } h4 { font-size:11px; margin:0 0 4px;
-  color:#8b93a7; font-weight:normal; }
-.card { background:#161923; border:1px solid #242938; border-radius:10px; padding:16px;
-  margin-bottom:16px; }
-.row { display:flex; flex-wrap:wrap; gap:16px; }
-.chart { background:#11141c; border:1px solid #222736; border-radius:8px; padding:8px;
-  width:280px; }
-.chart.wide { width:440px; } .chart.empty p { color:#5d6478; margin:24px 0; text-align:center; }
-svg { width:100%; height:auto; } .axis { stroke:#39405a; stroke-width:1; }
-.series { fill:none; stroke:#7aa2ff; stroke-width:2; } circle { fill:#7aa2ff; }
-.pt { fill:#2c5f4e; fill-opacity:.8; stroke:#59d3a8; }
-.pt.front { fill:#59d3a8; }
-.tick { fill:#6b7389; font-size:9px; } .latest { margin:4px 0 0; color:#cfd3dc; font-size:11px; }
-table { border-collapse:collapse; width:100%; } th,td { text-align:left; padding:6px 10px;
-  border-bottom:1px solid #222736; font-size:12px; } th { color:#8b93a7; font-weight:normal; }
-.muted { color:#6b7389; } .empty { color:#6b7389; }
-.balance .big { font-size:28px; margin:0; color:#59d3a8; }
-.grid { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
-.grid > * { flex:1 1 320px; } code { color:#9fb3ff; }
+/* Tokens from .stitch/DESIGN.md: Paper canvas, Ink text, one orange accent, 1px Rule
+   separation and no shadows anywhere. Orange is spent on the active stage dot and the
+   measured chart series only. */
+:root { --paper:#F7F7F5; --panel:#FFFFFF; --ink:#111214; --graphite:#5B6068; --ash:#8A9099;
+  --rule:#E4E4E1; --orange:#F4511E; --green:#2F9E79; --clay:#C4544F; color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--paper); color:var(--ink);
+  font:400 13px/1.45 Geist,"Geist Sans",ui-sans-serif,sans-serif; letter-spacing:-0.01em; }
+.mono, .mono * { font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums; letter-spacing:0; }
+.wrap { max-width:1440px; margin:0 auto; padding:0 24px 48px; }
+a { color:inherit; text-decoration:none; }
+.absent { color:var(--ash); }
+code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
+
+.topbar { display:flex; align-items:center; gap:24px; height:60px;
+  border-bottom:1px solid var(--rule); }
+.mark { font-weight:600; letter-spacing:0.18em; font-size:13px; }
+.doms { display:flex; gap:2px; flex:1; }
+.dom { padding:5px 10px; color:var(--ash); border:1px solid transparent; font-size:12px; }
+.dom:hover { color:var(--ink); }
+.dom.on { color:var(--ink); border-color:var(--rule); background:var(--panel); }
+.meters { display:flex; gap:24px; align-items:center; }
+.meter { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--ash);
+  text-transform:uppercase; letter-spacing:0.1em; }
+.meter .v { color:var(--ink); font-size:12px; text-transform:none; letter-spacing:0; }
+.bar { display:inline-block; height:4px; width:60px; background:var(--rule); }
+.bar.wide { width:120px; }
+.bar i { display:block; height:100%; background:var(--ink); }
+
+.rail { border-bottom:1px solid var(--rule); }
+.rail ol { display:grid; grid-template-columns:repeat(6,1fr); margin:0; padding:0;
+  list-style:none; }
+.stage { padding:16px; border-left:1px solid var(--rule); display:flex;
+  flex-direction:column; gap:5px; animation:cascade .3s both;
+  animation-delay:calc(var(--i) * 40ms); }
+.stage:first-child { border-left:0; }
+.stage .dot { width:7px; height:7px; border-radius:50%; background:var(--rule); }
+.stage .sname { font-size:12px; color:var(--ash); }
+.stage .sdetail { font-size:11px; color:var(--rule); }
+.stage[data-state=done] .dot { background:var(--ash); }
+.stage[data-state=done] .sname { color:var(--ink); }
+.stage[data-state=done] .sdetail { color:var(--ash); }
+.stage[data-state=active] .dot { background:var(--orange); animation:pulse 2.4s infinite; }
+.stage[data-state=active] .sname { color:var(--ink); font-weight:500; }
+.stage[data-state=active] .sdetail { color:var(--ash); }
+@keyframes pulse { 0%,100% { transform:scale(1); opacity:1; }
+  50% { transform:scale(1.7); opacity:.5; } }
+@keyframes cascade { from { opacity:0; transform:translateY(4px); } to { opacity:1; } }
+
+.console { display:grid; grid-template-columns:62fr 38fr; }
+.col { min-width:0; }
+.col.right { border-left:1px solid var(--rule); }
+.panel { border-bottom:1px solid var(--rule); padding:16px; background:var(--panel); }
+.ph { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
+.ph h2 { margin:0; font-size:11px; font-weight:500; text-transform:uppercase;
+  letter-spacing:0.14em; color:var(--ash); }
+.ph .meta { font-size:11px; color:var(--ash); }
+.note { color:var(--graphite); font-size:12px; margin:8px 0; max-width:65ch; }
+
+.tbl { border-collapse:collapse; width:100%; }
+.tbl th { text-align:left; font-weight:400; font-size:10px; text-transform:uppercase;
+  letter-spacing:0.1em; color:var(--ash); padding:0 8px 6px;
+  font-family:"Geist Mono",ui-monospace,monospace; }
+.tbl td { padding:8px; border-top:1px solid var(--rule); font-size:12px;
+  vertical-align:middle; }
+.tbl tbody tr { animation:cascade .3s both; animation-delay:calc(var(--i) * 40ms); }
+.tbl tbody tr:hover { background:var(--paper); }
+.num { text-align:right; }
+.crow.promote td:first-child { box-shadow:inset 2px 0 0 var(--green); }
+.crow.reject td:first-child { box-shadow:inset 2px 0 0 var(--clay); }
+.lrow.bad td:first-child { box-shadow:inset 2px 0 0 var(--clay); }
+.id { white-space:nowrap; }
+.chip { display:inline-block; margin-left:6px; padding:1px 5px; font-size:9px;
+  text-transform:uppercase; letter-spacing:0.08em; border:1px solid var(--rule);
+  color:var(--ash); font-family:"Geist Mono",ui-monospace,monospace; }
+.chip.ok { border-color:var(--green); color:var(--green); }
+.chip.bad { border-color:var(--clay); color:var(--clay); }
+.chip.warn { border-color:var(--ash); color:var(--graphite); }
+.st .chip { margin-left:0; margin-right:4px; }
+.topo-name { color:var(--ash); font-size:11px; margin-right:8px; }
+.pills { display:inline-flex; align-items:center; flex-wrap:wrap; }
+.pill { border:1px solid var(--rule); padding:2px 6px; font-size:10px; color:var(--ink);
+  white-space:nowrap; }
+.pill .tier { margin-left:6px; font-weight:400; color:var(--ash); }
+.link { display:inline-block; width:10px; height:1px; background:var(--rule); }
+.scorecell { white-space:nowrap; }
+.scorecell .bar { width:56px; margin-right:8px; }
+.scorecell .bar i { background:var(--ink); }
+.pips { display:inline-flex; gap:3px; align-items:center; }
+.pips i { width:6px; height:6px; background:var(--rule); display:block; }
+.pips i.on { background:var(--ink); }
+.scroll { max-height:420px; overflow:auto; }
+.op { color:var(--ink); }
+.tried { color:var(--ash); font-size:11px; }
+
+.verdict { margin:0 0 12px; font-size:26px; font-weight:600; letter-spacing:-0.03em;
+  color:var(--ink); }
+.verdict.ok { color:var(--green); }
+.verdict.bad { color:var(--clay); }
+.stats { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--rule);
+  border:1px solid var(--rule); margin:14px 0; }
+.stat { background:var(--panel); padding:8px 10px; display:flex; flex-direction:column;
+  gap:2px; }
+.stat .k { font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ash);
+  font-family:"Geist Mono",ui-monospace,monospace; }
+.stat .v { font-size:13px; }
+.reason { color:var(--graphite); font-size:11px; margin:0; }
+
+.pblock { margin-bottom:16px; }
+.pblock h3 { margin:0 0 8px; font-size:11px; color:var(--ash); font-weight:400; }
+.charts { display:flex; flex-wrap:wrap; gap:16px; }
+.chart { width:280px; } .chart.wide { width:100%; }
+.chart h4 { margin:0 0 6px; font-size:10px; font-weight:400; color:var(--ash);
+  text-transform:uppercase; letter-spacing:0.1em;
+  font-family:"Geist Mono",ui-monospace,monospace; }
+svg { width:100%; height:auto; }
+.axis { stroke:var(--rule); stroke-width:1; }
+.series { fill:none; stroke:var(--orange); stroke-width:2; }
+.chart circle { fill:var(--orange); }
+.tick { fill:var(--ash); font-size:9px;
+  font-family:"Geist Mono",ui-monospace,monospace; }
+.latest { margin:6px 0 0; color:var(--graphite); font-size:11px; }
+.latest b { color:var(--ink); font-weight:500; }
+.pt { fill:var(--rule); stroke:var(--ash); }
+.pt.front { fill:var(--green); fill-opacity:.85; stroke:var(--green); }
+.front-line { fill:none; stroke:var(--green); stroke-width:1; stroke-opacity:.6; }
+
+@media (max-width:768px) {
+  .console { grid-template-columns:1fr; }
+  .col.right { border-left:0; border-top:1px solid var(--rule); }
+  .rail ol { grid-template-columns:repeat(2,1fr); }
+  .stats { grid-template-columns:repeat(2,1fr); }
+}
 """
 
-HTMX_SRC = "https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
+SCRIPT = """
+const ids=['topbar','rail','candidates','live','ledger','gate','pareto','curves'];
+setInterval(()=>{for(const id of ids){
+  fetch('/fragments/'+id+location.search).then(r=>r.text()).then(html=>{
+    const el=document.getElementById(id); if(el) el.outerHTML=html;
+  }).catch(()=>{});
+}},10000);
+"""
 
 
 @dataclass(frozen=True)
@@ -419,41 +1042,62 @@ class AppState:
     ledger_path: Path
 
 
-def render_page(app_state: AppState) -> str:
-    """The whole page. Each fragment also has its own endpoint for HTMX polling."""
+def _selected(state: AppState, domain: str | None) -> tuple[str | None, list[str]]:
+    domains = list_domains(state.runs_dir)
+    if domain in domains:
+        return domain, domains
+    return (domains[0] if domains else None), domains
+
+
+def _issues(state: AppState, domain: str | None) -> list[dict[str, Any]]:
+    """Ledger rows, narrowed to the selected domain when that domain has any of its own."""
+    rows = load_ledgers(state.runs_dir, state.ledger_path)
+    mine = [row for row in rows if row.get("domain") == domain] if domain else []
+    return mine or rows
+
+
+def render_page(app_state: AppState, domain: str | None = None) -> str:
+    """The whole console. Every region also has its own endpoint for the refresh script."""
+    selected, domains = _selected(app_state, domain)
+    it = load_iteration(app_state.runs_dir, selected) if selected else None
+    issues = _issues(app_state, selected)
     summaries = load_summaries(app_state.runs_dir)
-    fragments = (
-        render_curves(summaries),
-        render_pareto(load_pareto(app_state.runs_dir)),
-        render_ledger(load_ledgers(app_state.runs_dir, app_state.ledger_path)),
-    )
-    poll = 'hx-trigger="every 10s" hx-swap="outerHTML"'
+    fronts = load_pareto(app_state.runs_dir)
+    if selected:
+        summaries = {k: v for k, v in summaries.items() if k == selected} or summaries
+        fronts = {k: v for k, v in fronts.items() if k == selected}
+    blank = Iteration(selected or DASH, None, DASH, {}, {}, {}, None, [], False)
+    it = it or blank
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        "<title>Anneal</title>"
-        f"<style>{CSS}</style>"
-        f'<script src="{HTMX_SRC}" defer></script></head><body>'
-        "<h1>Anneal</h1>"
-        f'<p class="muted">runs: {escape(str(app_state.runs_dir))} · '
-        f"ledger: {escape(str(app_state.ledger_path))}</p>"
-        f'<div class="grid">'
-        f'<div hx-get="/fragments/balance" {poll}>{render_balance(credit_balance())}</div>'
-        f'<div hx-get="/fragments/pareto" {poll}>{fragments[1]}</div></div>'
-        f'<div hx-get="/fragments/curves" {poll}>{fragments[0]}</div>'
-        f'<div hx-get="/fragments/ledger" {poll}>{fragments[2]}</div>'
-        "</body></html>"
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>Anneal console</title>"
+        f"<style>{CSS}</style></head><body><div class='wrap'>"
+        f"{render_topbar(selected, domains, it)}"
+        f"{render_rail(pipeline_stages(it, issues))}"
+        f'<div class="console"><div class="col left">'
+        f"{render_candidates(it)}{render_live(it)}</div>"
+        f'<div class="col right">{render_ledger(issues)}{render_gate(it.gate)}</div></div>'
+        f"{render_pareto(fronts)}{render_curves(summaries)}"
+        f"</div><script>{SCRIPT}</script></body></html>"
     )
 
 
 def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.json") -> FastAPI:
-    """FastAPI app serving the page plus one endpoint per HTMX fragment."""
+    """FastAPI app serving the console plus one endpoint per region."""
     state = AppState(Path(runs_dir), Path(ledger_path))
     app = FastAPI(title="Anneal dashboard")
     app.state.anneal = state
 
+    def _iteration(domain: str | None) -> Iteration:
+        selected, _ = _selected(state, domain)
+        if not selected:
+            return Iteration(DASH, None, DASH, {}, {}, {}, None, [], False)
+        return load_iteration(state.runs_dir, selected)
+
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return render_page(state)
+    def index(domain: str | None = None) -> str:
+        return render_page(state, domain)
 
     @app.get("/landing", response_class=HTMLResponse)
     def landing() -> str:
@@ -463,17 +1107,46 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
             return "<html><body><p>landing/index.html is missing; see the repo.</p></body></html>"
         return path.read_text(encoding="utf-8")
 
+    @app.get("/fragments/topbar", response_class=HTMLResponse)
+    def topbar(domain: str | None = None) -> str:
+        selected, domains = _selected(state, domain)
+        return render_topbar(selected, domains, _iteration(domain))
+
+    @app.get("/fragments/rail", response_class=HTMLResponse)
+    def rail(domain: str | None = None) -> str:
+        selected, _ = _selected(state, domain)
+        return render_rail(pipeline_stages(_iteration(domain), _issues(state, selected)))
+
+    @app.get("/fragments/candidates", response_class=HTMLResponse)
+    def candidates(domain: str | None = None) -> str:
+        return render_candidates(_iteration(domain))
+
+    @app.get("/fragments/live", response_class=HTMLResponse)
+    def live(domain: str | None = None) -> str:
+        return render_live(_iteration(domain))
+
+    @app.get("/fragments/gate", response_class=HTMLResponse)
+    def gate(domain: str | None = None) -> str:
+        return render_gate(_iteration(domain).gate)
+
     @app.get("/fragments/curves", response_class=HTMLResponse)
-    def curves() -> str:
-        return render_curves(load_summaries(state.runs_dir))
+    def curves(domain: str | None = None) -> str:
+        summaries = load_summaries(state.runs_dir)
+        if domain in summaries:
+            summaries = {domain: summaries[domain]}
+        return render_curves(summaries)
 
     @app.get("/fragments/ledger", response_class=HTMLResponse)
-    def ledger() -> str:
-        return render_ledger(load_ledgers(state.runs_dir, state.ledger_path))
+    def ledger(domain: str | None = None) -> str:
+        return render_ledger(_issues(state, domain) if domain else
+                             load_ledgers(state.runs_dir, state.ledger_path))
 
     @app.get("/fragments/pareto", response_class=HTMLResponse)
-    def pareto() -> str:
-        return render_pareto(load_pareto(state.runs_dir))
+    def pareto(domain: str | None = None) -> str:
+        fronts = load_pareto(state.runs_dir)
+        if domain in fronts:
+            fronts = {domain: fronts[domain]}
+        return render_pareto(fronts)
 
     @app.get("/fragments/balance", response_class=HTMLResponse)
     def balance() -> str:
@@ -483,7 +1156,7 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Serve the dashboard on http://localhost:8000."""
+    """Serve the console on http://localhost:8000."""
     import argparse
 
     import uvicorn
