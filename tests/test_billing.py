@@ -256,8 +256,10 @@ class FakeDodo:
         key = body.get("idempotency_key")
         if key in self.idempotency_keys:
             return httpx.Response(409, text="idempotency key already exists")
-        self.idempotency_keys.add(str(key))
         amount = float(body["amount"])
+        if body["entry_type"] == "debit" and amount > self.balance:
+            return httpx.Response(400, text="debit with insufficient balance")
+        self.idempotency_keys.add(str(key))
         self.balance += amount if body["entry_type"] == "credit" else -amount
         return httpx.Response(200, json={"id": "led_1", "amount": body["amount"]})
 
@@ -458,3 +460,59 @@ def test_debit_is_thread_safe_under_the_runner_concurrency() -> None:
     assert len(set(ids)) == 200
     assert client.flush() == 200
     assert client.ledger.spent == 600.0
+
+
+# --- re-funding and over-debit ------------------------------------------------------------------
+
+
+def test_a_later_run_can_refund_the_same_local_ledger(tmp_path: Any) -> None:
+    path = tmp_path / "local_ledger.json"
+    first = BillingClient(api_key="", ledger_path=path)
+    first.ensure_entitlement(0.001)
+    first.debit("airline", 0, "cand-a", "task-1", 1000)
+    assert first.balance() == 0.0
+
+    second = BillingClient(api_key="", ledger_path=path)
+    second.ensure_entitlement(0.001)
+    assert second.balance() == 1000.0
+
+
+def test_a_later_run_tops_the_remote_grant_back_up() -> None:
+    dodo = FakeDodo()
+    first = make_client(dodo)
+    first.ensure_entitlement(0.001)
+    first.debit("airline", 0, "cand-a", "task-1", 1000)
+    first.flush()
+    assert first.balance() == 0.0
+
+    second = make_client(dodo)
+    second.ensure_entitlement(0.001)
+    assert second.balance() == 1000.0
+
+
+def test_over_debit_clamps_to_zero_so_the_guard_halts_cleanly() -> None:
+    dodo = FakeDodo()
+    guard = BudgetGuard(0.001, make_client(dodo)).start()
+    # cost_usd=0 isolates the remote-balance halt from the local-spend one.
+    guard.record_run("airline", 0, "cand-a", "task-1", 900, cost_usd=0.0)
+    guard.check()
+    guard.record_run("airline", 0, "cand-a", "task-2", 900, cost_usd=0.0)  # 1800 > 1000 granted
+    with pytest.raises(BudgetExhausted, match="balance"):
+        guard.check()
+    assert dodo.balance == 0.0
+
+
+def test_missing_balance_row_is_treated_as_zero_when_granting() -> None:
+    dodo = FakeDodo()
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/balances/" in request.url.path and not request.url.path.endswith("ledger-entries"):
+            calls.append(request.url.path)
+            if len(calls) == 1:
+                return httpx.Response(404, text="balance not found")
+        return dodo(request)
+
+    client = make_client(handler)
+    client.ensure_entitlement(0.001)
+    assert client.balance() == 1000.0

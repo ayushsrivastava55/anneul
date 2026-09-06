@@ -33,6 +33,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -165,8 +166,8 @@ class LocalLedger:
         )
 
     def grant(self, tokens: float) -> None:
-        """Top the grant up to at least ``tokens`` credits."""
-        self.granted = max(self.granted, tokens)
+        """Top the balance up to at least ``tokens`` credits, keeping what was already spent."""
+        self.granted = max(self.granted, self.spent + tokens)
         self.save()
 
     def record(self, event: UsageEvent) -> bool:
@@ -380,15 +381,24 @@ class BillingClient:
             self.entitlement_id = self._find_named(
                 ENDPOINTS["credit_entitlements"], name, ("id", "credit_entitlement_id")
             ) or self._create_entitlement(name)
-        shortfall = required - self.balance()
+        shortfall = required - self._balance_or_zero()
         if shortfall > 0:
             self._ledger_entry(
                 amount=shortfall,
                 entry_type="credit",
-                idempotency_key=f"grant:{name}:{required:.0f}",
+                idempotency_key=f"grant:{name}:{uuid.uuid4().hex}",
                 reason=f"anneal budget ${budget_usd:.2f}",
             )
         return self.entitlement_id
+
+    def _balance_or_zero(self) -> float:
+        """Balance, treating "no balance row yet" (404) as zero so the first grant can land."""
+        try:
+            return self.balance()
+        except DodoError as exc:
+            if " 404 " not in f" {exc} ":
+                raise
+            return 0.0
 
     def _create_entitlement(self, name: str) -> str:
         """Create the ``tokens`` credit entitlement."""
@@ -478,12 +488,24 @@ class BillingClient:
         if total <= 0:
             return
         key = hashlib.sha1("|".join(sorted(e.id for e in chunk)).encode("utf-8")).hexdigest()
-        self._ledger_entry(
-            amount=total,
-            entry_type="debit",
-            idempotency_key=f"run:{key}",
-            reason=f"{EVENT_NAME}: {len(chunk)} task runs",
-        )
+        reason = f"{EVENT_NAME}: {len(chunk)} task runs"
+        try:
+            self._ledger_entry(
+                amount=total, entry_type="debit", idempotency_key=f"run:{key}", reason=reason
+            )
+        except DodoError as exc:
+            if " 400 " not in f" {exc} ":
+                raise
+            # Insufficient balance: draw the rest down to zero so BudgetGuard halts, not crashes.
+            remaining = self.balance()
+            logger.warning("debit of %.0f exceeds balance; drawing down %.0f", total, remaining)
+            if remaining > 0:
+                self._ledger_entry(
+                    amount=remaining,
+                    entry_type="debit",
+                    idempotency_key=f"run:{key}:clamp",
+                    reason=reason,
+                )
 
     @tool_span("dodo.balance")
     def balance(self) -> float:
