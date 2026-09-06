@@ -34,6 +34,14 @@ required/type check, ``schema_error`` is set.
 A node's tool schema uses ``spec.tool_overrides[name]`` as the description when the spec
 carries one (written by ``mutate.rewrite_tool_desc``), else the tools.yaml text.
 
+Episodic memory: when ``spec.memory.enabled`` and ``spec.memory.kind == "episodic"`` and a
+store is active (``anneal.memory.activate``, set by the CLI loop), the runtime recalls the
+top ``spec.memory.top_k`` learned rules for the task once and prepends them to every node's
+system prompt under a "Learned from previous runs" heading, before the first LLM call. The
+recalled ids come back on ``TaskResult.memory_ids`` so the loop can credit them, and each
+task's tool results are handed to the store so the next reflection can be grounded in them.
+With no active store the runtime behaves exactly as it did without memory.
+
 Tool dispatch: ``python:<module>.<fn>`` via ``importlib.import_module`` on the dotted module
 path; ``mcp:<server>/<tool>`` through :mod:`anneal.mcp`, where ``<server>`` names an entry of
 the ``servers:`` block in the domain's tools.yaml. MCP connections are pooled for the run and
@@ -57,6 +65,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from anneal import llm, mcp, tracing
+from anneal import memory as memory_mod
 from anneal.domain import Domain, ensure_repo_root_on_path
 from anneal.spec import HarnessSpec, Node, ToolSpec
 
@@ -111,6 +120,8 @@ class TaskResult:
     schema_error: bool
     trace_id: str | None
     latency_ms: float
+    # ids of the episodic-memory entries injected into this run's prompts (see anneal.memory)
+    memory_ids: list[str] = field(default_factory=list)
 
 
 class StepBudgetExceeded(Exception):
@@ -335,6 +346,9 @@ class _Run:
     _last_exec: tuple[Node, list[dict[str, Any]]] | None = None
     # set by critic_loop when it gives up; turned into an escalation by ``execute``
     _escalate_reason: str | None = None
+    # episodic memory recalled once per task and injected into every node's system prompt
+    memory_ids: list[str] = field(default_factory=list)
+    _memory_block: str | None = None
 
     def __post_init__(self) -> None:
         self.tools_by_name = {t.name: t for t in self.domain.tools.tools}
@@ -359,6 +373,27 @@ class _Run:
     def optional_node(self, role: str) -> Node | None:
         """The first node with ``role``, or None when the spec has none."""
         return next((n for n in self.spec.nodes if n.role == role), None)
+
+    def system_prompt(self, node: Node, task: Any) -> str:
+        """``_system_prompt`` plus, when the spec asks for it, the recalled memory block.
+
+        Recall happens once per task (the block is cached on the run) so every node of a
+        topology sees the same rules and the entry ids are credited once.
+        """
+        base = _system_prompt(node, self.domain)
+        if self._memory_block is None:
+            self._memory_block = self._recall(task)
+        return f"{base}\n\n{self._memory_block}".strip() if self._memory_block else base
+
+    def _recall(self, task: Any) -> str:
+        """Learned rules for ``task``, or '' when memory is off or no store is active."""
+        cfg = self.spec.memory
+        store = memory_mod.active()
+        if store is None or not cfg.enabled or cfg.kind != "episodic":
+            return ""
+        entries = store.recall(task, cfg.top_k)
+        self.memory_ids = [e.id for e in entries]
+        return store.prompt_block(entries)
 
     def _client(self, tier: str) -> Any:
         if tier not in self._clients:
@@ -452,7 +487,7 @@ class _Run:
     def run_single(self, task: Any) -> str | None:
         node = self.node("executor")
         messages = [
-            {"role": "system", "content": _system_prompt(node, self.domain)},
+            {"role": "system", "content": self.system_prompt(node, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         return self.run_node(node, self.react, node, messages)
@@ -460,11 +495,11 @@ class _Run:
     def run_planner_executor(self, task: Any) -> str | None:
         planner, executor = self.node("planner"), self.node("executor")
         plan_msgs = [
-            {"role": "system", "content": _system_prompt(planner, self.domain)},
+            {"role": "system", "content": self.system_prompt(planner, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         exec_msgs = [
-            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "system", "content": self.system_prompt(executor, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         plan = self.run_node(planner, self.call_llm, planner, plan_msgs).get("content") or ""
@@ -490,11 +525,11 @@ class _Run:
     def run_critic_loop(self, task: Any) -> str | None:
         executor, critic = self.node("executor"), self.node("critic")
         exec_msgs = [
-            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "system", "content": self.system_prompt(executor, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         critic_msgs = [
-            {"role": "system", "content": _system_prompt(critic, self.domain)},
+            {"role": "system", "content": self.system_prompt(critic, task)},
             {"role": "user", "content": _task_message(task)},
         ]
         seen = 0  # trace entries already shown to the critic
@@ -542,7 +577,7 @@ class _Run:
             messages = self._exec_messages(executor, task)
             return self.run_node(executor, self.react, executor, messages)
         route_msgs = [
-            {"role": "system", "content": _system_prompt(router, self.domain)},
+            {"role": "system", "content": self.system_prompt(router, task)},
             {
                 "role": "user",
                 "content": (
@@ -558,7 +593,7 @@ class _Run:
 
     def _exec_messages(self, executor: Node, task: Any) -> list[dict[str, Any]]:
         return [
-            {"role": "system", "content": _system_prompt(executor, self.domain)},
+            {"role": "system", "content": self.system_prompt(executor, task)},
             {"role": "user", "content": _task_message(task)},
         ]
 
@@ -700,6 +735,10 @@ def _run_traced(run: _Run, task: Any, seed: int) -> TaskResult:
     text = run.execute(task)
     latency_ms = round((time.perf_counter() - start) * 1000, 1)
     output = parse_output(text)
+    store = memory_mod.active()
+    if store is not None:
+        # what this task's tools actually returned; anneal.memory.reflect grounds rules on it
+        store.observe(memory_mod.task_id_of(task), run.trace, output)
     return TaskResult(
         output=output,
         trace=run.trace,
@@ -709,4 +748,5 @@ def _run_traced(run: _Run, task: Any, seed: int) -> TaskResult:
         schema_error=_schema_error(run.spec, run.domain, output),
         trace_id=tracing.current_trace_id(),
         latency_ms=latency_ms,
+        memory_ids=list(run.memory_ids),
     )

@@ -4,6 +4,13 @@ The loop here is pure wiring. Every decision is made by the module that owns it
 (``architect``, ``runner``, ``diagnose``, ``mutate``, ``gate``); this file only sequences
 them, tracks spend against ``--budget`` and writes ``runs/<domain>/<iter>/summary.json``.
 The reserved evaluation split is never named here -- only ``anneal.gate`` may touch it.
+
+Episodic memory (``anneal.memory``) is opened once per ``anneal run`` and stays active for
+the whole loop, so ``anneal.runtime`` can recall at task time. Around each search run the
+loop clears the injection log, credits the entries the finished rows used, reflects on that
+run (rules from what failed, procedures from what succeeded), retires the losing entries and
+saves the store. The counts land in summary.json as ``memory_entries``, ``memory_by_kind``
+and ``memory_injected``.
 """
 
 from __future__ import annotations
@@ -19,7 +26,18 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec
+from anneal import (
+    __version__,
+    architect,
+    diagnose,
+    gate,
+    llm,
+    mutate,
+    runner,
+    spec,
+    tracing,
+)
+from anneal import memory as memory_mod
 from anneal.domain import load_domain
 from anneal.spec import HarnessSpec
 
@@ -69,6 +87,12 @@ class Loop:
     rejects: int = 0
     search: dict[str, dict[str, Any]] = field(default_factory=dict)
     specs: dict[str, str] = field(default_factory=dict)
+    # episodic memory store shared by every run of this loop (None disables it entirely)
+    memory: Any | None = None
+    # client for the reflection call; tests inject a fake, live runs use the gateway
+    memory_client: Any | None = None
+    # distinct memory entries injected during the most recent search run
+    injected: int = 0
 
 
 # --- running with a budget ---------------------------------------------------------------
@@ -168,13 +192,42 @@ def _run_search(
 ) -> tuple[HarnessSpec, list[dict]]:
     """Run one spec on the search split, persist its yaml and record its search metrics."""
     candidate = _persist(loop, candidate, iteration)
+    if loop.memory is not None:
+        loop.memory.begin_run()
     rows = _budgeted_run(loop)(
         candidate, loop.domain, SEARCH_SPLIT, iteration=iteration, seed=loop.seed
     )
+    if loop.memory is not None:
+        loop.memory.credit_run(rows, _threshold(loop.domain))
+        loop.injected = len(loop.memory.injected_ids())
+        _learn(loop, candidate, rows, iteration)
     metrics = _summarize(loop, candidate, rows)
     metrics["n_tasks"] = len(rows)
     loop.search[candidate.id] = metrics
     return candidate, rows
+
+
+def _learn(loop: Loop, candidate: Any, rows: list[dict], iteration: int) -> None:
+    """Reflect on this run's failures, retire losing rules and persist the store.
+
+    Called immediately after the run that produced ``rows``, so the tool results the store
+    recorded still belong to ``candidate`` and the rules it learns cite that candidate's own
+    traces. Reflection reads only search rows, is tagged with the same run context as those
+    rows so Neatlogs joins the failing trace to the rule learned from it, and never raises:
+    an unreachable gateway costs new rules, not the run.
+    """
+    if loop.memory is None:
+        return
+    with tracing.run_context(
+        candidate_id=candidate.id, iteration=iteration,
+        domain=loop.domain.name, split=SEARCH_SPLIT,
+    ):
+        loop.memory.reflect(
+            rows, loop.domain, client=loop.memory_client, iteration=iteration,
+            threshold=_threshold(loop.domain),
+        )
+        loop.memory.prune()
+        loop.memory.save()
 
 
 # --- one iteration -----------------------------------------------------------------------
@@ -239,6 +292,10 @@ def _summary(loop: Loop, iteration: int, inc: Any, **kw: Any) -> dict[str, Any]:
         "budget_usd": loop.budget,
         "search": dict(loop.search),
         "specs": dict(loop.specs),
+        # episodic memory: what the agent has learned, and how much of it this run used
+        "memory_entries": len(loop.memory.active) if loop.memory is not None else 0,
+        "memory_by_kind": loop.memory.by_kind() if loop.memory is not None else {},
+        "memory_injected": loop.injected,
     }
     body.update(kw)
     return body
@@ -353,12 +410,34 @@ def cmd_run(args: argparse.Namespace, console: Console) -> int:
         seed=args.seed,
         candidates=args.candidates,
         models_path=args.models,
+        memory=_open_memory(runs_dir, domain.name, enabled=not args.no_memory),
     )
     loop.ledger.parent.mkdir(parents=True, exist_ok=True)
     gate.clear_cache()
     console.print(f"[bold]anneal run[/bold] {loop.domain.name} "
                   f"iterations={args.iterations} budget=${loop.budget:.2f}")
     written: list[dict[str, Any]] = []
+    with memory_mod.activate(loop.memory):
+        status = _run_loop(loop, args, console, written)
+    _progress(console, written)
+    console.print(f"summaries in {loop.runs_dir / loop.domain.name}")
+    if loop.memory is not None:
+        kinds = ", ".join(f"{n} {kind}s" for kind, n in loop.memory.by_kind().items())
+        console.print(f"memory: {kinds} in {loop.memory.db_path}")
+    return status
+
+
+def _open_memory(runs_dir: Path, domain_name: str, *, enabled: bool) -> Any | None:
+    """The domain's episodic store, carried over from every previous run, or None."""
+    if not enabled:
+        return None
+    return memory_mod.Memory.load(memory_mod.memory_path(runs_dir, domain_name))
+
+
+def _run_loop(
+    loop: Loop, args: argparse.Namespace, console: Console, written: list[dict[str, Any]]
+) -> int:
+    """The iteration loop itself, run with the episodic memory store active."""
     incumbent: Any = None
     status = 0
     try:
@@ -378,8 +457,6 @@ def cmd_run(args: argparse.Namespace, console: Console) -> int:
         written.append(body)
         _write_summary(loop, body)
         console.print(f"[red]{exc}[/red]")
-    _progress(console, written)
-    console.print(f"summaries in {loop.runs_dir / loop.domain.name}")
     return status
 
 
@@ -425,13 +502,21 @@ def _regate(bodies: Any, args: argparse.Namespace, console: Console) -> None:
             budget=float(args.budget), concurrency=args.concurrency, seed=0,
             models_path=args.models,
         )
-        result = gate.gate(
-            spec.load_spec(specs[body["incumbent_id"]]),
-            spec.load_spec(specs[body["candidate_id"]]),
-            domain, body["iteration"], Path(args.runs_dir), run=_budgeted_run(loop),
-        )
+        loop.memory = _open_memory(loop.runs_dir, domain.name, enabled=True)
+        with memory_mod.activate(loop.memory):
+            result = _regate_one(loop, body, specs, args)
         console.print(f"{body['domain']} i{body['iteration']}: "
                       f"{result.reason} (p={result.p:.3f})")
+
+
+def _regate_one(loop: Loop, body: dict[str, Any], specs: dict[str, str],
+                args: argparse.Namespace) -> Any:
+    """One gate re-run for ``body``; memory is read here and never written."""
+    return gate.gate(
+        spec.load_spec(specs[body["incumbent_id"]]),
+        spec.load_spec(specs[body["candidate_id"]]),
+        loop.domain, body["iteration"], Path(args.runs_dir), run=_budgeted_run(loop),
+    )
 
 
 def _num(value: Any, digits: int = 3) -> str:
@@ -507,6 +592,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--runs-dir", default=str(runner.RUNS_DIR))
     run.add_argument("--ledger", default=None, help="issue ledger path")
     run.add_argument("--models", default=None, help="price table (default specs/models.yaml)")
+    run.add_argument("--no-memory", action="store_true",
+                     help="disable episodic memory (no recall, no reflection)")
 
     for name in ("gate", "report"):
         sub.choices[name].add_argument("runs_dir", help="runs/ directory to read")
