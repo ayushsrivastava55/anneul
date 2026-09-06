@@ -43,9 +43,14 @@ task's tool results are handed to the store so the next reflection can be ground
 With no active store the runtime behaves exactly as it did without memory.
 
 Tool dispatch: ``python:<module>.<fn>`` via ``importlib.import_module`` on the dotted module
-path; ``mcp:`` raises ``NotImplementedError`` for now. Arguments get a shallow
-required/type check against the JSON schema in tools.yaml (``jsonschema`` is not a
-dependency). Every node is a ``tracing.node_span``, every tool call a ``tracing.tool_span``
+path; ``mcp:<server>/<tool>`` through :mod:`anneal.mcp`, where ``<server>`` names an entry of
+the ``servers:`` block in the domain's tools.yaml. MCP connections are pooled for the run and
+closed at exit; a server that will not start degrades to an ``Error: ...`` tool result rather
+than killing the run. An MCP tool's description and argument schema come from the server's own
+``tools/list`` (cached per run) so the model discovers the third party's real schemas, with the
+tools.yaml text as the offline fallback. Arguments get a shallow required/type check against
+that schema (``jsonschema`` is not a dependency). Every node is a ``tracing.node_span``, every
+tool call a ``tracing.tool_span``, every MCP call a ``tracing.mcp_span`` (kind ``MCP_TOOL``)
 and every LLM call an ``tracing.llm_span``.
 """
 
@@ -59,7 +64,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from anneal import llm, tracing
+from anneal import llm, mcp, tracing
 from anneal import memory as memory_mod
 from anneal.domain import Domain, ensure_repo_root_on_path
 from anneal.spec import HarnessSpec, Node, ToolSpec
@@ -189,13 +194,30 @@ def _resolve_python_impl(impl: str) -> Callable[..., Any]:
     return getattr(module, fn_name)
 
 
-def invoke_tool(tool: ToolSpec, args: dict[str, Any]) -> str:
-    """Validate ``args`` against ``tool.args`` and run the impl. Errors come back as text."""
-    problem = shallow_check(args, tool.args or {"type": "object"})
+def invoke_tool(
+    tool: ToolSpec,
+    args: dict[str, Any],
+    *,
+    pool: mcp.Pool | None = None,
+    schema: dict[str, Any] | None = None,
+) -> str:
+    """Validate ``args`` and run the impl (``python:`` locally, ``mcp:`` via ``pool``).
+
+    ``schema`` overrides ``tool.args`` for the argument check -- the runtime passes the live
+    ``inputSchema`` from the MCP server's ``tools/list``. Every failure is returned as text so
+    the model can react to it; nothing here raises.
+    """
+    problem = shallow_check(args, schema or tool.args or {"type": "object"})
     if problem is not None:
         return f"Error: invalid arguments for {tool.name}: {problem}"
-    if tool.impl.startswith("mcp:"):
-        raise NotImplementedError(f"mcp tools are not supported yet ({tool.impl})")
+    if tool.impl.startswith(mcp.IMPL_PREFIX):
+        if pool is None:
+            return f"Error: {tool.name}: no MCP server pool for this run"
+        try:
+            server, remote = mcp.split_impl(tool.impl)
+        except ValueError as exc:
+            return f"Error: {tool.name}: {exc}"
+        return pool.call(server, remote, args)
     fn = _resolve_python_impl(tool.impl)
     try:
         result = fn(**args)
@@ -204,14 +226,22 @@ def invoke_tool(tool: ToolSpec, args: dict[str, Any]) -> str:
     return result if isinstance(result, str) else json.dumps(result, default=str)
 
 
-def _openai_tool(tool: ToolSpec, description: str | None = None) -> dict[str, Any]:
-    """Tool schema for the model. ``description`` overrides the manifest text when given."""
+def _openai_tool(
+    tool: ToolSpec,
+    description: str | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Tool schema for the model.
+
+    ``description`` overrides the manifest text (``spec.tool_overrides``); ``parameters``
+    overrides the manifest argument schema (the live MCP ``inputSchema``).
+    """
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": description or tool.description,
-            "parameters": tool.args or {"type": "object", "properties": {}},
+            "parameters": parameters or tool.args or {"type": "object", "properties": {}},
         },
     }
 
@@ -322,6 +352,17 @@ class _Run:
 
     def __post_init__(self) -> None:
         self.tools_by_name = {t.name: t for t in self.domain.tools.tools}
+        self.mcp_pool = mcp.get_pool(mcp.parse_servers(self.domain.tools.servers))
+
+    def _mcp_info(self, tool: ToolSpec) -> mcp.ToolInfo | None:
+        """Live ``tools/list`` entry for an ``mcp:`` tool, or None (not MCP / server down)."""
+        if not tool.impl.startswith(mcp.IMPL_PREFIX):
+            return None
+        try:
+            server, remote = mcp.split_impl(tool.impl)
+        except ValueError:
+            return None
+        return self.mcp_pool.tool_info(server, remote)
 
     def node(self, role: str) -> Node:
         for node in self.spec.nodes:
@@ -365,7 +406,7 @@ class _Run:
             self.hit_step_budget = True
             raise StepBudgetExceeded(node.name)
         tools = [
-            _openai_tool(self.tools_by_name[n], self.spec.tool_overrides.get(n))
+            self._tool_schema(self.tools_by_name[n], self.spec.tool_overrides.get(n))
             for n in node.tools
             if n in self.tools_by_name
         ]
@@ -375,6 +416,17 @@ class _Run:
         self._account(node.name, usage)
         messages.append(message)
         return message
+
+    def _tool_schema(self, tool: ToolSpec, override: str | None) -> dict[str, Any]:
+        """Schema shown to the model: the MCP server's own listing when we can reach it.
+
+        ``spec.tool_overrides`` still wins on the description -- that is a deliberate mutation
+        -- but the argument schema always comes from the third party when it is available.
+        """
+        info = self._mcp_info(tool)
+        if info is None:
+            return _openai_tool(tool, override)
+        return _openai_tool(tool, override or info.description, info.input_schema or None)
 
     def _complete(
         self, tier: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
@@ -402,7 +454,14 @@ class _Run:
         elif tool is None:
             result = f"Error: unknown tool {name!r}"
         else:
-            result = tracing.tool_span(f"tool.{name}")(invoke_tool)(tool, args)
+            # MCP calls carry their own MCP_TOOL span inside the pool; local impls get a
+            # TOOL span here.
+            is_mcp = tool.impl.startswith(mcp.IMPL_PREFIX)
+            info = self._mcp_info(tool)
+            impl = invoke_tool if is_mcp else tracing.tool_span(f"tool.{name}")(invoke_tool)
+            result = impl(
+                tool, args, pool=self.mcp_pool, schema=info.input_schema if info else None
+            )
         self.trace.append({"tool": name, "args": args, "result": result})
         return {"role": "tool", "tool_call_id": call.get("id", ""), "content": result}
 

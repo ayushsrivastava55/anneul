@@ -10,7 +10,9 @@ Only the search split is used here; the reserved evaluation split belongs to the
 from __future__ import annotations
 
 import json
+import sqlite3
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,8 @@ from anneal import cli, llm, runner
 from anneal import memory as memory_mod
 from anneal.domain import load_domain
 from anneal.memory import MEMORY_HEADING, Entry, Memory
+from anneal.memory import PROCEDURE as KIND_PROCEDURE
+from anneal.memory import RULE as KIND_RULE
 from anneal.runtime import run_task
 from anneal.spec import HarnessSpec
 from tests import test_cli as cli_tests
@@ -95,7 +99,9 @@ def test_reflect_ignores_passing_rows(tmp_path: Path) -> None:
     mem = Memory(tmp_path / "memory.json")
     client = FakeClient(turns=[rules_reply({"text": RULE})])
     assert mem.reflect([failing_row("t1", score=1.0)], StubDomain(), client=client) == []
-    assert client.calls == []  # no failures, no LLM call
+    # no failures, so no rule pass; one tool call is under MIN_PROCEDURE_STEPS, so no
+    # procedure pass either -- a run with nothing to learn from costs nothing.
+    assert client.calls == []
 
 
 def test_reflect_dedupes_against_existing_entries(tmp_path: Path) -> None:
@@ -177,7 +183,118 @@ def test_reflect_caps_the_rules_it_accepts(tmp_path: Path) -> None:
     assert len(added) <= memory_mod.MAX_NEW_RULES
 
 
+# --- procedures ---------------------------------------------------------------------------
+
+BOOKING_TOOLS = ["get_reservation_details", "search_flights", "check_fare_rules",
+                 "hold_seat", "confirm_payment"]
+RECIPE = (
+    "1. get_reservation_details(id) to read the cabin. 2. search_flights(origin, destination, "
+    "date). 3. check_fare_rules on the chosen fare. 4. hold_seat before quoting a price. "
+    "5. confirm_payment last. Pitfall: never hold a seat before the fare rules are read."
+)
+
+
+def winning_row(task_id: str, tools: list[str] | None = None, **kw: Any) -> dict[str, Any]:
+    """A passing row whose trace is a real multi-step tool sequence."""
+    row = {
+        "task_id": task_id,
+        "score": 1.0,
+        "trace_id": f"tr-{task_id}",
+        "output": '{"action": "rebooked"}',
+        "trace": [{"tool": t, "args": {"id": task_id}, "result": '{"ok": true}'}
+                  for t in (tools if tools is not None else BOOKING_TOOLS)],
+    }
+    row.update(kw)
+    return row
+
+
+def procedure_reply(steps: list[str], text: str = RECIPE) -> str:
+    return json.dumps([{"text": text, "steps": steps, "tool": steps[0], "evidence": EVIDENCE}])
+
+
+def test_reflect_writes_a_procedure_from_a_successful_multi_step_run(tmp_path: Path) -> None:
+    mem = Memory(tmp_path / "memory.json")
+    client = FakeClient(turns=[procedure_reply(BOOKING_TOOLS)])
+    added = mem.reflect([winning_row("w1")], StubDomain(), client=client, iteration=1)
+    assert [(e.kind, e.steps) for e in added] == [(KIND_PROCEDURE, BOOKING_TOOLS)]
+    assert added[0].created_iteration == 1 and added[0].tool == BOOKING_TOOLS[0]
+    # the prompt shows the tool calls in the order they happened
+    prompt = client.calls[0]["messages"][1]["content"]
+    assert "1. get_reservation_details" in prompt and "5. confirm_payment" in prompt
+
+
+def test_short_successful_runs_are_not_worth_a_procedure(tmp_path: Path) -> None:
+    mem = Memory(tmp_path / "memory.json")
+    client = FakeClient(turns=[procedure_reply(BOOKING_TOOLS[:2])])
+    assert mem.reflect([winning_row("w1", BOOKING_TOOLS[:2])], StubDomain(), client=client) == []
+    assert client.calls == []  # under MIN_PROCEDURE_STEPS, so nothing is even asked
+
+
+def test_a_procedure_naming_a_tool_the_run_never_called_is_dropped(tmp_path: Path) -> None:
+    """Grounding for a procedure is checkable, so it is checked rather than trusted."""
+    mem = Memory(tmp_path / "memory.json")
+    client = FakeClient(turns=[procedure_reply([*BOOKING_TOOLS, "cancel_reservation"])])
+    assert mem.reflect([winning_row("w1")], StubDomain(), client=client) == []
+
+
+def test_a_procedure_with_no_steps_is_dropped(tmp_path: Path) -> None:
+    mem = Memory(tmp_path / "memory.json")
+    reply = json.dumps([{"text": RECIPE, "steps": [], "evidence": EVIDENCE}])
+    assert mem.reflect([winning_row("w1")], StubDomain(), client=FakeClient(turns=[reply])) == []
+
+
+def test_the_same_recipe_learned_twice_is_merged(tmp_path: Path) -> None:
+    mem = Memory(tmp_path / "memory.json")
+    client = FakeClient(
+        turns=[procedure_reply(BOOKING_TOOLS),
+               procedure_reply(BOOKING_TOOLS, "A completely different wording of the recipe.")]
+    )
+    mem.reflect([winning_row("w1")], StubDomain(), client=client)
+    assert mem.reflect([winning_row("w2")], StubDomain(), client=client) == []
+    assert len(mem.entries) == 1
+    assert mem.entries[0].source_task_ids == ["w1", "w2"]
+
+
+def test_one_run_yields_both_a_rule_and_a_procedure(tmp_path: Path) -> None:
+    """Failures teach constraints, successes teach recipes; a run can do both."""
+    mem = Memory(tmp_path / "memory.json")
+    client = FakeClient(
+        turns=[rules_reply({"text": RULE, "tool": "get_reservation_details"}),
+               procedure_reply(BOOKING_TOOLS)]
+    )
+    added = mem.reflect([failing_row("t1"), winning_row("w1")], StubDomain(), client=client)
+    assert [e.kind for e in added] == [KIND_RULE, KIND_PROCEDURE]
+    assert mem.by_kind() == {KIND_RULE: 1, KIND_PROCEDURE: 1}
+    # the rule pass sees only the failure, the procedure pass only the success
+    assert "task t1" in client.calls[0]["messages"][1]["content"]
+    assert "task w1" in client.calls[1]["messages"][1]["content"]
+    assert "task t1" not in client.calls[1]["messages"][1]["content"]
+
+
+def test_a_procedure_can_be_recalled_and_rendered(tmp_path: Path) -> None:
+    mem = Memory(tmp_path / "memory.json")
+    mem.entries = [
+        Entry(id="p", text=RECIPE, domain="toy", kind=KIND_PROCEDURE, steps=BOOKING_TOOLS,
+              tool="get_reservation_details"),
+        Entry(id="r", text=RULE, domain="toy"),
+    ]
+    got = mem.recall({"id": "t", "input": "Rebook the reservation and confirm payment."}, 2)
+    assert {e.id for e in got} == {"p", "r"}
+    block = mem.prompt_block(got)
+    assert "## Rules" in block and "## Procedures" in block and RECIPE in block
+
+
 # --- recall ------------------------------------------------------------------------------
+
+
+@pytest.fixture(params=["fts5", "overlap"])
+def backend(request, monkeypatch):  # noqa: ANN001, ANN201 - pytest fixtures
+    """Run the recall tests over FTS5 and over the fallback, so neither rots."""
+    if request.param == "overlap":
+        monkeypatch.setattr(memory_mod, "fts5_available", lambda: False)
+    elif not memory_mod.fts5_available():
+        pytest.skip("this Python's sqlite3 has no FTS5")
+    return request.param
 
 
 def stocked(tmp_path: Path) -> Memory:
@@ -192,7 +309,7 @@ def stocked(tmp_path: Path) -> Memory:
     return mem
 
 
-def test_recall_ranks_by_overlap_and_is_deterministic(tmp_path: Path) -> None:
+def test_recall_ranks_by_overlap_and_is_deterministic(backend: str, tmp_path: Path) -> None:
     mem = stocked(tmp_path)
     task = {"id": "t1", "input": "Modify the basic economy reservation for Ada."}
     first = [e.id for e in mem.recall(task, 2)]
@@ -202,17 +319,17 @@ def test_recall_ranks_by_overlap_and_is_deterministic(tmp_path: Path) -> None:
     assert first == [e.id for e in mem.recall(task, 2)]
 
 
-def test_recall_prefers_an_entry_whose_tool_the_task_names(tmp_path: Path) -> None:
+def test_recall_prefers_an_entry_whose_tool_the_task_names(backend: str, tmp_path: Path) -> None:
     mem = stocked(tmp_path)
     task = {"id": "t2", "input": "Post this invoice after calling get_invoice."}
     assert [e.id for e in mem.recall(task, 1)] == ["b"]
 
 
-def test_recall_returns_nothing_for_an_unrelated_task(tmp_path: Path) -> None:
+def test_recall_returns_nothing_for_an_unrelated_task(backend: str, tmp_path: Path) -> None:
     assert stocked(tmp_path).recall({"id": "t3", "input": "Reboot the printer."}, 3) == []
 
 
-def test_recall_honours_k_and_skips_retired_entries(tmp_path: Path) -> None:
+def test_recall_honours_k_and_skips_retired_entries(backend: str, tmp_path: Path) -> None:
     mem = stocked(tmp_path)
     assert mem.recall({"id": "t4", "input": "reservation invoice refund"}, 0) == []
     mem.entries[0].status = "retired"
@@ -222,7 +339,7 @@ def test_recall_honours_k_and_skips_retired_entries(tmp_path: Path) -> None:
     assert "a" not in got and got == [e.id for e in mem.recall(task, 5)]
 
 
-def test_recall_records_what_it_injected(tmp_path: Path) -> None:
+def test_recall_records_what_it_injected(backend: str, tmp_path: Path) -> None:
     mem = stocked(tmp_path)
     injected = [e.id for e in mem.recall({"id": "t1", "input": "basic economy reservation"}, 2)]
     assert injected[0] == "a"
@@ -264,20 +381,68 @@ def test_credit_run_uses_the_injection_log(tmp_path: Path) -> None:
 # --- persistence -------------------------------------------------------------------------
 
 
-def test_store_round_trips_across_processes(tmp_path: Path) -> None:
+def test_store_round_trips_through_sqlite(tmp_path: Path) -> None:
     mem = stocked(tmp_path)
     mem.entries[0].wins = 4
+    mem.entries.append(Entry(id="p", text=RECIPE, domain="toy", kind=KIND_PROCEDURE,
+                             steps=BOOKING_TOOLS, evidence=EVIDENCE))
     path = mem.save()
+    assert path == tmp_path / "memory.db" and path.is_file()
     reloaded = Memory.load(path)
-    assert [e.id for e in reloaded.entries] == ["a", "b", "c"]
+    assert [e.id for e in reloaded.entries] == ["a", "b", "c", "p"]
     assert reloaded.entries[0].wins == 4 and reloaded.entries[1].tool == "get_invoice"
+    procedure = reloaded.entries[3]
+    assert procedure.kind == KIND_PROCEDURE and procedure.steps == BOOKING_TOOLS
+
+
+def test_the_json_export_is_written_beside_the_db(tmp_path: Path) -> None:
+    """The dashboard and a human read the export; SQLite is only the store of record."""
+    stocked(tmp_path).save()
+    exported = json.loads((tmp_path / "memory.json").read_text())
+    assert [e["id"] for e in exported["entries"]] == ["a", "b", "c"]
+    assert exported["entries"][0]["kind"] == KIND_RULE
+
+
+def test_the_db_is_queryable_without_this_module(tmp_path: Path) -> None:
+    stocked(tmp_path).save()
+    with sqlite3.connect(tmp_path / "memory.db") as conn:
+        rows = conn.execute("SELECT id, kind, status FROM entries ORDER BY id").fetchall()
+    assert rows == [("a", KIND_RULE, "active"), ("b", KIND_RULE, "active"),
+                    ("c", KIND_RULE, "active")]
+
+
+def test_a_json_only_store_still_loads(tmp_path: Path) -> None:
+    """Stores written before the SQLite index existed are read from the export."""
+    (tmp_path / "memory.json").write_text(
+        json.dumps({"entries": [{"id": "old", "text": RULE, "domain": "toy"}]})
+    )
+    loaded = Memory.load(tmp_path / "memory.db")
+    assert [e.id for e in loaded.entries] == ["old"] and loaded.entries[0].kind == KIND_RULE
 
 
 def test_missing_or_corrupt_store_loads_empty(tmp_path: Path) -> None:
     assert Memory.load(tmp_path / "nope.json").entries == []
-    bad = tmp_path / "bad.json"
-    bad.write_text("{ not json")
-    assert Memory.load(bad).entries == []
+    (tmp_path / "bad.json").write_text("{ not json")
+    assert Memory.load(tmp_path / "bad.json").entries == []
+    (tmp_path / "bad.db").write_bytes(b"this is not a database")
+    assert Memory.load(tmp_path / "bad.db").entries == []
+
+
+def test_recall_stays_fast_on_a_large_store(tmp_path: Path) -> None:
+    """A measured floor, not a claim: 1k entries must not make recall unusable."""
+    mem = Memory(tmp_path / "memory.json", [
+        Entry(id=f"e{i:04d}", domain="toy",
+              text=f"Escalate a {i} dollar refund when the reservation fare class is restricted.")
+        for i in range(1000)
+    ])
+    task = {"id": "t", "input": "Refund a restricted fare reservation for 42 dollars."}
+    mem.recall(task, 3)  # first call pays for building the index
+    start = time.perf_counter()
+    for _ in range(20):
+        mem.begin_run()
+        assert len(mem.recall(task, 3)) == 3
+    per_call_ms = (time.perf_counter() - start) / 20 * 1000
+    assert per_call_ms < 100, per_call_ms
 
 
 # --- a domain the runtime can actually run -----------------------------------------------

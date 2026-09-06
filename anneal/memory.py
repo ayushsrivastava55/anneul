@@ -1,28 +1,35 @@
-"""Episodic memory: contextual rules the agent learns from its own failed traces.
+"""Episodic memory: what the agent learns about a domain from its own runs.
 
-The loop writes here, the runtime reads here, and the store survives the process:
+The loop writes here, the runtime reads here, and the store survives the process. Two kinds
+of entry are learned, both grounded in what the tools actually returned:
 
-- ``reflect(rows, domain, client=...)`` looks at the tasks a run FAILED, together with the
-  tool results those runs actually saw, and asks the model (cheap tier, through
-  :mod:`anneal.llm`) for one to three imperative rules that would have changed the outcome
-  -- e.g. *"basic economy reservations cannot be modified; check the cabin with
-  get_reservation_details before offering a change"*. Each rule cites the tool result that
-  justifies it. New rules are deduplicated against the store by token overlap.
-- ``recall(task, k)`` returns the top ``k`` active entries for a task by keyword/tool
-  overlap. It is deterministic (ties break on entry id) and records what it handed out so
-  the loop can credit it later.
-- ``credit(entries, passed)`` / ``credit_run(rows, threshold)`` move ``hits``/``wins``/
-  ``losses``, and ``prune()`` retires entries whose losses outgrow their wins after a
-  minimum sample. Memory that cannot unlearn is just a growing prompt.
+- a ``rule`` -- a contextual constraint extracted from a FAILED task, e.g. *"basic economy
+  reservations cannot be modified; call get_reservation_details and check the cabin before
+  offering a change"*. The model must quote the tool result that justifies it.
+- a ``procedure`` -- an ordered tool recipe extracted from a SUCCESSFUL task that took at
+  least ``MIN_PROCEDURE_STEPS`` tool calls: which tools to call, in what order, with what
+  parameters, and the pitfalls. A procedure is kept only when every tool it names was
+  actually called by that task, which is a stronger check than a quoted string.
 
-The store is JSON at ``runs/<domain>/memory.json`` (the path is injectable; tests pass a
-tmp path). Nothing domain-specific lives here: a rule is text the model wrote about the
-tool results of one domain, carried in a ``domain``-tagged entry.
+``recall(task, k)`` retrieves the top ``k`` active entries for a task. The index is SQLite
+FTS5 (``sqlite3`` ships with Python; no new dependency) with the porter stemmer, ranked by
+bm25 and tie-broken on entry id so recall is deterministic. Builds of Python without FTS5
+fall back to token-overlap scoring; both paths are tested.
 
-The active store for a run is a contextvar (``activate``/``active``) so the runtime can
-reach it without a signature change and so ``runner``'s thread pool -- which copies the
-caller's context -- shares one instance. Nothing is auto-created from disk inside the
-runtime: with no active memory, the runtime behaves exactly as it did before.
+``credit(entries, passed)`` / ``credit_run(rows, threshold)`` move ``hits``/``wins``/
+``losses`` for the entries a task was actually given, and ``prune()`` retires entries whose
+losses outgrow their wins after a minimum sample. Memory that cannot unlearn is just a
+growing prompt.
+
+The store of record is SQLite at ``runs/<domain>/memory.db``; ``save`` also writes a
+``memory.json`` export next to it so the dashboard and a human can read it without SQL. The
+path is injectable and either name may be handed to ``Memory``/``Memory.load``.
+
+Nothing domain-specific lives here: an entry is text the model wrote about one domain's tool
+results, carried in a ``domain``-tagged row. The active store for a run is a contextvar
+(``activate``/``active``) so the runtime can reach it without a signature change and so
+``runner``'s thread pool -- which copies the caller's context -- shares one instance. With no
+active store the runtime behaves exactly as it did before memory existed.
 
 Only the search split is ever reflected on; the reserved evaluation split is the gate's
 business and never reaches this module.
@@ -34,11 +41,13 @@ import contextlib
 import json
 import logging
 import re
+import sqlite3
 import threading
 import uuid
 from collections.abc import Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -48,18 +57,27 @@ logger = logging.getLogger("anneal.memory")
 
 #: Model tier used for reflection (never a model id -- those live in specs/models.yaml).
 REFLECT_TIER = "cheap"
-#: Heading the runtime injects the recalled rules under.
+#: Heading the runtime injects the recalled entries under.
 MEMORY_HEADING = "Learned from previous runs"
-#: Most rules one reflection may add.
+#: Entry kinds.
+RULE, PROCEDURE = "rule", "procedure"
+#: Most entries one reflection pass may add.
 MAX_NEW_RULES = 3
-#: Failed tasks shown to the reflector in one prompt.
+#: Failed / successful tasks shown to the reflector in one prompt.
 MAX_FAILURES = 5
+MAX_SUCCESSES = 3
+#: Tool calls a successful task needs before its procedure is worth writing down.
+MIN_PROCEDURE_STEPS = 5
+#: Pseudo-tool the tool_router records its choice under; not a real step.
+ROUTE_TOOL = "route"
 #: Characters of one tool result kept in the reflection prompt.
 RESULT_CHARS = 400
-#: Token-overlap (Jaccard) at or above which two rules are considered the same rule.
+#: Token-overlap (Jaccard) at or above which two entries are considered the same lesson.
 DEDUPE_THRESHOLD = 0.6
 #: Injections an entry needs before ``prune`` is allowed to judge it.
 MIN_SAMPLE = 3
+#: FTS5 tokenizer: porter stemming so "reservations" finds "reservation".
+FTS_TOKENIZER = "porter unicode61"
 
 _STOPWORDS = frozenset(
     """a an and are as at be before but by can cannot do does for from has have if in into is it
@@ -68,6 +86,7 @@ _STOPWORDS = frozenset(
 )
 
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
+_WORD_RE = re.compile(r"[a-z0-9]+")
 
 REFLECT_SYSTEM = (
     "You study an agent's failed runs and write down what it should have known.\n"
@@ -83,17 +102,36 @@ REFLECT_SYSTEM = (
     "vague rules. Reply with the JSON array and nothing else."
 )
 
+PROCEDURE_SYSTEM = (
+    "You study an agent's SUCCESSFUL multi-step runs and write down the procedure, so the "
+    "next run gets there in fewer steps.\n"
+    f"Reply with a JSON array of at most {MAX_NEW_RULES} objects, each "
+    '{"text": ..., "steps": [...], "tool": ..., "evidence": ...}.\n'
+    "- steps: the tool names to call, in the order they must be called. Use only tools that "
+    "appear in the runs below.\n"
+    "- text: the recipe as short numbered steps naming the parameters that matter, ending "
+    "with the pitfalls that would have broken it. Good: '1. get_reservation_details(id) to "
+    "read the cabin. 2. search_flights(origin, destination, date) ... Pitfall: never call "
+    "book before the payment method is confirmed.'\n"
+    "- tool: the tool the procedure starts with.\n"
+    "- evidence: the tool result that shows the procedure worked.\n"
+    "Write down only a procedure that generalises to other tasks of this kind. If the run "
+    "was a one-off, reply with []. Reply with the JSON array and nothing else."
+)
+
 
 # --- entries -----------------------------------------------------------------------------
 
 
 @dataclass
 class Entry:
-    """One learned rule and its track record."""
+    """One learned rule or procedure and its track record."""
 
     id: str
     text: str
     domain: str
+    kind: str = RULE
+    steps: list[str] = field(default_factory=list)
     source_task_ids: list[str] = field(default_factory=list)
     source_trace_ids: list[str] = field(default_factory=list)
     tool: str | None = None
@@ -112,6 +150,10 @@ class Entry:
         known = {f: data.get(f) for f in cls.__dataclass_fields__ if f in data}
         known.setdefault("id", uuid.uuid4().hex[:12])
         return cls(**known)  # type: ignore[arg-type]
+
+    def body(self) -> str:
+        """The text the full-text index searches: the entry plus its tool vocabulary."""
+        return " ".join([self.text, self.tool or "", *self.steps])
 
 
 def tokens(text: str) -> set[str]:
@@ -144,16 +186,94 @@ def task_text(task: Any) -> str:
     return payload if isinstance(payload, str) else json.dumps(payload, default=str)
 
 
+def tool_steps(trace: Iterable[dict[str, Any]]) -> list[str]:
+    """The real tool names a trace called, in order (the router's pseudo-step excluded)."""
+    return [
+        str(s.get("tool"))
+        for s in trace or ()
+        if isinstance(s, dict) and s.get("tool") and s.get("tool") != ROUTE_TOOL
+    ]
+
+
+# --- full-text index ---------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def fts5_available() -> bool:
+    """True when this Python's sqlite3 was built with FTS5 (checked once)."""
+    try:
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute(f"CREATE VIRTUAL TABLE probe USING fts5(body, tokenize='{FTS_TOKENIZER}')")
+    except sqlite3.Error as exc:
+        logger.warning(json.dumps({"event": "fts5_unavailable", "error": str(exc)}))
+        return False
+    return True
+
+
+def fts_query(text: str) -> str:
+    """``"term" OR "term" ...`` from a task's words; '' when nothing is worth searching.
+
+    Terms come from ``[a-z0-9]+`` only, so no task text can inject FTS5 query syntax.
+    """
+    terms = {w for w in _WORD_RE.findall(text.lower()) if len(w) > 2 and w not in _STOPWORDS}
+    return " OR ".join(f'"{t}"' for t in sorted(terms))
+
+
+class _Index:
+    """An in-memory FTS5 index over the active entries, rebuilt when the store changes."""
+
+    def __init__(self) -> None:
+        self._conn: sqlite3.Connection | None = None
+        self._signature: tuple[tuple[str, str], ...] = ()
+
+    def _connect(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        return self._conn
+
+    def refresh(self, entries: list[Entry]) -> None:
+        """Rebuild the index when the set of active entries has changed."""
+        signature = tuple((e.id, e.status) for e in entries)
+        if signature == self._signature and self._conn is not None:
+            return
+        conn = self._connect()
+        with conn:
+            conn.execute("DROP TABLE IF EXISTS mem")
+            conn.execute(
+                "CREATE VIRTUAL TABLE mem USING "
+                f"fts5(entry_id UNINDEXED, body, tokenize='{FTS_TOKENIZER}')"
+            )
+            conn.executemany(
+                "INSERT INTO mem (entry_id, body) VALUES (?, ?)",
+                [(e.id, e.body()) for e in entries],
+            )
+        self._signature = signature
+
+    def search(self, query: str) -> dict[str, float]:
+        """entry id -> relevance for the entries matching ``query`` (higher is better)."""
+        if not query or self._conn is None:
+            return {}
+        rows = self._conn.execute(
+            "SELECT entry_id, bm25(mem) FROM mem WHERE mem MATCH ?", (query,)
+        ).fetchall()
+        # FTS5 bm25 is negative-is-better; flip it so every score in this module rises.
+        return {str(entry_id): -float(rank) for entry_id, rank in rows}
+
+
 # --- the store ---------------------------------------------------------------------------
 
 
 class Memory:
-    """A persistent list of learned rules plus the bookkeeping for one run."""
+    """A persistent set of learned entries plus the bookkeeping for one run."""
 
     def __init__(self, path: str | Path, entries: Iterable[Entry] | None = None) -> None:
         self.path = Path(path)
+        #: store of record, and the human-readable export beside it
+        self.db_path = self.path.with_suffix(".db")
+        self.json_path = self.path.with_suffix(".json")
         self.entries: list[Entry] = list(entries or [])
         self._lock = threading.RLock()
+        self._index = _Index()
         #: task_id -> entry ids handed to that task this run (set by ``recall``).
         self.injections: dict[str, list[str]] = {}
         #: task_id -> {"trace": [...], "output": ...} recorded by the runtime this run.
@@ -163,33 +283,25 @@ class Memory:
 
     @classmethod
     def load(cls, path: str | Path) -> Memory:
-        """Read the store at ``path``; a missing or malformed file yields an empty memory."""
-        p = Path(path)
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return cls(p)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning(json.dumps({"event": "memory_unreadable", "path": str(p),
-                                       "error": str(exc)}))
-            return cls(p)
-        rows = data.get("entries", data) if isinstance(data, dict) else data
-        return cls(p, [Entry.from_dict(r) for r in rows if isinstance(r, dict)])
+        """Read the store at ``path``: the SQLite db, else the JSON export, else empty."""
+        store = cls(path)
+        rows = _read_db(store.db_path)
+        if rows is None:
+            rows = _read_json(store.json_path)
+        store.entries = [Entry.from_dict(r) for r in rows if isinstance(r, dict)]
+        return store
 
     def save(self) -> Path:
-        """Write the store atomically (tmp + rename) and return its path."""
+        """Write the SQLite store and the JSON export; returns the db path."""
         return tracing.node_span("memory.save")(self._save)()
 
     def _save(self) -> Path:
         with self._lock:
-            body = json.dumps(
-                {"entries": [e.to_dict() for e in self.entries]}, indent=2, sort_keys=True
-            )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(body + "\n", encoding="utf-8")
-        tmp.replace(self.path)
-        return self.path
+            rows = [e.to_dict() for e in self.entries]
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_db(self.db_path, rows)
+        _write_json(self.json_path, rows)
+        return self.db_path
 
     # --- per-run bookkeeping ---
 
@@ -200,7 +312,7 @@ class Memory:
             self.observations.clear()
 
     def observe(self, task_id: str, trace: list[dict[str, Any]], output: Any) -> None:
-        """Record the tool results one task saw, so ``reflect`` can ground rules in them."""
+        """Record the tool results one task saw, so ``reflect`` can ground entries in them."""
         with self._lock:
             self.observations[str(task_id)] = {"trace": list(trace or []), "output": output}
 
@@ -216,6 +328,13 @@ class Memory:
     def by_id(self, entry_id: str) -> Entry | None:
         return next((e for e in self.entries if e.id == entry_id), None)
 
+    def by_kind(self) -> dict[str, int]:
+        """Active entry count per kind, e.g. ``{"rule": 4, "procedure": 1}``."""
+        counts = {RULE: 0, PROCEDURE: 0}
+        for entry in self.active:
+            counts[entry.kind] = counts.get(entry.kind, 0) + 1
+        return counts
+
     def injected_ids(self) -> list[str]:
         """Distinct entry ids injected since the last ``begin_run``, in first-use order."""
         with self._lock:
@@ -227,10 +346,11 @@ class Memory:
     # --- recall ---
 
     def recall(self, task: Any, k: int = 3) -> list[Entry]:
-        """Top ``k`` active entries for ``task`` by keyword/tool overlap, best first.
+        """Top ``k`` active entries for ``task``, best first.
 
-        Deterministic: entries score on token overlap with the task text (a tool named in
-        both is worth an extra point) and ties break on entry id.
+        Ranked by SQLite FTS5 bm25 over the entry text, tool name and step list (porter
+        stemming, so "reservations" finds "reservation"), plus a point for an entry whose
+        tool the task names. Ties break on entry id, so recall is deterministic.
         """
         return tracing.node_span("memory.recall")(self._recall)(task, k)
 
@@ -238,10 +358,14 @@ class Memory:
         if k <= 0:
             return []
         text = task_text(task)
-        want = tokens(text)
         lowered = text.lower()
+        with self._lock:
+            entries = self.active
+            relevance = self._relevance(entries, text)
         scored = [
-            (self._score(entry, want, lowered), entry.id, entry) for entry in self.active
+            (score + (1.0 if e.tool and e.tool.lower() in lowered else 0.0), e.id, e)
+            for e in entries
+            for score in [relevance.get(e.id, 0.0)]
         ]
         ranked = [t for t in sorted(scored, key=lambda t: (-t[0], t[1])) if t[0] > 0][:k]
         hits = [entry for _, _, entry in ranked]
@@ -249,19 +373,25 @@ class Memory:
             self.injections.setdefault(task_id_of(task), []).extend(e.id for e in hits)
         return hits
 
-    @staticmethod
-    def _score(entry: Entry, want: set[str], lowered: str) -> float:
-        score = overlap(want, tokens(entry.text))
-        if entry.tool and entry.tool.lower() in lowered:
-            score += 1.0
-        return score
+    def _relevance(self, entries: list[Entry], text: str) -> dict[str, float]:
+        """entry id -> text relevance: FTS5 bm25 when available, else token overlap."""
+        if fts5_available():
+            self._index.refresh(entries)
+            return self._index.search(fts_query(text))
+        want = tokens(text)
+        scores = {e.id: overlap(want, tokens(e.body())) for e in entries}
+        return {entry_id: s for entry_id, s in scores.items() if s > 0}
 
     def prompt_block(self, entries: list[Entry]) -> str:
-        """The recalled rules rendered for a system prompt, or '' when there are none."""
+        """The recalled entries rendered for a system prompt, or '' when there are none."""
         if not entries:
             return ""
-        lines = "\n".join(f"- {e.text}" for e in entries)
-        return f"# {MEMORY_HEADING}\n\n{lines}"
+        parts = [f"# {MEMORY_HEADING}"]
+        for kind, label in ((RULE, "Rules"), (PROCEDURE, "Procedures")):
+            chosen = [e for e in entries if e.kind == kind]
+            if chosen:
+                parts.append(f"## {label}\n\n" + "\n".join(f"- {e.text}" for e in chosen))
+        return "\n\n".join(parts)
 
     # --- credit and pruning ---
 
@@ -313,11 +443,18 @@ class Memory:
     # --- reflection ---
 
     def add(self, entry: Entry) -> Entry | None:
-        """Append ``entry`` unless an active entry already says the same thing."""
+        """Append ``entry`` unless an active entry of the same kind already covers it.
+
+        Procedures are compared on their step list first: two recipes over the same tool
+        vocabulary read alike, so text overlap alone would merge distinct ones.
+        """
         candidate = tokens(entry.text)
         with self._lock:
             for existing in self.active:
-                if overlap(candidate, tokens(existing.text)) >= DEDUPE_THRESHOLD:
+                if existing.kind != entry.kind:
+                    continue
+                same_steps = bool(entry.steps) and existing.steps == entry.steps
+                if same_steps or overlap(candidate, tokens(existing.text)) >= DEDUPE_THRESHOLD:
                     _merge(existing, entry)
                     return None
             self.entries.append(entry)
@@ -333,12 +470,12 @@ class Memory:
         threshold: float | None = None,
         traces: Any = None,
     ) -> list[Entry]:
-        """Learn from the failed rows of one run; returns the entries actually added.
+        """Learn from one run: rules from what failed, procedures from what worked.
 
         ``traces`` is an optional :class:`anneal.diagnose.TraceSource` (the Neatlogs MCP
         client when it is configured) used to enrich rows whose trace the runtime did not
         record. Reflection never raises: a gateway that is not configured logs and yields
-        no new rules.
+        nothing new.
         """
         return tracing.node_span("memory.reflect")(self._reflect)(
             list(rows), domain, client, iteration, threshold, traces
@@ -349,33 +486,48 @@ class Memory:
         iteration: int, threshold: float | None, traces: Any,
     ) -> list[Entry]:
         limit = _threshold(domain) if threshold is None else threshold
-        failures = [r for r in rows if float(r.get("score") or 0.0) < limit][:MAX_FAILURES]
-        if not failures:
+        cases = [(row, self._trace_for(row, traces)) for row in rows]
+        failures = [c for c in cases if float(c[0].get("score") or 0.0) < limit][:MAX_FAILURES]
+        wins = [
+            c for c in cases
+            if float(c[0].get("score") or 0.0) >= limit
+            and len(tool_steps(c[1])) >= MIN_PROCEDURE_STEPS
+        ][:MAX_SUCCESSES]
+        added = self._learn(RULE, failures, domain, client, iteration)
+        added += self._learn(PROCEDURE, wins, domain, client, iteration)
+        logger.info(json.dumps({"event": "memory_reflect", "domain": getattr(domain, "name", ""),
+                                "iteration": iteration, "failures": len(failures),
+                                "successes": len(wins), "added": len(added),
+                                "total": len(self.active), "by_kind": self.by_kind()}))
+        return added
+
+    def _learn(
+        self, kind: str, cases: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+        domain: Any, client: Any, iteration: int,
+    ) -> list[Entry]:
+        """One reflection pass: ask for entries of ``kind``, keep the grounded ones."""
+        if not cases:
             return []
-        cases = [(row, self._trace_for(row, traces)) for row in failures]
+        system = REFLECT_SYSTEM if kind == RULE else PROCEDURE_SYSTEM
         messages = [
-            {"role": "system", "content": REFLECT_SYSTEM},
-            {"role": "user", "content": _reflect_prompt(domain, cases)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": _reflect_prompt(domain, cases, kind)},
         ]
         try:
             reply, _usage = llm.chat(REFLECT_TIER, messages, client=client, temperature=0)
         except Exception as exc:  # noqa: BLE001 - reflection is best effort, never fatal
-            logger.warning(json.dumps({"event": "reflect_failed", "error": repr(exc)}))
+            logger.warning(json.dumps({"event": "reflect_failed", "kind": kind,
+                                       "error": repr(exc)}))
             return []
-        grounded = _grounded(parse_rules(reply), any(trace for _, trace in cases))
-        added = [
-            e for e in (
-                self.add(_entry(rule, failures, getattr(domain, "name", ""), iteration))
-                for rule in grounded
-            ) if e is not None
-        ]
-        logger.info(json.dumps({"event": "memory_reflect", "domain": getattr(domain, "name", ""),
-                                "iteration": iteration, "failures": len(failures),
-                                "added": len(added), "total": len(self.active)}))
-        return added
+        rows = [row for row, _ in cases]
+        grounded = _grounded(parse_rules(reply), kind, cases)
+        made = (
+            _entry(r, kind, rows, getattr(domain, "name", ""), iteration) for r in grounded
+        )
+        return [e for e in (self.add(m) for m in made) if e is not None]
 
     def _trace_for(self, row: dict[str, Any], traces: Any) -> list[dict[str, Any]]:
-        """The tool calls one failed task made: the row's own, else what the runtime saw."""
+        """The tool calls one task made: the row's own, else what the runtime saw."""
         trace = [s for s in (row.get("trace") or []) if isinstance(s, dict)]
         if trace:
             return trace
@@ -387,23 +539,101 @@ class Memory:
         return [s for s in (context.get("trace") or []) if isinstance(s, dict)]
 
 
-def _grounded(rules: list[dict[str, Any]], had_tool_results: bool) -> list[dict[str, Any]]:
-    """Drop rules that cite no tool result, but only when there were tool results to cite.
+# --- persistence helpers -----------------------------------------------------------------
 
-    A rule the model cannot point at a tool result for is a guess, and guesses are what
-    memory is supposed to stop accumulating. Runs that made no tool call at all (a crash, a
-    schema failure on the first turn) have nothing to cite, so their rules pass through.
+_DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS entries (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_iteration INTEGER NOT NULL,
+    data TEXT NOT NULL
+)
+"""
+
+
+def _write_db(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Replace the store's contents in one transaction."""
+    with sqlite3.connect(path) as conn:
+        conn.execute(_DB_SCHEMA)
+        conn.execute("DELETE FROM entries")
+        conn.executemany(
+            "INSERT INTO entries (id, kind, status, created_iteration, data) VALUES (?,?,?,?,?)",
+            [
+                (r["id"], r.get("kind", RULE), r.get("status", "active"),
+                 int(r.get("created_iteration") or 0), json.dumps(r, sort_keys=True))
+                for r in rows
+            ],
+        )
+    conn.close()
+
+
+def _read_db(path: Path) -> list[dict[str, Any]] | None:
+    """Rows from the SQLite store, or None when it is absent or unreadable."""
+    if not path.is_file():
+        return None
+    try:
+        with sqlite3.connect(path) as conn:
+            raw = conn.execute("SELECT data FROM entries ORDER BY rowid").fetchall()
+        conn.close()
+        return [json.loads(row[0]) for row in raw]
+    except (sqlite3.Error, json.JSONDecodeError) as exc:
+        logger.warning(json.dumps({"event": "memory_db_unreadable", "path": str(path),
+                                   "error": str(exc)}))
+        return None
+
+
+def _write_json(path: Path, rows: list[dict[str, Any]]) -> None:
+    """The human/dashboard-readable export, written atomically."""
+    body = json.dumps({"entries": rows}, indent=2, sort_keys=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(body + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _read_json(path: Path) -> list[dict[str, Any]]:
+    """Rows from the JSON export; missing or malformed files read as empty."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(json.dumps({"event": "memory_unreadable", "path": str(path),
+                                   "error": str(exc)}))
+        return []
+    rows = data.get("entries", data) if isinstance(data, dict) else data
+    return rows if isinstance(rows, list) else []
+
+
+# --- reflection helpers ------------------------------------------------------------------
+
+
+def _grounded(
+    rules: list[dict[str, Any]], kind: str,
+    cases: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+) -> list[dict[str, Any]]:
+    """Keep only the entries the runs below actually support.
+
+    A rule must quote a tool result -- unless the runs made no tool call at all, in which
+    case there is nothing to quote and its lesson still counts. A procedure must name only
+    tools those runs really called, in a non-empty order; that is checkable, so it is
+    checked rather than trusted.
     """
-    if not had_tool_results:
-        return rules
-    kept = [r for r in rules if str(r.get("evidence") or "").strip()]
+    called = {t for _, trace in cases for t in tool_steps(trace)}
+    if kind == PROCEDURE:
+        kept = [r for r in rules if r.get("steps") and set(map(str, r["steps"])) <= called]
+    elif called:
+        kept = [r for r in rules if str(r.get("evidence") or "").strip()]
+    else:
+        kept = rules
     for dropped in [r for r in rules if r not in kept]:
-        logger.info(json.dumps({"event": "memory_ungrounded", "text": str(dropped.get("text"))}))
+        logger.info(json.dumps({"event": "memory_ungrounded", "kind": kind,
+                                "text": str(dropped.get("text"))}))
     return kept
 
 
 def _merge(existing: Entry, new: Entry) -> None:
-    """Fold a duplicate rule's provenance into the entry that already covers it."""
+    """Fold a duplicate entry's provenance into the one that already covers it."""
     for field_name in ("source_task_ids", "source_trace_ids"):
         merged = dict.fromkeys([*getattr(existing, field_name), *getattr(new, field_name)])
         setattr(existing, field_name, list(merged))
@@ -415,13 +645,17 @@ def _threshold(domain: Any) -> float:
     return float(getattr(getattr(domain, "eval", None), "THRESHOLD", 1.0))
 
 
-def _entry(rule: dict[str, Any], rows: list[dict[str, Any]], domain: str, iteration: int) -> Entry:
+def _entry(
+    rule: dict[str, Any], kind: str, rows: list[dict[str, Any]], domain: str, iteration: int
+) -> Entry:
     named = {str(t) for t in (rule.get("task_ids") or rule.get("tasks") or [])}
     used = [r for r in rows if str(r.get("task_id")) in named] or rows
     return Entry(
         id=uuid.uuid4().hex[:12],
         text=str(rule["text"]).strip(),
         domain=domain,
+        kind=kind,
+        steps=[str(s) for s in (rule.get("steps") or [])],
         source_task_ids=[str(r.get("task_id")) for r in used],
         source_trace_ids=[str(r["trace_id"]) for r in used if r.get("trace_id")],
         tool=str(rule["tool"]) if rule.get("tool") else None,
@@ -430,21 +664,29 @@ def _entry(rule: dict[str, Any], rows: list[dict[str, Any]], domain: str, iterat
     )
 
 
-def _reflect_prompt(domain: Any, cases: list[tuple[dict[str, Any], list[dict[str, Any]]]]) -> str:
-    """The failed tasks, what their tools returned and what the agent answered."""
-    parts = [f"# Goal\n\n{getattr(domain, 'goal', '')[:1500]}", "# Failed runs"]
+def _reflect_prompt(
+    domain: Any, cases: list[tuple[dict[str, Any], list[dict[str, Any]]]], kind: str
+) -> str:
+    """The runs, what their tools returned and what the agent answered."""
+    label = "Failed runs" if kind == RULE else "Successful runs"
+    parts = [f"# Goal\n\n{getattr(domain, 'goal', '')[:1500]}", f"# {label}"]
     for row, trace in cases:
         steps = "\n".join(
-            f"  - {s.get('tool')}({json.dumps(s.get('args'), default=str)}) -> "
+            f"  {i}. {s.get('tool')}({json.dumps(s.get('args'), default=str)}) -> "
             f"{str(s.get('result'))[:RESULT_CHARS]}"
-            for s in trace
+            for i, s in enumerate(trace, start=1)
         ) or "  - (no tool calls)"
         parts.append(
             f"## task {row.get('task_id')} (score {row.get('score')})\n"
-            f"tool results:\n{steps}\n"
+            f"tool calls in order:\n{steps}\n"
             f"agent answer: {str(row.get('output'))[:RESULT_CHARS]}"
         )
-    parts.append("What should the agent have known before starting these tasks?")
+    question = (
+        "What should the agent have known before starting these tasks?"
+        if kind == RULE
+        else "What is the reusable procedure these runs followed?"
+    )
+    parts.append(question)
     return "\n\n".join(parts)
 
 
@@ -486,5 +728,5 @@ def activate(memory: Memory | None) -> Iterator[Memory | None]:
 
 
 def memory_path(runs_dir: str | Path, domain_name: str) -> Path:
-    """``<runs_dir>/<domain>/memory.json`` -- one store per domain, kept across runs."""
-    return Path(runs_dir) / domain_name / "memory.json"
+    """``<runs_dir>/<domain>/memory.db`` -- one store per domain, kept across runs."""
+    return Path(runs_dir) / domain_name / "memory.db"

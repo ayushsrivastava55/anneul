@@ -6,10 +6,11 @@ them, tracks spend against ``--budget`` and writes ``runs/<domain>/<iter>/summar
 The reserved evaluation split is never named here -- only ``anneal.gate`` may touch it.
 
 Episodic memory (``anneal.memory``) is opened once per ``anneal run`` and stays active for
-the whole loop, so ``anneal.runtime`` can recall rules at task time. Around each search run
-the loop clears the injection log, credits the entries the finished rows used, reflects on
-that run's failures to learn new rules, retires the losing ones and saves the store. The
-resulting counts land in summary.json as ``memory_entries`` / ``memory_injected``.
+the whole loop, so ``anneal.runtime`` can recall at task time. Around each search run the
+loop clears the injection log, credits the entries the finished rows used, reflects on that
+run (rules from what failed, procedures from what succeeded), retires the losing entries and
+saves the store. The counts land in summary.json as ``memory_entries``, ``memory_by_kind``
+and ``memory_injected``.
 """
 
 from __future__ import annotations
@@ -291,8 +292,9 @@ def _summary(loop: Loop, iteration: int, inc: Any, **kw: Any) -> dict[str, Any]:
         "budget_usd": loop.budget,
         "search": dict(loop.search),
         "specs": dict(loop.specs),
-        # episodic memory: how many rules the agent holds, and how many it used this run
+        # episodic memory: what the agent has learned, and how much of it this run used
         "memory_entries": len(loop.memory.active) if loop.memory is not None else 0,
+        "memory_by_kind": loop.memory.by_kind() if loop.memory is not None else {},
         "memory_injected": loop.injected,
     }
     body.update(kw)
@@ -420,7 +422,8 @@ def cmd_run(args: argparse.Namespace, console: Console) -> int:
     _progress(console, written)
     console.print(f"summaries in {loop.runs_dir / loop.domain.name}")
     if loop.memory is not None:
-        console.print(f"memory: {len(loop.memory.active)} learned rules in {loop.memory.path}")
+        kinds = ", ".join(f"{n} {kind}s" for kind, n in loop.memory.by_kind().items())
+        console.print(f"memory: {kinds} in {loop.memory.db_path}")
     return status
 
 
