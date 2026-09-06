@@ -3,24 +3,25 @@
     "id": "L-0001",
     "class": "policy_misread",
     "node": "planner",
-    "count": 8,
+    "count": 10,
     "evidence": [
       "20167904e8a432996157847f3fb10768",
       "660d8910729877574b95d27c14d0f615"
     ],
     "status": "open",
     "operators_tried": [
-      "add_fewshots"
+      "add_fewshots",
+      "add_cite_or_abstain"
     ],
     "fallback": false,
     "confidence": 0.735,
-    "confidence_n": 8
+    "confidence_n": 10
   },
   {
     "id": "L-0002",
     "class": "unsafe_action",
     "node": "executor",
-    "count": 16,
+    "count": 20,
     "evidence": [
       "54880ea5006c7cd5a537a99a04aaa86b",
       "423713f88c126625f2b7a85ec15e2844",
@@ -35,20 +36,20 @@
     ],
     "fallback": false,
     "confidence": 1.0,
-    "confidence_n": 16
+    "confidence_n": 20
   },
   {
     "id": "L-0003",
     "class": "policy_misread",
     "node": "executor",
-    "count": 4,
+    "count": 5,
     "evidence": [
       "06e8c4cbd0b05d21cc549ae9cba6678c"
     ],
     "status": "open",
     "operators_tried": [],
     "fallback": false,
-    "confidence": 0.8,
-    "confidence_n": 4
+    "confidence": 0.8099999999999999,
+    "confidence_n": 5
   }
 ]
