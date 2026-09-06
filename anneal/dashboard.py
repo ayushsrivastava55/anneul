@@ -771,7 +771,7 @@ def _step_row(key: str, name: str, desc: str, state: str, status: str, index: in
     # The flow sits well down the page, so a bare "?step=" link would reload to the top and
     # lose the reader's place. The fragment lands them back on the flow; .flow's
     # scroll-margin-top keeps the header from covering it.
-    href = f"?step={key}" + (f"&amp;domain={escape(domain)}" if domain else "") + "#flow"
+    href = f"/console?step={key}" + (f"&amp;domain={escape(domain)}" if domain else "") + "#flow"
     is_open = "true" if key == open_key else "false"
     return (
         f'<li class="step" data-state="{state}" data-open="{is_open}" style="--i:{index}">'
@@ -797,12 +797,13 @@ def render_timeline(
             zip(STEP_META, stages, strict=True)
         )
     )
-    title = next(name for key, name, _ in STEP_META if key == open_key)
+    title, blurb = next((name, desc) for key, name, desc in STEP_META if key == open_key)
     detail = step_detail(open_key, it, issues, fronts)
     return (
         f'<div id="timeline" class="flow" tabindex="-1"><ol class="steps">{rows}</ol>'
         f'<section class="detail" data-step="{escape(open_key)}">'
-        f'<header class="ph"><h2>{escape(title)}</h2>'
+        f'<header class="ph"><div><h2>{escape(title)}</h2>'
+        f'<p class="phdesc">{escape(blurb)}</p></div>'
         f'<span class="meta">round {escape(it.label)}</span></header>'
         f"{detail}</section></div>"
     )
@@ -905,17 +906,31 @@ def _status(row: dict[str, Any]) -> str:
     return "".join(chips) or f'<span class="mono absent">{DASH}</span>'
 
 
+def _secs(value: Any) -> str:
+    """Milliseconds as seconds, which is the unit a reader thinks in.
+
+    A latency the runner records as 80185 is eighty seconds; printed as "80185ms" it reads as
+    a machine number nobody converts in their head. Anything under a second keeps two decimals
+    so a fast run does not round to 0.0s.
+    """
+    number = value if isinstance(value, int | float) and not isinstance(value, bool) else None
+    if number is None:
+        return DASH
+    seconds = float(number) / 1000
+    return f"{seconds:.2f}s" if seconds < 1 else f"{seconds:.1f}s"
+
+
 def render_run(it: Iteration) -> str:
     """Run's artefact: what each candidate scored, then the task rows behind that score."""
     scores = "".join(
-        f'<tr style="--i:{i}"><td class="mono id">{escape(cid)}{_roles(it, cid)}</td>'
+        f'<tr style="--i:{i}"><td>{escape(vocab.design_name(cid))}'
+        f'<span class="cid mono">{escape(cid)}</span>{_roles(it, cid)}</td>'
         f'<td class="scorecell"><span class="bar">'
         f'{_score_bar(_num(m if isinstance(m, dict) else {}, SCORE_KEYS))}</span>'
         f'<span class="mono">{num(_num(m if isinstance(m, dict) else {}, SCORE_KEYS))}</span></td>'
         f'<td class="mono num">{num(_num(m if isinstance(m, dict) else {}, COST_KEYS), "${:.4f}")}'
         "</td>"
-        f'<td class="mono num">'
-        f'{num(_num(m if isinstance(m, dict) else {}, P95_KEYS), "{:.0f}ms")}</td>'
+        f'<td class="mono num">{_secs(_num(m if isinstance(m, dict) else {}, P95_KEYS))}</td>'
         f'<td class="mono num">'
         f'{num((m if isinstance(m, dict) else {}).get("hard_fails"), "{:.0f}")}</td></tr>'
         for i, (cid, m) in enumerate(sorted(it.search.items()))
@@ -926,8 +941,10 @@ def render_run(it: Iteration) -> str:
             "as it finishes."
         )
     table = (
-        '<table class="tbl"><thead><tr><th>candidate</th><th>score</th><th>$/task</th>'
-        f"<th>p95</th><th>hard fails</th></tr></thead><tbody>{scores}</tbody></table>"
+        '<div class="tblwrap"><table class="tbl"><thead><tr><th>design</th>'
+        "<th>how often it is right</th><th>cost per task</th>"
+        f"<th>slowest runs</th><th>serious mistakes</th></tr></thead>"
+        f"<tbody>{scores}</tbody></table></div>"
         if scores
         else ""
     )
@@ -939,17 +956,22 @@ def render_run(it: Iteration) -> str:
         f'<td class="mono">{txt(row.get("task_id"))}</td>'
         f"<td>{_pips(row.get('score'))}</td>"
         f'<td class="mono num">{num(row.get("score"))}</td>'
-        f'<td class="mono num">{num(row.get("latency_ms"), "{:.0f}ms")}</td>'
+        f'<td class="mono num">{_secs(row.get("latency_ms"))}</td>'
         f'<td class="st">{_status(row)}</td></tr>'
         for i, row in enumerate(it.live[:60])
     )
+    def plural(n: int, word: str) -> str:
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    design = vocab.design_name(it.live_candidate) if it.live_candidate else DASH
     label = (
-        f'<div class="sublabel mono">per task · {escape(it.live_candidate or DASH)} · '
-        f"{len(it.live)} tasks · {hard} hard fails</div>"
+        f'<div class="sublabel">Each task, for {escape(design)} &mdash; '
+        f"{escape(plural(len(it.live), 'task'))}, "
+        f"{escape(plural(hard, 'serious mistake'))}</div>"
     )
     return (
         table + label + '<div class="scroll"><table class="tbl"><thead><tr><th>task</th>'
-        "<th>score</th><th></th><th>latency</th><th>status</th></tr></thead>"
+        "<th>how well it did</th><th></th><th>took</th><th>status</th></tr></thead>"
         f"<tbody>{rows}</tbody></table></div>"
     )
 
@@ -1282,7 +1304,7 @@ def render_topbar(
     titles = titles or {}
     if domains:
         links = "".join(
-            f'<a class="dom{" on" if d == domain else ""}" href="?domain={escape(d)}">'
+            f'<a class="dom{" on" if d == domain else ""}" href="/console?domain={escape(d)}">'
             f'<span class="dname">{escape(titles.get(d) or d)}</span>'
             f'<span class="dslug mono">{escape(d)}</span></a>'
             for d in domains
@@ -1300,13 +1322,40 @@ def render_topbar(
         f'<span class="bar wide"><i style="width:{used * 100:.1f}%"></i></span></div>'
     )
     return (
-        '<header id="topbar" class="topbar"><a class="mark" href="/">ANNEAL</a>'
+        '<header id="topbar" class="topbar">'
         f'<nav class="doms">{links}</nav>'
         f'<div class="meters">{meter}{render_balance(credit_balance())}</div></header>'
     )
 
 
 CSS = """
+
+/* --- product chrome: the bar that makes three pages one application ------------------- */
+.chrome { display:flex; align-items:center; gap:28px; padding:16px 48px;
+  border-bottom:1px solid var(--rule); background:var(--panel); }
+.chrome .mark { font-family:"Geist Mono",ui-monospace,monospace; letter-spacing:0.22em;
+  font-size:13px; color:var(--ink); text-decoration:none; }
+.navlinks { display:flex; gap:20px; }
+.navlink { font-size:13px; color:var(--ash); text-decoration:none; }
+.navlink:hover, .navlink.on { color:var(--ink); }
+
+.pagehead { padding:48px 0 28px; }
+.pagehead h1 { font-size:26px; font-weight:500; letter-spacing:-0.015em; margin:0 0 6px; }
+.pagehead p { color:var(--graphite); font-size:14px; max-width:62ch; margin:0; }
+.agents { border:1px solid var(--rule); background:var(--panel); }
+.agent { display:grid; grid-template-columns:minmax(200px,2fr) repeat(4, minmax(0,1fr));
+  gap:20px; align-items:center; padding:18px 20px; text-decoration:none; color:var(--ink);
+  border-bottom:1px solid var(--rule); }
+.agent:last-child { border-bottom:0; }
+.agent:hover { background:var(--paper); }
+.aname { font-size:14px; }
+.aname .dslug { display:block; font-size:10px; color:var(--ash); margin-top:2px; }
+.afield { display:block; }
+.ak { display:block; font-size:10px; text-transform:uppercase; letter-spacing:0.1em;
+  color:var(--ash); margin-bottom:3px; }
+.av { font-size:13px; }
+@media (max-width:860px) { .agent { grid-template-columns:1fr 1fr; }
+  .chrome { padding:16px 24px; } }
 /* Tokens from .stitch/DESIGN.md: Paper canvas, one bordered Panel, Ink text, a single orange
    accent (the running step's dot and the measured curve), 1px Rule separation, no shadows. */
 :root { --paper:#F7F7F5; --panel:#FFFFFF; --ink:#111214; --graphite:#5B6068; --ash:#8A9099;
@@ -1377,23 +1426,33 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
   font-family:"Geist Mono",ui-monospace,monospace; }
 .ph .meta { font-size:11px; color:var(--ash); }
 .note { color:var(--graphite); font-size:12px; margin:8px 0; max-width:65ch; }
-.sublabel { font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:var(--ash);
+/* a caption, not a label: it is a sentence now, so it is not shouted in caps */
+.sublabel { font-size:12px; color:var(--graphite);
   margin:20px 0 8px; }
 
-/* the step timeline is the page's structure: steps left, the open step's artefact right */
-.flow { display:grid; grid-template-columns:44fr 56fr; }
-.steps { list-style:none; margin:0; padding:16px 0; border-right:1px solid var(--rule); }
-.step { position:relative; animation:cascade .3s both; animation-delay:calc(var(--i) * 40ms); }
-.step::before { content:""; position:absolute; left:31px; top:0; bottom:0; width:1px;
-  background:var(--rule); }
-.step:first-child::before { top:50%; } .step:last-child::before { bottom:50%; }
-.step a { display:grid; grid-template-columns:24px minmax(0,1fr) auto 16px; gap:12px;
-  align-items:center; padding:14px 24px; position:relative; }
+/* the step timeline is the page's structure: the six steps across, the open one beneath */
+/* The six steps run across the top and the open step's panel takes the whole width beneath.
+   They used to sit side by side, 44/56, which left the panel about 700px: every table with
+   more than four columns was clipped at the right edge, and the answer to that is width, not
+   fewer facts. Reading order is also the loop's order this way -- left to right, then down. */
+.flow { display:block; }
+.steps { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap;
+  border-bottom:1px solid var(--rule); }
+.step { position:relative; flex:1 1 150px; min-width:0; border-right:1px solid var(--rule);
+  animation:cascade .3s both; animation-delay:calc(var(--i) * 40ms); }
+.step:last-child { border-right:0; }
+/* The vertical spine that joined the steps when they were a column is gone: a row of
+   steps is joined by being a row, and the line ran straight through their captions. */
+.step a { display:block; padding:14px 16px 16px; text-decoration:none; }
+.step .dot { display:inline-block; margin-bottom:8px; }
+.step .sname { display:block; }
+.step .sstat { display:block; margin-top:4px; overflow-wrap:anywhere; }
+.step .chev { display:none; }  /* a row of steps reads as a sequence; a chevron per step does not */
 .step a:hover { background:var(--paper); }
 .step .dot { width:9px; height:9px; border-radius:50%; background:var(--rule);
   justify-self:center; position:relative; z-index:1; box-shadow:0 0 0 4px var(--panel); }
 .step .sname { font-size:13px; color:var(--ash); }
-.step .sdesc { display:none; font-size:12px; color:var(--ash); grid-column:2; }
+.step .sdesc { display:none; }  /* the open step's blurb belongs in the panel header */
 .step .sstat { font-size:11px; color:var(--ash); }
 .step .chev { width:12px; height:12px; fill:none; stroke:var(--rule); stroke-width:1.5; }
 .step[data-state=done] .dot { background:var(--ash); }
@@ -1402,11 +1461,12 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
 .step[data-state=active] .sname { color:var(--ink); font-weight:500; }
 .step[data-open=true] a { background:var(--paper); }
 .step[data-open=true] .sname { color:var(--ink); }
-.step[data-open=true] .sdesc { display:block; }
-.step[data-open=true] .chev { stroke:var(--ink); transform:rotate(90deg); }
-.step[data-open=true] a::before { content:""; position:absolute; left:0; top:0; bottom:0;
-  width:2px; background:var(--ink); }
-.detail { padding:24px; min-width:0; }
+
+
+.step[data-open=true] a::after { content:""; position:absolute; left:0; right:0; bottom:-1px;
+  height:2px; background:var(--ink); }
+.detail { padding:24px 24px 32px; min-width:0; }
+.phdesc { margin:4px 0 0; color:var(--graphite); font-size:13px; max-width:70ch; }
 @keyframes pulse { 0%,100% { transform:scale(1); opacity:1; }
   50% { transform:scale(1.65); opacity:.5; } }
 @keyframes cascade { from { opacity:0; transform:translateY(4px); } to { opacity:1; } }
@@ -1597,13 +1657,83 @@ def render_page(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>Anneal console</title>"
-        f"<style>{CSS}</style></head><body><div class='wrap'>"
+        f"<style>{CSS}</style></head><body>"
+        f'{render_nav("/console")}'
+        f"<div class='wrap'>"
         f"{render_topbar(selected, domains, it, agent_titles(app_state.runs_dir, domains))}"
         f'<main class="product">{_strip(it)}'
         f"{render_contract(contract, selected, title)}"
-        f"{render_curves(summaries, pending)}"
         f'<div id="flow">{render_timeline(it, issues, _fronts(app_state, selected), step)}</div>'
+        f"{render_curves(summaries, pending)}"
         f"</main></div><script>{SCRIPT}</script></body></html>"
+    )
+
+
+NAV = (("/", "Home"), ("/agents", "Agents"), ("/console", "Console"))
+
+
+def render_nav(active: str) -> str:
+    """The bar every page carries, so no page is a dead end.
+
+    Anneal is three surfaces, not one screen: the landing page explains what it is, the agents
+    index says which agents exist and how each is doing, and the console follows one agent
+    through a round. Each was reachable only by typing its URL, which is why the console read
+    as the whole product.
+    """
+    links = "".join(
+        f'<a class="navlink{" on" if href == active else ""}" href="{href}">{escape(label)}</a>'
+        for href, label in NAV
+    )
+    return (
+        '<header class="chrome"><a class="mark" href="/">ANNEAL</a>'
+        f'<nav class="navlinks">{links}</nav></header>'
+    )
+
+
+def render_agents(state: AppState) -> str:
+    """The agents index: every agent that has run, what it does, and where it got to.
+
+    This is the page a person lands on after the front door. It answers "what do I have and
+    which one needs me", which the console cannot answer because the console is always looking
+    at exactly one agent.
+    """
+    domains = list_domains(state.runs_dir)
+    titles = agent_titles(state.runs_dir, domains)
+    summaries = load_summaries(state.runs_dir)
+    rows = []
+    for name in domains:
+        points = summaries.get(name) or []
+        latest = points[-1] if points else None
+        it = load_iteration(state.runs_dir, name)
+        stages = pipeline_stages(it, _issues(state, name))
+        step_now = next(
+            (label for (_, label, _), (_, st, _) in zip(STEP_META, stages, strict=True)
+             if st == "active"),
+            STEP_META[-1][1],
+        )
+        rows.append(
+            f'<a class="agent" href="/console?domain={escape(name)}">'
+            f'<span class="aname">{escape(titles.get(name) or name)}'
+            f'<span class="dslug mono">{escape(name)}</span></span>'
+            f'<span class="afield"><span class="ak">rounds</span>'
+            f'<span class="av mono">{len(points)}</span></span>'
+            f'<span class="afield"><span class="ak">how often it is right</span>'
+            f'<span class="av mono">{num(latest.score if latest else None)}</span></span>'
+            f'<span class="afield"><span class="ak">cost per task</span>'
+            f'<span class="av mono">'
+            f'{num(latest.cost_per_task if latest else None, "${:.4f}")}</span></span>'
+            f'<span class="afield"><span class="ak">now on</span>'
+            f'<span class="av">{escape(step_now)}</span></span></a>'
+        )
+    body = "".join(rows) or _note(
+        "No agents yet — <code>uv run anneal init</code> asks five questions and writes one."
+    )
+    return (
+        f'{render_nav("/agents")}<div class="wrap">'
+        '<div class="pagehead"><h1>Your agents</h1>'
+        '<p>Each one was built from a goal, a set of tools and a way to score it. '
+        "Open one to watch the round it is on.</p></div>"
+        f'<div class="agents">{body}</div></div>'
     )
 
 
@@ -1613,17 +1743,29 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
     app = FastAPI(title="Anneal dashboard")
     app.state.anneal = state
 
-    @app.get("/", response_class=HTMLResponse)
-    def index(domain: str | None = None, step: str | None = None) -> str:
-        return render_page(state, domain, step)
-
-    @app.get("/landing", response_class=HTMLResponse)
-    def landing() -> str:
-        """The product landing page (also openable directly from landing/index.html)."""
+    def _landing() -> str:
         path = Path(__file__).resolve().parent.parent / "landing" / "index.html"
         if not path.exists():
             return "<html><body><p>landing/index.html is missing; see the repo.</p></body></html>"
         return path.read_text(encoding="utf-8")
+
+    @app.get("/", response_class=HTMLResponse)
+    def home() -> str:
+        """The front door. The console used to live here, which made it the whole product."""
+        return _landing()
+
+    @app.get("/landing", response_class=HTMLResponse)
+    def landing() -> str:
+        """Kept so links written before the console moved still work."""
+        return _landing()
+
+    @app.get("/agents", response_class=HTMLResponse)
+    def agents() -> str:
+        return render_agents(state)
+
+    @app.get("/console", response_class=HTMLResponse)
+    def console(domain: str | None = None, step: str | None = None) -> str:
+        return render_page(state, domain, step)
 
     @app.get("/fragments/topbar", response_class=HTMLResponse)
     def topbar(domain: str | None = None) -> str:

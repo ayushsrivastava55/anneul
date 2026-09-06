@@ -69,7 +69,7 @@ def client(tmp_path: Path) -> TestClient:
 
 
 def test_page_renders_fixture_numbers(client: TestClient) -> None:
-    response = client.get("/")
+    response = client.get("/console")
     assert response.status_code == 200
     body = response.text
     assert "airline" in body
@@ -119,7 +119,7 @@ def test_empty_runs_directory_renders_friendly_empty_state(tmp_path: Path) -> No
     runs = tmp_path / "runs"
     runs.mkdir()
     client = TestClient(dashboard.create_app(runs, tmp_path / "ledger.json"))
-    response = client.get("/")
+    response = client.get("/console")
     assert response.status_code == 200
     assert "No runs yet" in response.text
     # the console opens one step at a time, so the ledger and pareto empty states live on
@@ -130,7 +130,7 @@ def test_empty_runs_directory_renders_friendly_empty_state(tmp_path: Path) -> No
 
 def test_missing_runs_directory_does_not_traceback(tmp_path: Path) -> None:
     client = TestClient(dashboard.create_app(tmp_path / "nope", tmp_path / "nope.json"))
-    assert client.get("/").status_code == 200
+    assert client.get("/console").status_code == 200
     assert client.get("/fragments/curves").status_code == 200
 
 
@@ -142,7 +142,7 @@ def test_malformed_json_is_skipped_not_fatal(tmp_path: Path) -> None:
     (runs / "airline" / "anneal" / "pareto.json").write_text("[[[", encoding="utf-8")
     ledger.write_text("nope", encoding="utf-8")
     client = TestClient(dashboard.create_app(runs, ledger))
-    response = client.get("/")
+    response = client.get("/console")
     assert response.status_code == 200
     assert "0.734" in response.text
     assert "Ledger is empty" in client.get("/fragments/ledger").text
@@ -245,7 +245,8 @@ def test_reads_cli_summary_shape_and_prefers_winner_search_metrics(tmp_path: Pat
     assert point.pass3 == 0.5
     assert point.cost_per_task == 0.0130
     assert point.p95_latency_ms == 8100.0
-    body = TestClient(dashboard.create_app(tmp_path / "runs", tmp_path / "l.json")).get("/").text
+    app = dashboard.create_app(tmp_path / "runs", tmp_path / "l.json")
+    body = TestClient(app).get("/console").text
     assert "$0.0130" in body
     assert "0.5216" not in body
 
@@ -284,7 +285,42 @@ def test_landing_page_is_served_and_names_the_product(client: TestClient) -> Non
     assert "Anneal" in response.text
     # the page leads with what it does for the reader, not with a description of itself
     assert "anneal builds the agent" in response.text.lower()
-    assert "open the console" in response.text.lower()
+    # and it is a front door: both other surfaces are reachable from it
+    assert 'href="/agents"' in response.text
+    assert 'href="/console"' in response.text
+
+
+def test_the_three_surfaces_are_each_reachable_from_the_others(tmp_path: Path) -> None:
+    """Anneal is a landing page, an agents index and a console -- not one screen.
+
+    "/" served the console until this, so the console *was* the product: there was no way to
+    reach the landing page or to see which agents existed without typing a URL.
+    """
+    runs, ledger = write_fixture(tmp_path)
+    client = TestClient(dashboard.create_app(runs, ledger))
+    for path in ("/", "/agents", "/console"):
+        page = client.get(path)
+        assert page.status_code == 200, path
+        for href, _ in dashboard.NAV:
+            assert f'href="{href}"' in page.text, f"{path} cannot reach {href}"
+    assert client.get("/landing").status_code == 200  # the old link still works
+
+
+def test_the_agents_index_lists_every_agent_with_a_way_into_it(tmp_path: Path) -> None:
+    runs, ledger = write_fixture(tmp_path)
+    body = TestClient(dashboard.create_app(runs, ledger)).get("/agents").text
+    assert 'href="/console?domain=airline"' in body
+    assert "0.734" in body           # its latest measured score
+    assert "$0.0092" in body         # and its latest cost per task
+    assert "Design" in body  # the step this fixture's loop is on, named as the flow names it
+
+
+def test_the_agents_index_with_no_runs_says_how_to_make_one(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/agents").text
+    assert "No agents yet" in body
+    assert "anneal init" in body
 
 
 # --- the step timeline ------------------------------------------------------------------
@@ -454,7 +490,7 @@ def test_timeline_on_a_bare_runs_dir_makes_architect_the_active_step(tmp_path: P
     runs = tmp_path / "runs"
     runs.mkdir()
     client = TestClient(dashboard.create_app(runs, tmp_path / "ledger.json"))
-    states = step_states(client.get("/").text)
+    states = step_states(client.get("/console").text)
     assert states["architect"] == "active"
     assert set(states.values()) == {"active", "todo"}
 
@@ -469,8 +505,8 @@ def test_timeline_never_borrows_another_domains_ledger(tmp_path: Path) -> None:
     )
     (bare / "cand-01.yaml").write_text(PARENT_SPEC, encoding="utf-8")
     client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
-    assert step_states(client.get("/?domain=airline").text)["diagnose"] == "done"
-    bugfix = step_states(client.get("/?domain=bugfix").text)
+    assert step_states(client.get("/console?domain=airline").text)["diagnose"] == "done"
+    bugfix = step_states(client.get("/console?domain=bugfix").text)
     assert bugfix["run"] == "done"
     assert bugfix["diagnose"] == "active"
     assert bugfix["gate"] == "todo"
@@ -490,7 +526,7 @@ STEP_MARKERS = {
 def test_only_the_open_steps_detail_is_in_the_document(tmp_path: Path) -> None:
     client = console(tmp_path)
     for step, marker in STEP_MARKERS.items():
-        body = client.get(f"/?domain=airline&step={step}").text
+        body = client.get(f"/console?domain=airline&step={step}").text
         assert body.count('class="detail"') == 1, step
         assert open_step(body) == step
         assert marker in body, step
@@ -502,18 +538,18 @@ def test_only_the_open_steps_detail_is_in_the_document(tmp_path: Path) -> None:
 def test_the_open_step_defaults_to_the_step_the_loop_is_on(tmp_path: Path) -> None:
     """No ?step: the console opens the active step, and an unknown step falls back to it."""
     client = console(tmp_path)
-    assert open_step(client.get("/?domain=airline").text) == "anneal"
-    assert open_step(client.get("/?domain=airline&step=nonsense").text) == "anneal"
-    body = console(tmp_path / "b", gate=False).get("/?domain=airline").text
+    assert open_step(client.get("/console?domain=airline").text) == "anneal"
+    assert open_step(client.get("/console?domain=airline&step=nonsense").text) == "anneal"
+    body = console(tmp_path / "b", gate=False).get("/console?domain=airline").text
     assert open_step(body) == "gate"
 
 
 def test_every_step_is_a_plain_link_not_a_script(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/?domain=airline").text
+    body = console(tmp_path).get("/console?domain=airline").text
     for step in STEP_MARKERS:
         # The trailing #flow is what keeps a click from reloading to the top of the page and
-        # losing the reader's place; the flow sits below the contract and the charts.
-        assert f'href="?step={step}&amp;domain=airline#flow"' in body, step
+        # losing the reader's place; the flow sits below the contract rows.
+        assert f'href="/console?step={step}&amp;domain=airline#flow"' in body, step
     assert 'id="flow"' in body  # the anchor those links point at must exist
 
 
@@ -525,7 +561,7 @@ def test_the_curves_fragment_shows_the_same_domain_the_page_does(tmp_path: Path)
     was passed, so the charts for one domain were silently replaced by every domain stacked.
     """
     client = console(tmp_path)
-    page = client.get("/").text
+    page = client.get("/console").text
     fragment = client.get("/fragments/curves").text
     for domain in ("airline", "invoices"):
         assert (f"<h3 class=\"mono\">{domain}</h3>" in page) == (
@@ -536,17 +572,17 @@ def test_the_curves_fragment_shows_the_same_domain_the_page_does(tmp_path: Path)
 def test_absent_values_render_an_em_dash_not_a_zero(tmp_path: Path) -> None:
     """The challenger has no cost or p95, one task row has no score, one issue has no severity."""
     client = console(tmp_path)
-    run = client.get("/?domain=airline&step=run").text
+    run = client.get("/console?domain=airline&step=run").text
     # the incumbent's real numbers are there ...
     assert "$0.0430" in run
-    assert "20779ms" in run
+    assert "20.8s" in run  # milliseconds are shown as seconds
     # ... and the challenger's missing ones are em-dashes, never 0.0000
     assert run.count(f'<td class="mono num">{DASH}</td>') == 4  # challenger cost/p95, task 18
     assert "$0.0000" not in run
     assert ">0ms<" not in run
     assert "airline-18" in run
 
-    ledger = client.get("/?domain=airline&step=diagnose").text
+    ledger = client.get("/console?domain=airline&step=diagnose").text
     assert "not_a_real_class" in ledger                    # the id, as secondary text
     assert "Not a real class" in ledger                    # de-slugged, since it has no label
     assert f'<td class="mono num">{DASH}</td>' in ledger   # unknown severity
@@ -557,7 +593,7 @@ def test_absent_values_render_an_em_dash_not_a_zero(tmp_path: Path) -> None:
 
 
 def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/?domain=airline&step=gate").text
+    body = console(tmp_path).get("/console?domain=airline&step=gate").text
     assert vocab.decision("reject") in body
     # the gate's own reason line, with its field names read out as words and its numbers intact
     assert "right 3 times running 0.600 is below the version in use&#x27;s 0.700" in body
@@ -567,7 +603,7 @@ def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
 
 
 def test_gate_step_without_gate_json_says_so_and_invents_nothing(tmp_path: Path) -> None:
-    body = console(tmp_path, gate=False).get("/?domain=airline&step=gate").text
+    body = console(tmp_path, gate=False).get("/console?domain=airline&step=gate").text
     assert "No gate.json" in body
     # scoped to the panel: the header strip reports the summary's own decision on every page,
     # and the point here is that the gate panel invents no verdict of its own.
@@ -577,7 +613,7 @@ def test_gate_step_without_gate_json_says_so_and_invents_nothing(tmp_path: Path)
 
 
 def test_architect_step_shows_the_specs_with_node_pills_and_tiers(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/?domain=airline&step=architect").text
+    body = console(tmp_path).get("/console?domain=airline&step=architect").text
     assert "cand-01-add_validator_node-i1" in body  # the id stays, as small secondary text
     for text in (vocab.topology("single"), vocab.role("executor"), vocab.role("validator"),
                  vocab.tier("cheap"), vocab.tier("mid"), vocab.decision("reject"),
@@ -588,21 +624,21 @@ def test_architect_step_shows_the_specs_with_node_pills_and_tiers(tmp_path: Path
 
 
 def test_architect_step_without_a_spec_yaml_still_lists_the_candidates(tmp_path: Path) -> None:
-    body = console(tmp_path, spec=False).get("/?domain=airline&step=architect").text
+    body = console(tmp_path, spec=False).get("/console?domain=airline&step=architect").text
     assert "cand-01" in body
     assert DASH in body
 
 
 def test_mutate_step_shows_the_operator_the_issue_and_the_node_change(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/?domain=airline&step=mutate").text
+    body = console(tmp_path).get("/console?domain=airline&step=mutate").text
     for text in ("add_validator_node", "unsafe_action", "L-0001", "cand-01", "validator",
                  "12", "13", "PROMPTS"):
         assert text in body, text
 
 
 def test_run_step_reads_the_search_jsonl_and_flags_hard_fails(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/?domain=airline&step=run").text
-    for text in ("airline-10", "airline-13", "hard fail", "step budget", "20851ms"):
+    body = console(tmp_path).get("/console?domain=airline&step=run").text
+    for text in ("airline-10", "airline-13", "hard fail", "step budget", "20.9s"):
         assert text in body, text
     assert 'class="lrow bad"' in body       # the hard-fail row is flagged
     assert "trace_payload_marker" not in body  # traces are dropped on the way in
@@ -615,7 +651,7 @@ def test_run_step_never_opens_the_reserved_split(tmp_path: Path) -> None:
     reserved = runs / "airline" / "1" / "cand-01-add_validator_node-i1.holdout.s0.jsonl"
     reserved.write_text(json.dumps({"task_id": "reserved-task", "score": 1.0}), encoding="utf-8")
     client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
-    assert "reserved-task" not in client.get("/?domain=airline&step=run").text
+    assert "reserved-task" not in client.get("/console?domain=airline&step=run").text
     assert "holdout" not in Path(dashboard.__file__).read_text(encoding="utf-8")
 
 
@@ -623,7 +659,7 @@ def test_the_contract_rows_are_always_visible_and_read_the_domain_files(tmp_path
     """GOAL / TOOLS / SCORER come from domains/<name>/; a domain we do not have em-dashes."""
     client = console(tmp_path)
     for step in STEP_MARKERS:
-        body = client.get(f"/?domain=airline&step={step}").text
+        body = client.get(f"/console?domain=airline&step={step}").text
         for label in ("GOAL", "TOOLS", "SCORER"):
             assert f">{label}</span>" in body, (step, label)
     contract = dashboard.load_contract(tmp_path / "runs", "airline", CONSOLE_SUMMARY)
@@ -637,7 +673,7 @@ def test_topbar_lists_the_domains_present_in_runs_and_shows_the_budget(tmp_path:
     runs = write_console_fixture(tmp_path)
     (runs / "invoices" / "0").mkdir(parents=True)
     (runs / "invoices" / "0" / "summary.json").write_text(json.dumps({"iteration": 0}))
-    body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/").text
+    body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/console").text
     assert '?domain=airline' in body and '?domain=invoices' in body
     assert "$7.36 / $50.00" in body
 
@@ -648,7 +684,7 @@ def test_unmeasured_iterations_are_hollow_on_a_dotted_line(tmp_path: Path) -> No
     started = runs / "airline" / "3"
     started.mkdir()
     assert dashboard.pending_iterations(runs, "airline") == ("3",)
-    body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/").text
+    body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/console").text
     assert 'class="pending"' in body
     assert body.count('class="hollow"') == len(dashboard.METRICS)
     assert "not measured yet" in body
@@ -658,7 +694,7 @@ def test_malformed_spec_yaml_and_jsonl_lines_are_tolerated(tmp_path: Path) -> No
     runs = write_console_fixture(tmp_path)
     (runs / "airline" / "1" / "cand-01.yaml").write_text("id: [unclosed\n", encoding="utf-8")
     client = TestClient(dashboard.create_app(runs, tmp_path / "l.json"))
-    response = client.get("/?domain=airline&step=architect")
+    response = client.get("/console?domain=airline&step=architect")
     assert response.status_code == 200
     assert "cand-01" in response.text
     # the broken jsonl line is skipped, the three good rows survive
@@ -666,7 +702,7 @@ def test_malformed_spec_yaml_and_jsonl_lines_are_tolerated(tmp_path: Path) -> No
 
 
 def test_page_has_the_standing_regions_and_no_cdn_script(tmp_path: Path) -> None:
-    body = console(tmp_path).get("/?domain=airline").text
+    body = console(tmp_path).get("/console?domain=airline").text
     for region in ("topbar", "contract", "curves", "timeline"):
         assert f'id="{region}"' in body, region
     assert "http://" not in body and "https://" not in body
@@ -684,7 +720,7 @@ def test_a_gate_written_before_reason_parts_is_still_read_out_in_words(tmp_path:
     old_style = {k: v for k, v in CONSOLE_GATE.items() if k != "reason_parts"}
     path.write_text(json.dumps(old_style), encoding="utf-8")
     client = TestClient(dashboard.create_app(runs, tmp_path / "no-ledger.json"))
-    panel = client.get("/?domain=airline&step=gate").text
+    panel = client.get("/console?domain=airline&step=gate").text
     # the fields are rebuilt from the metrics that run did record, so even an old gate.json
     # reads as words; the field name is never shown
     assert "right 3 times running 0.600 is below the version in use&#x27;s 0.700" in panel

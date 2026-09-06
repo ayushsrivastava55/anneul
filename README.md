@@ -93,7 +93,7 @@ ollama pull qwen2.5:0.5b-instruct
 
 uv run anneal run domains/invoices --models specs/models.local.yaml --iterations 2 --budget 2.00
 uv run anneal report runs/final           # the results table below, straight from the runs
-uv run anneal dashboard --runs-dir runs/final  # http://localhost:8000
+uv run anneal dashboard --runs-dir runs/final  # landing at /, agents at /agents, console at /console
 ```
 
 Drop `--models` to use the hosted ladder instead; then `FRONTIER_API_KEY` and its siblings in

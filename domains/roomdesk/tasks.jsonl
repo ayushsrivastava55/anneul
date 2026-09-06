@@ -1,0 +1,10 @@
+{"expected": {"state": "birch booked 14-15"}, "id": "roomdesk-00", "input": {"request": "Book a room for 6 people from 14 to 15."}, "split": "search", "tags": ["state"]}
+{"expected": {"state": "oak booked 10-11"}, "id": "roomdesk-01", "input": {"request": "I need a room for 3 people at 10 to 11."}, "split": "holdout", "tags": ["state"]}
+{"expected": {"state": "nothing booked, no room fits"}, "id": "roomdesk-02", "input": {"request": "Room for 12 people, 9 to 10 please."}, "split": "train", "tags": ["state"]}
+{"expected": {"state": "nothing booked, no room fits"}, "id": "roomdesk-03", "input": {"request": "We are 8 people and want 10 to 11."}, "split": "train", "tags": ["state"]}
+{"expected": {"state": "oak booked 15-16"}, "id": "roomdesk-04", "input": {"request": "Two of us, 15 to 16."}, "split": "train", "tags": ["state"]}
+{"expected": {"state": "nothing booked, no room fits"}, "id": "roomdesk-05", "input": {"request": "Six people from 11 to 12 please."}, "split": "train", "tags": ["state"]}
+{"expected": {"state": "oak booked 16-17"}, "id": "roomdesk-06", "input": {"request": "A room for 4, 16 to 17."}, "split": "train", "tags": ["state"]}
+{"expected": {"state": "birch booked 13-14"}, "id": "roomdesk-07", "input": {"request": "Seven people, 13 to 14."}, "split": "train", "tags": ["state"]}
+{"expected": {"state": "nothing booked, no room fits"}, "id": "roomdesk-08", "input": {"request": "Need space for 18 people 10 to 11."}, "split": "holdout", "tags": ["state"]}
+{"expected": {"state": "oak booked 12-13"}, "id": "roomdesk-09", "input": {"request": "Three people, 12 to 13."}, "split": "search", "tags": ["state"]}

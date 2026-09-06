@@ -1,0 +1,12 @@
+{"expected": {"label": "network"}, "id": "ticketdesk-00", "input": {"request": "My VPN keeps dropping every ten minutes."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "access"}, "id": "ticketdesk-01", "input": {"request": "I cannot log in, my password is rejected."}, "split": "holdout", "tags": ["label"]}
+{"expected": {"label": "billing"}, "id": "ticketdesk-02", "input": {"request": "The invoice for last month charged me twice."}, "split": "search", "tags": ["label"]}
+{"expected": {"label": "hardware"}, "id": "ticketdesk-03", "input": {"request": "My laptop battery dies in an hour."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "network"}, "id": "ticketdesk-04", "input": {"request": "Wifi is very slow in the north meeting room."}, "split": "holdout", "tags": ["label"]}
+{"expected": {"label": "access"}, "id": "ticketdesk-05", "input": {"request": "I am locked out after too many 2fa attempts."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "billing"}, "id": "ticketdesk-06", "input": {"request": "Please refund the duplicate payment on my receipt."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "hardware"}, "id": "ticketdesk-07", "input": {"request": "The docking station will not charge my monitor."}, "split": "search", "tags": ["label"]}
+{"expected": {"label": "network"}, "id": "ticketdesk-08", "input": {"request": "DNS resolution fails behind the proxy."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "access"}, "id": "ticketdesk-09", "input": {"request": "SSO login loops back to the sign in page."}, "split": "train", "tags": ["label"]}
+{"expected": {"label": "hardware"}, "id": "ticketdesk-10", "input": {"request": "My keyboard has three dead keys."}, "split": "holdout", "tags": ["label"]}
+{"expected": {"label": "billing"}, "id": "ticketdesk-11", "input": {"request": "The charge on my card does not match the invoice."}, "split": "search", "tags": ["label"]}
