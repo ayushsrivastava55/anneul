@@ -1,0 +1,3 @@
+{"expected": {"answer": "hello.txt written"}, "id": "note_keeper-00", "input": {"request": "Write a file called hello.txt containing hi."}, "split": "train", "tags": ["examples"]}
+{"expected": {"answer": "hi"}, "id": "note_keeper-01", "input": {"request": "What is in hello.txt?"}, "split": "holdout", "tags": ["examples"]}
+{"expected": {"answer": "hello.txt"}, "id": "note_keeper-02", "input": {"request": "List the files."}, "split": "search", "tags": ["examples"]}

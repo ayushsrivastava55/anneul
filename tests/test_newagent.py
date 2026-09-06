@@ -46,15 +46,89 @@ def test_a_submission_becomes_the_queue_the_script_asks_for() -> None:
 
 def test_a_tool_answer_carries_exactly_one_follow_up() -> None:
     """tools_target and tools_module are gated on the tools answer; only one is ever asked."""
-    for kind in ("mcp", "python"):
-        queue = newagent.parse({**FORM, "tools": kind, "tools_target": "x"}).queue()
-        assert queue[:4] == ["expense checks", FORM["job"], kind, "x"]
-    assert newagent.parse({**FORM, "tools": "none", "tools_target": "x"}).queue()[3] == "label"
+    mcp_form = {**FORM, "tools": "mcp", "mcp_choice": "other", "mcp_other": "x"}
+    assert newagent.parse(mcp_form).queue()[:4] == ["expense checks", FORM["job"], "mcp", "x"]
+    py_form = {**FORM, "tools": "python", "python_choice": "other", "python_other": "x"}
+    assert newagent.parse(py_form).queue()[:4] == ["expense checks", FORM["job"], "python", "x"]
+    # nothing chosen means the follow-up is never asked, so the queue moves on to the scorer
+    assert newagent.parse({**FORM, "tools": "none"}).queue()[3] == "label"
+
+
+def test_a_catalogue_pick_becomes_its_launch_command_on_the_server() -> None:
+    """The person picks what the agent should be able to do. A command is our problem."""
+    picked = newagent.parse({**FORM, "tools": "mcp", "mcp_choice": "files",
+                             "files_path": "/tmp/box"})
+    assert picked.tools_target == (
+        "npx -y @modelcontextprotocol/server-filesystem /tmp/box"
+    )
+    default = newagent.parse({**FORM, "tools": "mcp", "mcp_choice": "memory"})
+    assert default.tools_target == "npx -y @modelcontextprotocol/server-memory"
+
+
+def test_every_catalogue_entry_names_a_real_published_server() -> None:
+    """Each command in the catalogue was checked against the npm registry, not remembered."""
+    for key, title, blurb, command in newagent.CATALOGUE:
+        assert command.startswith("npx -y @modelcontextprotocol/server-"), command
+        assert title and blurb and key
+        assert "\u2014" not in blurb
+
+
+def test_the_python_picker_lists_modules_that_are_actually_here(tmp_path: Path) -> None:
+    """Typing a dotted path from memory and finding out later is not an experience."""
+    (tmp_path / "usercode").mkdir()
+    (tmp_path / "usercode" / "mine.py").write_text(
+        "def send(x):\n    return x\n\ndef _hidden():\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "usercode" / "_skip.py").write_text("def a():\n    pass\n", encoding="utf-8")
+    found = newagent.python_modules(tmp_path)
+    assert found == [("usercode.mine", "send")]
+
+
+def test_the_form_offers_choices_instead_of_asking_for_a_command() -> None:
+    body = newagent.form_body()
+    for _key, title, _blurb, _command in newagent.CATALOGUE:
+        assert title in body, title
+    assert "Where are they?" not in body  # the question nobody could answer
+    assert 'data-when="mcp"' in body and 'data-when="python"' in body
 
 
 def test_half_filled_example_rows_are_dropped_not_sent_as_blanks() -> None:
     partial = {**FORM, "given_3": "A row with no expected answer", "expected_3": ""}
     assert len(newagent.parse(partial).examples) == 3
+
+
+def test_the_folder_a_files_agent_needs_is_made_before_the_server_starts(tmp_path: Path) -> None:
+    """Picking "work with files in a folder" is the decision. Creating it is not their job.
+
+    Without this the server refuses to start, the interview carries on with no tools, and the
+    agent is created with nothing to call.
+    """
+    folder = tmp_path / "box" / "inner"
+    submission = newagent.parse({
+        **FORM, "tools": "mcp", "mcp_choice": "files", "files_path": str(folder),
+    })
+    assert not folder.exists()
+    submission.prepare()
+    assert folder.is_dir()
+
+
+def test_prepare_touches_nothing_for_the_other_answers(tmp_path: Path) -> None:
+    for form in ({**FORM, "tools": "none"},
+                 {**FORM, "tools": "python", "python_choice": "usercode.x"},
+                 {**FORM, "tools": "mcp", "mcp_choice": "other",
+                  "mcp_other": "https://example.test/mcp"}):
+        newagent.parse(form).prepare()  # no directory is created for any of these
+
+
+def test_what_the_interview_had_to_say_reaches_the_page(tmp_path: Path, monkeypatch) -> None:
+    """A server that would not start was recorded and then dropped, so the page said "ready"."""
+    monkeypatch.setattr(dashboard, "DOMAINS_DIR", tmp_path / "domains")
+    (tmp_path / "domains").mkdir()
+    client = TestClient(dashboard.create_app(tmp_path / "runs", tmp_path / "l.json"))
+    page = client.post("/new", data=FORM)
+    assert page.status_code == 200
+    # three examples is enough to run and too few to mean anything, and it says so
+    assert "too few for the reserved evaluation split" in page.text
 
 
 def test_posting_the_form_writes_a_domain_that_loads(tmp_path: Path, monkeypatch) -> None:

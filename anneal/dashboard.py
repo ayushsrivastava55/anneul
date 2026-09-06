@@ -1631,6 +1631,16 @@ circle.hollow { fill:var(--panel); stroke:var(--ash); stroke-width:1; }
 }
 
 /* === overrides: these come last so they win over the base rules above === */
+.choice.pick { align-items:flex-start; padding:14px; }
+.choice.pick input { margin-top:3px; }
+.choice.pick span { display:block; }
+.choice.pick b { display:block; font-weight:500; font-size:14px; }
+.choice.pick em { display:block; font-style:normal; font-size:12px; color:var(--graphite);
+  margin-top:3px; }
+.sub-field { margin-top:16px; padding-left:14px; border-left:2px solid var(--rule); }
+.sub-field .flabel { font-size:13px; color:var(--graphite); }
+.reveal[hidden] { display:none; }
+
 /* --- the new-agent form ---------------------------------------------------------------
    Label above the control, helper text below it, errors above the form and in words. No
    placeholder-as-label anywhere: a placeholder disappears the moment someone starts typing. */
@@ -1660,6 +1670,8 @@ circle.hollow { fill:var(--panel); stroke:var(--ash); stroke-width:1; }
 /* "link" was already taken by the connector between node pills, whose rule sets
    width:10px; a button wearing it collapsed to 46px with the label spilling out. */
 .fsubmit.quiet { background:var(--panel); color:var(--ink); }
+.formnote { max-width:65ch; margin:0 0 16px; padding:12px 14px; font-size:13px;
+  color:var(--ink); background:var(--panel); border-left:2px solid var(--orange); }
 .formerror { max-width:65ch; margin:0 0 28px; padding:12px 14px; font-size:14px;
   color:var(--clay); background:var(--panel); border:1px solid var(--clay); }
 .donebox { border:1px solid var(--rule); background:var(--panel); padding:24px;
@@ -2062,7 +2074,7 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
         """
         submission = newagent.parse(dict(await request.form()))
         try:
-            path = newagent.create(submission, DOMAINS_DIR)
+            path, notes = newagent.create(submission, DOMAINS_DIR)
         except onboard.OnboardError as exc:
             body = newagent.form_body(str(exc))
             return HTMLResponse(page("Anneal - new agent", "/new", body), status_code=400)
@@ -2070,7 +2082,8 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
             log.warning("new agent failed: %s", exc)
             body = newagent.form_body(f"Could not create the agent: {exc}")
             return HTMLResponse(page("Anneal - new agent", "/new", body), status_code=400)
-        return HTMLResponse(page("Anneal - agent created", "/new", newagent.done_body(path)))
+        body = newagent.done_body(path, notes)
+        return HTMLResponse(page("Anneal - agent created", "/new", body))
 
     @app.get("/console", response_class=HTMLResponse)
     def console(
