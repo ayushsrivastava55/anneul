@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from anneal import __version__, architect, diagnose, gate, llm, mutate, runner, spec
+from anneal import anneal as anneal_stage
 from anneal.domain import load_domain
 from anneal.spec import HarnessSpec
 
@@ -32,8 +33,6 @@ COMMANDS: dict[str, str] = {
     "anneal": "downshift node models along the cost/latency Pareto front",
     "dashboard": "serve the runs/ dashboard on http://localhost:8000",
 }
-STUBS = ("anneal", "dashboard")
-
 SEARCH_SPLIT = diagnose.SEARCH_SPLIT
 DEFAULT_BUDGET = 5.00
 DEFAULT_CANDIDATES = len(architect.MENU)
@@ -434,6 +433,89 @@ def _regate(bodies: Any, args: argparse.Namespace, console: Console) -> None:
                       f"{result.reason} (p={result.p:.3f})")
 
 
+# --- `anneal anneal` and `anneal dashboard` ----------------------------------------------
+
+
+def _peak_score(summaries: list[dict[str, Any]]) -> float | None:
+    """The winner's held-out mean score, which is the bar the downshift has to hold 95% of."""
+    block, _ = _winner_block(summaries)
+    score = block.get("mean_score")
+    return None if score is None else float(score)
+
+
+def _anneal_domain(summaries: list[dict[str, Any]], args: argparse.Namespace,
+                   console: Console) -> int:
+    """Downshift one domain's winning spec. Returns 0 when it ran, 1 when it could not."""
+    last = summaries[-1]
+    name, winner_id = last["domain"], last["winner_id"]
+    spec_path = last["specs"].get(winner_id)
+    peak = _peak_score(summaries)
+    if spec_path is None or peak is None:
+        console.print(
+            f"[yellow]{name}: {winner_id} has no gated score to anneal against; "
+            f"run `anneal gate {args.runs_dir}` first[/yellow]"
+        )
+        return 1
+    domain = load_domain(last["domain_path"])
+    runs_dir = Path(args.runs_dir)
+    loop = Loop(
+        domain=domain, runs_dir=runs_dir, ledger=runs_dir / domain.name / "ledger.json",
+        budget=float(args.budget), concurrency=args.concurrency, seed=0,
+        models_path=args.models,
+    )
+    result = anneal_stage.downshift(
+        spec.load_spec(spec_path), domain,
+        peak_score=peak, runs_dir=runs_dir, iteration=int(last["iteration"]),
+        run=_budgeted_run(loop), models_path=args.models,
+    )
+    _anneal_table(console, name, peak, result)
+    console.print(f"  pareto: {result.pareto_path}\n  winner: {result.spec_path}")
+    return 0
+
+
+def _anneal_table(console: Console, domain: str, peak: float, result: Any) -> None:
+    front = {p.config_id for p in result.front}
+    table = Table(title=f"anneal {domain} (peak {peak:.3f})", show_edge=False)
+    for column in ("config", "tiers", "acc", "pass^3", "$/task", "p95 ms", "kept", "front"):
+        table.add_column(column)
+    for p in result.points:
+        table.add_row(
+            p.config_id, ",".join(f"{n}={t}" for n, t in sorted(p.node_tiers.items())),
+            _num(p.score), _num(p.pass3), _num(p.cost_per_task, 4),
+            _num(p.p95_latency_ms, 0), "yes" if p.kept else "no",
+            "*" if p.config_id in front else "",
+        )
+    console.print(table)
+
+
+def cmd_anneal(args: argparse.Namespace, console: Console) -> int:
+    """Walk each domain's winning spec down the model tiers while its gated score holds."""
+    summaries = _summaries(Path(args.runs_dir))
+    if not summaries:
+        console.print(f"[red]no summary.json under {args.runs_dir}[/red]")
+        return 1
+    gate.clear_cache()
+    status = 0
+    for name in dict.fromkeys(b["domain"] for b in summaries):
+        got = [b for b in summaries if b["domain"] == name]
+        try:
+            status |= _anneal_domain(got, args, console)
+        except BudgetExceeded as exc:
+            console.print(f"[red]{name}: {exc}[/red]")
+            status = 1
+    return status
+
+
+def cmd_dashboard(args: argparse.Namespace, console: Console) -> int:
+    """Serve the runs/ dashboard. Imported lazily so the CLI does not pay for FastAPI."""
+    from anneal import dashboard
+
+    return dashboard.main(
+        ["--runs-dir", args.runs_dir, "--ledger", args.ledger,
+         "--host", args.host, "--port", str(args.port)]
+    )
+
+
 def _num(value: Any, digits: int = 3) -> str:
     return DASH if value is None else f"{float(value):.{digits}f}"
 
@@ -508,12 +590,19 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--ledger", default=None, help="issue ledger path")
     run.add_argument("--models", default=None, help="price table (default specs/models.yaml)")
 
-    for name in ("gate", "report"):
+    for name in ("gate", "report", "anneal"):
         sub.choices[name].add_argument("runs_dir", help="runs/ directory to read")
-    sub.choices["gate"].add_argument("--budget", type=float, default=DEFAULT_BUDGET,
-                                     metavar="USD")
-    sub.choices["gate"].add_argument("--concurrency", type=int, default=None)
-    sub.choices["gate"].add_argument("--models", default=None)
+    for name in ("gate", "anneal"):
+        sub.choices[name].add_argument("--budget", type=float, default=DEFAULT_BUDGET,
+                                       metavar="USD")
+        sub.choices[name].add_argument("--concurrency", type=int, default=None)
+        sub.choices[name].add_argument("--models", default=None)
+
+    dash = sub.choices["dashboard"]
+    dash.add_argument("--runs-dir", default=str(runner.RUNS_DIR))
+    dash.add_argument("--ledger", default="ledger.json")
+    dash.add_argument("--host", default="127.0.0.1")
+    dash.add_argument("--port", type=int, default=8000)
     return parser
 
 
@@ -526,10 +615,10 @@ def main(argv: list[str] | None = None) -> int:
         for name, help_text in COMMANDS.items():
             console.print(f"  [cyan]{name:<10}[/cyan] {help_text}")
         return 0
-    if args.command in STUBS:
-        console.print(f"[yellow]anneal {args.command}[/yellow]: not implemented yet")
-        return 2
-    handler = {"run": cmd_run, "gate": cmd_gate, "report": cmd_report}[args.command]
+    handler = {
+        "run": cmd_run, "gate": cmd_gate, "report": cmd_report,
+        "anneal": cmd_anneal, "dashboard": cmd_dashboard,
+    }[args.command]
     return handler(args, console)
 
 

@@ -434,9 +434,49 @@ def test_persisted_spec_carries_the_loop_iteration(loop, tmp_path):
 # --- surface -----------------------------------------------------------------------------
 
 
-def test_stub_subcommands_still_report_not_implemented(capsys):
-    assert cli.main(["dashboard"]) == 2
-    assert "not implemented" in capsys.readouterr().out
+def test_dashboard_serves_instead_of_stubbing(monkeypatch, tmp_path):
+    """`anneal dashboard` reaches uvicorn with the runs dir and port it was given."""
+    served: dict[str, Any] = {}
+
+    def fake_run(app, host, port):
+        served.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    code = cli.main(
+        ["dashboard", "--runs-dir", str(tmp_path), "--port", "8123", "--host", "127.0.0.1"]
+    )
+    assert code == 0
+    assert (served["host"], served["port"]) == ("127.0.0.1", 8123)
+    assert served["app"].state.anneal.runs_dir == tmp_path
+
+
+def test_anneal_subcommand_needs_a_gated_run(capsys, tmp_path):
+    """`anneal anneal` on an empty runs dir explains itself rather than crashing."""
+    assert cli.main(["anneal", str(tmp_path)]) == 1
+    assert "no summary.json" in capsys.readouterr().out
+
+
+def test_anneal_subcommand_downshifts_the_winner(loop, monkeypatch, tmp_path):
+    """A gated run reaches `anneal.downshift` with the winner spec and its gated score."""
+    run_cli(tmp_path, "--iterations", "1")
+    seen: dict[str, Any] = {}
+
+    def fake_downshift(spec, domain, *, peak_score, runs_dir, iteration, **kw):
+        seen.update(spec_id=spec.id, peak=peak_score, iteration=iteration)
+        point = cli.anneal_stage.ParetoPoint(
+            config_id=f"{spec.id}-anneal-0", node_tiers={"executor": "mid"}, score=peak_score,
+            pass3=1.0, cost_per_task=0.01, p95_latency_ms=100.0, kept=True,
+        )
+        return cli.anneal_stage.AnnealResult(
+            spec=spec, points=[point], front=[point],
+            pareto_path=Path(runs_dir) / "pareto.json", spec_path=Path(runs_dir) / "w.yaml",
+        )
+
+    monkeypatch.setattr(cli.anneal_stage, "downshift", fake_downshift)
+    assert cli.main(["anneal", str(tmp_path / "runs")]) == 0
+    summary = summaries(tmp_path)[-1]
+    assert seen["spec_id"] == summary["winner_id"]
+    assert seen["peak"] is not None
 
 
 def test_no_args_prints_usage(capsys):
