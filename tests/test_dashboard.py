@@ -474,7 +474,7 @@ STEP_MARKERS = {
     "run": "airline-10",
     "diagnose": "Not a real class",
     "mutate": "NODES ADDED",
-    "gate": "REJECT",
+    "gate": "wins needed to pass",
     "anneal": "No pareto.json yet",
 }
 
@@ -550,8 +550,9 @@ def test_absent_values_render_an_em_dash_not_a_zero(tmp_path: Path) -> None:
 
 def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
     body = console(tmp_path).get("/?domain=airline&step=gate").text
-    assert "REJECT" in body
-    assert "pass3_rate 0.600 &lt; incumbent 0.700" in body
+    assert vocab.decision("reject") in body
+    # the gate's own reason line, with its field names read out as words and its numbers intact
+    assert "pass3_rate 0.600 is less than the current best&#x27;s 0.700" in body
     for text in ("0.667", "0.700", "1.000", "0.10", "underpowered"):
         assert text in body, text
 
@@ -559,7 +560,10 @@ def test_gate_step_renders_the_verdict_stats_and_reason(tmp_path: Path) -> None:
 def test_gate_step_without_gate_json_says_so_and_invents_nothing(tmp_path: Path) -> None:
     body = console(tmp_path, gate=False).get("/?domain=airline&step=gate").text
     assert "No gate.json" in body
-    assert "REJECT" not in body
+    # scoped to the panel: the header strip reports the summary's own decision on every page,
+    # and the point here is that the gate panel invents no verdict of its own.
+    panel = body.split('class="detail"')[1]
+    assert vocab.decision("reject") not in panel
     assert "0.000" not in body
 
 

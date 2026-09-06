@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -1098,18 +1099,51 @@ GATE_SIDES = (
     ("gen_gap", "worse on unseen tasks by", "{:+.3f}"),
 )
 
+# The exact binomial paired test, said out loud. p is the probability of seeing a win record
+# this good if the change did nothing, so the honest label is what it measures, not its letter.
 GATE_STATS = (
-    ("p", "p", "{:.3f}"),
-    ("alpha", "alpha", "{:.2f}"),
-    ("wins", "wins", "{:.0f}"),
-    ("losses", "losses", "{:.0f}"),
-    ("min_discordant_to_promote", "need", "{:.0f}"),
+    ("p", "chance this was luck", "{:.3f}"),
+    ("alpha", "has to be under", "{:.2f}"),
+    ("wins", "tasks it did better on", "{:.0f}"),
+    ("losses", "tasks it did worse on", "{:.0f}"),
+    ("min_discordant_to_promote", "wins needed to pass", "{:.0f}"),
 )
 
 
 def _gate_side(gate: dict[str, Any], key: str) -> dict[str, Any]:
     block = gate.get(key)
     return block if isinstance(block, dict) else {}
+
+
+# The field names gate.py writes into its reason line, and how the console says them.
+GATE_REASON_WORDS = (
+    ("hard_fails", "serious mistakes"),
+    ("incumbent", "the current best's"),
+    ("alpha", "the limit"),
+    ("p", "chance it was luck"),
+    ("pass3", "right 3 times running"),
+    ("gen_gap", "the drop on unseen tasks"),
+)
+
+
+def _gate_reason(gate: dict[str, Any]) -> str:
+    """The gate's own reason line, with its two field names read out as words.
+
+    gate.py writes a machine-readable reason ("hard_fails 3 > incumbent 1", "p 1.000 >= alpha
+    0.1") because it is also what the report and the tests quote. Showing it verbatim to a
+    reader means showing them two identifiers and a comparison operator, so the two terms are
+    translated here and the sentence is left otherwise exactly as the gate wrote it.
+    """
+    reason = str(gate.get("reason") or "")
+    if not reason:
+        return DASH
+    # whole words only: a bare replace would rewrite the "p" inside "promoted"
+    for term, phrase in GATE_REASON_WORDS:
+        reason = re.sub(rf"(?<![\w-]){re.escape(term)}(?![\w-])", phrase, reason)
+    for symbol, phrase in ((">=", "is not below"), ("<=", "is not above"),
+                           (">", "is more than"), ("<", "is less than")):
+        reason = reason.replace(symbol, phrase)
+    return escape(reason)
 
 
 def render_gate(gate: dict[str, Any]) -> str:
@@ -1135,11 +1169,12 @@ def render_gate(gate: dict[str, Any]) -> str:
             '<span class="v mono">underpowered</span></div>'
         )
     return (
-        f'<p class="{cls}">{txt(decision).upper()}</p>'
-        f'<table class="tbl gate"><thead><tr><th></th><th>incumbent</th><th>candidate</th></tr>'
+        f'<p class="{cls}">{escape(vocab.decision(decision)) if decision else DASH}</p>'
+        f'<table class="tbl gate"><thead><tr><th></th><th>current best</th>'
+        f"<th>this round's try</th></tr>"
         f"</thead><tbody>{sides}</tbody></table>"
         f'<div class="stats">{stats}</div>'
-        f'<p class="reason mono">{txt(gate.get("reason"))}</p>'
+        f'<p class="reason">{_gate_reason(gate)}</p>'
     )
 
 
