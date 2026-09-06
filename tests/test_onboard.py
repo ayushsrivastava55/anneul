@@ -8,6 +8,7 @@ is checked against the real runner and the real evaluator, not a mock of either.
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,91 @@ def test_mcp_discovery_uses_the_servers_own_schemas(tmp_path: Path) -> None:
     tools = load_domain(path).tools
     assert [t.impl for t in tools.tools] == ["mcp:notes/read_note", "mcp:notes/write_note"]
     assert tools.servers["notes"]["command"] == "npx"
+
+
+# --- the interview surface (.stitch/DESIGN.md) ---------------------------------------------
+
+
+def test_the_rail_is_derived_from_the_script_not_a_second_table() -> None:
+    assert onboard.rail_steps() == ["NAME", "JOB", "TOOLS", "SCORER", "EXAMPLES"]
+    assert all(q.step for q in onboard.SCRIPT)
+
+
+def test_back_returns_to_the_previous_question_and_forgets_what_it_found(
+    tmp_path: Path,
+) -> None:
+    """Back is never destructive: the MCP answer is undone, discovery and all."""
+    pool = FakePool(SERVER_TOOLS)
+    queue = ["order desk", "a job description for the agent", "1", "back", "3", "1"]
+    for given, expected in FIELD_EXAMPLES:
+        queue += [given, expected]
+    queue.append("")
+    interview = onboard.run_interview(
+        onboard.ScriptedTransport(queue), domains_dir=tmp_path,
+        pool_factory=lambda servers: pool,
+    )
+    assert interview.answers["tools"] == "none"
+    assert interview.tools == [] and interview.servers == {}
+    assert interview.notes == []
+
+
+def test_a_re_asked_question_offers_its_previous_answer_and_blank_keeps_it(
+    tmp_path: Path,
+) -> None:
+    queue = ["order desk", "the first description", "back", "", "3", "1"]
+    for given, expected in FIELD_EXAMPLES:
+        queue += [given, expected]
+    queue.append("")
+    interview = onboard.run_interview(onboard.ScriptedTransport(queue), domains_dir=tmp_path)
+    assert interview.answers["job"] == "the first description"
+
+
+def test_back_out_of_the_examples_returns_to_the_scorer(tmp_path: Path) -> None:
+    queue = ["order desk", "a job description", "3", "1", "back", "2"]
+    for given, expected in [("a", '{"label": "x"}')] * 3:
+        queue += [given, expected]
+    queue.append("")
+    interview = onboard.run_interview(onboard.ScriptedTransport(queue), domains_dir=tmp_path)
+    assert interview.success == "label"
+    assert len(interview.examples) == 3
+
+
+def test_a_choice_is_a_row_number_or_an_unambiguous_label_prefix() -> None:
+    choices = onboard.SCRIPT[2].choices
+    assert onboard.match_choice("1", choices) == "mcp"
+    assert onboard.match_choice("03", choices) == "none"  # rows are labelled 01, 02, 03
+    assert onboard.match_choice("3", choices) == "none"
+    assert onboard.match_choice("python", choices) == "python"
+    assert onboard.match_choice("an mcp", choices) == "mcp"
+    assert onboard.match_choice("zzz", choices) is None
+    assert onboard.match_choice("", choices) is None
+
+
+def test_the_interview_renders_the_rail_the_label_and_bordered_rows() -> None:
+    from rich.console import Console
+
+    console = Console(record=True, width=72, file=io.StringIO())
+    transport = onboard.RichTransport(console)
+    transport.pin(onboard.discovery_panel(onboard.Interview(answers={"tools": "none"})))
+    console.input = lambda *_a, **_kw: "1"  # type: ignore[method-assign]
+    assert transport.ask(onboard.SCRIPT[2]) == "mcp"
+
+    text = console.export_text()
+    assert "* NAME  * JOB  * TOOLS  o SCORER  o EXAMPLES" in text  # the five-step rail
+    assert "T O O L S" in text  # the step's own label, letterspaced above the control
+    assert "01  An MCP server" in text  # a row, not a radio dot
+    assert "\u2500" in text  # the 1px rule the rows are drawn in
+    assert "N O   T O O L S" in text  # the pinned discovery panel survived the redraw
+    assert "back" in text
+
+
+def test_no_emojis_anywhere_in_the_interview() -> None:
+    """.stitch/DESIGN.md bans them outright, and a terminal renders them at the wrong width."""
+    import unicodedata
+
+    source = Path(onboard.__file__).read_text(encoding="utf-8")
+    suspects = {c: unicodedata.name(c, "") for c in source if ord(c) > 0x2600}
+    assert not suspects, f"non-typographic characters in the interview: {suspects}"
 
 
 def test_running_out_of_piped_input_is_a_message_not_a_traceback() -> None:

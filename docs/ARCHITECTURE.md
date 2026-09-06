@@ -128,11 +128,24 @@ questions in, a runnable domain directory out. The three input files are Anneal'
 not the user's homework.
 
 **The interview is data.** A `Question` (id, prompt, kind `choice|text|examples`, choices,
-help, and an optional `when` gate on an earlier answer) is a value; `SCRIPT` is the ordered
-list of them; `Interview` holds the answers plus whatever tool discovery found. A `Transport`
-is one method, `ask(Question) -> str`. `RichTransport` (terminal, numbered menus, and it reads
-piped stdin) and `ScriptedTransport` (tests) ship here; a voice or web frontend is a third
-implementation of that one method, not a rewrite of the interview.
+help, an optional `when` gate on an earlier answer, and the rail `step` it belongs to) is a
+value; `SCRIPT` is the ordered list of them; `Interview` holds the answers plus whatever tool
+discovery found. A `Transport` is one method, `ask(Question) -> str`, which may return the
+`BACK` sentinel instead of an answer. `RichTransport` and `ScriptedTransport` (tests) ship
+here; a voice or web frontend is a third implementation of that one method, not a rewrite of
+the interview.
+
+`RichTransport` is the interview surface `.stitch/DESIGN.md` governs, so it renders to that
+system rather than to terminal habit: one question on screen at a time, a five-step progress
+rail derived from `SCRIPT` itself (completed dots Ash, the active dot the one orange accent,
+future dots Rule), the step name as a mono uppercase Ash label above the control, and choice
+questions as stacked rows inside 1px Rule borders — not numbered radio dots. Selection is by
+typing a row number or an unambiguous label prefix, which is the one input path that serves a
+keyboard and a pipe identically. Back is always available and never destructive: the interview
+steps to the previous question that was actually asked, offers the answer given last time, and
+forgets whatever that answer had discovered. A transport may also offer `pin(renderable)`, an
+optional hook the interview uses to keep the discovered-tools panel on screen through the
+later questions; the protocol stays one method.
 
 The five questions: **name** (slugified to a Python-package-safe directory name, refused if it
 already exists), **job**, **tools**, **success**, **examples** (≥3 input/expected pairs).

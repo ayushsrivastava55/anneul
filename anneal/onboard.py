@@ -9,9 +9,11 @@ those files an *output*: five questions in, ``domains/<name>/`` out, ready for
 help, and an optional ``when`` gate) is a value; :data:`SCRIPT` is an ordered list of them;
 :class:`Interview` is the answers dict plus whatever tool discovery found. A
 :class:`Transport` is the single method ``ask(Question) -> str``. Two ship here —
-:class:`RichTransport` (terminal, single-choice menus by number) and
-:class:`ScriptedTransport` (tests, and any non-interactive driver) — and a voice or web
-frontend is a third implementation of one method, not a rewrite.
+:class:`RichTransport` (the terminal, rendered to ``.stitch/DESIGN.md``: one question on
+screen at a time under a five-step rail, mono uppercase Ash labels, choices as stacked
+bordered rows, Back always available) and :class:`ScriptedTransport` (tests, and any
+non-interactive driver) — and a voice or web frontend is a third implementation of one
+method, not a rewrite.
 
 **Nothing here is reimplemented.** Tool discovery goes through :mod:`anneal.mcp` (connect,
 ``tools/list``); validation through :class:`anneal.spec.ToolsManifest`; the goal text through
@@ -72,6 +74,20 @@ MAX_EXAMPLES = 50
 
 QuestionKind = Literal["choice", "text", "examples"]
 
+# The interview is one of the surfaces .stitch/DESIGN.md governs, so its terminal rendering
+# uses that palette by name: near-black ink, grey body, Ash for labels and metadata, Rule for
+# 1px borders, and the one orange accent, here spent only on the active step's dot.
+INK = "#111214"
+GRAPHITE = "#5B6068"
+ASH = "#8A9099"
+RULE = "#E4E4E1"
+ORANGE = "#F4511E"
+
+# Returned by a transport instead of an answer. Back is always available and never destructive:
+# the previous answer is offered again rather than discarded.
+BACK = "\x00back"
+BACK_WORDS = frozenset({"b", "back"})
+
 # Tool names containing one of these are emitted with `mutates: true`, which is what makes
 # the architect put them last in the prompt ("write tools, only as the very last action").
 WRITE_HINTS = (
@@ -103,6 +119,13 @@ class Question:
     choices: tuple[tuple[str, str], ...] = ()  # (value, label)
     help: str = ""
     when: tuple[str, str] | None = None  # (question id, required value)
+    # The step of the five-step rail this question belongs to, and the mono uppercase label
+    # printed above its control. Follow-up questions share their parent's step, so the rail
+    # is derived from SCRIPT rather than from a table the presentation layer keeps in sync.
+    step: str = ""
+    # Filled in by the interview when a question is re-asked after Back: the answer given
+    # last time, offered again so that going back is never destructive.
+    previous: str = ""
 
     def labels(self) -> dict[str, str]:
         return dict(self.choices)
@@ -114,58 +137,76 @@ class Question:
 SCRIPT: list[Question] = [
     Question(
         id="name",
-        prompt="What should we call this? (a short name for the folder)",
-        help="Letters, numbers and spaces. It becomes domains/<name>/.",
+        step="NAME",
+        prompt="Name this domain.",
+        help="It becomes domains/<name>/. Letters, numbers and spaces.",
     ),
     Question(
         id="job",
-        prompt="In one or two sentences, what should the agent do?",
-        help="Plain language. Say what it receives and what it must produce.",
+        step="JOB",
+        prompt="Describe the job in one or two sentences.",
+        help="What the agent receives, and what it must produce.",
     ),
     Question(
         id="tools",
-        prompt="What can the agent use to do it?",
+        step="TOOLS",
+        prompt="Choose what the agent can use.",
         kind="choice",
         choices=(
-            ("mcp", "An MCP server I'll name"),
+            ("mcp", "An MCP server"),
             ("python", "Python functions in a module"),
-            ("none", "Nothing yet — it answers from the task text alone"),
+            ("none", "Nothing yet — the agent works from the task text alone"),
         ),
     ),
     Question(
         id="tools_target",
-        prompt="How is that server started? Paste the launch command, or its URL.",
-        help="e.g. npx -y @modelcontextprotocol/server-filesystem /tmp/box  or  https://host/mcp",
+        step="TOOLS",
+        prompt="Give the server's launch command, or its URL.",
+        help="npx -y @modelcontextprotocol/server-filesystem /tmp/box   or   https://host/mcp",
         when=("tools", "mcp"),
     ),
     Question(
         id="tools_module",
-        prompt="Which Python module holds them? (dotted path, importable from here)",
-        help="e.g. domains.invoices.fixtures.tools",
+        step="TOOLS",
+        prompt="Name the Python module that holds them.",
+        help="A dotted path importable from here, such as domains.invoices.fixtures.tools",
         when=("tools", "python"),
     ),
     Question(
         id="success",
-        prompt="How do we know a run was right?",
+        step="SCORER",
+        prompt="Choose what makes a run right.",
         kind="choice",
         choices=(
             ("fields", "Specific fields in the answer match"),
             ("label", "A decision or label matches"),
             ("state", "The final state of the system matches"),
-            ("examples", "Just compare against my examples"),
+            ("examples", "The answer matches the example"),
         ),
     ),
     Question(
         id="examples",
-        prompt=f"Now some examples — at least {MIN_EXAMPLES}. Leave the input blank to stop.",
+        step="EXAMPLES",
+        prompt=f"Give at least {MIN_EXAMPLES} examples.",
         kind="examples",
         help="For each: what the agent receives, then what a correct answer looks like.",
     ),
 ]
 
 
+def rail_steps() -> list[str]:
+    """The five step names, in order, read off SCRIPT itself."""
+    return list(dict.fromkeys(q.step for q in SCRIPT if q.step))
+
+
 class Transport(Protocol):
-    """How answers reach the interview. One method, so a voice frontend is a class."""
+    """How answers reach the interview. One method, so a voice frontend is a class.
+
+    ``ask`` returns the answer, or :data:`BACK` to step to the previous question. A concrete
+    transport may also offer ``pin(renderable)`` — an optional presentation hook the interview
+    uses to keep discovered tools on screen while later questions are answered. The protocol
+    itself stays one method; a transport without ``pin`` simply loses that context panel.
+    """
 
     def ask(self, question: Question) -> str:  # pragma: no cover - protocol
         ...
@@ -182,41 +223,132 @@ class ScriptedTransport:
         self.asked.append(question.id)
         if not self._answers:
             raise OnboardError(f"scripted answers exhausted at question {question.id!r}")
-        return self._answers.pop(0)
+        answer = self._answers.pop(0)
+        return BACK if answer.strip().lower() in BACK_WORDS else answer
 
 
 class RichTransport:
-    """The terminal. Choices are a numbered menu; everything else is a line of text."""
+    """The terminal, rendered to .stitch/DESIGN.md: one question on screen at a time.
+
+    A five-step rail across the top, the step's name as a mono uppercase Ash label above the
+    control, and choices as stacked rows inside 1px Rule borders rather than numbered radio
+    dots. Selection is by typing the row's index or a unique prefix of its label: this session
+    reads piped stdin as readily as a keyboard, and a line read is the one path that works on
+    both. Back is always available and never destructive — a re-asked question offers its
+    previous answer, and blank input keeps it.
+    """
 
     def __init__(self, console: Any) -> None:
         self.console = console
+        self._pinned: list[Any] = []
+
+    # --- presentation -------------------------------------------------------------------
+
+    def pin(self, renderable: Any) -> None:
+        """Keep ``renderable`` on screen under the rail for the rest of the interview."""
+        self._pinned = [renderable]
+
+    def _rail(self, question: Question) -> Any:
+        """Completed steps in Ash, the active step's dot in the one accent, the rest in Rule."""
+        from rich.text import Text
+
+        steps = rail_steps()
+        current = steps.index(question.step) if question.step in steps else 0
+        rail = Text()
+        for index, step in enumerate(steps):
+            if index:
+                rail.append("  ", style=RULE)
+            if index < current:
+                rail.append("* ", style=ASH)
+                rail.append(step, style=ASH)
+            elif index == current:
+                rail.append("* ", style=ORANGE)
+                rail.append(step, style=f"bold {INK}")
+            else:
+                rail.append("o ", style=RULE)
+                rail.append(step, style=RULE)
+        return rail
+
+    def _screen(self, question: Question, previous: str | None) -> None:
+        """Clear, then draw the rail, anything pinned, the label and the question."""
+        if getattr(self.console, "is_terminal", False):
+            self.console.clear()
+        self.console.print()
+        self.console.print(self._rail(question))
+        for renderable in self._pinned:
+            self.console.print()
+            self.console.print(renderable)
+        self.console.print()
+        self.console.print(f"[{ASH}]{_spaced(question.step or question.id)}[/{ASH}]")
+        self.console.print(f"[{INK}]{question.prompt}[/{INK}]")
+        if question.help:
+            self.console.print(f"[{GRAPHITE}]{question.help}[/{GRAPHITE}]")
+        if previous:
+            self.console.print(f"[{ASH}]Previously: {previous}. Blank keeps it.[/{ASH}]")
+
+    def _rows(self, question: Question, previous: str | None) -> None:
+        """Choices as stacked rows in 1px Rule borders; the previous answer takes an Ink one."""
+        from rich.panel import Panel
+        from rich.text import Text
+
+        self.console.print()
+        for index, (value, label) in enumerate(question.choices, start=1):
+            chosen = value == previous
+            row = Text()
+            row.append(f"{index:02d}  ", style=ASH)
+            row.append(label, style=f"bold {INK}" if chosen else INK)
+            self.console.print(
+                Panel(row, border_style=INK if chosen else RULE, padding=(0, 1), expand=True)
+            )
+
+    # --- input --------------------------------------------------------------------------
 
     def ask(self, question: Question) -> str:
-        self.console.print(f"\n[bold cyan]{question.prompt}[/bold cyan]")
-        if question.help:
-            self.console.print(f"[dim]{question.help}[/dim]")
+        previous = question.previous or None
+        self._screen(question, previous if question.kind != "choice" else None)
         if question.kind != "choice":
-            return self._input().strip()
-        for i, (_value, label) in enumerate(question.choices, start=1):
-            self.console.print(f"  [cyan]{i}[/cyan]. {label}")
+            self.console.print(f"[{ASH}]Type your answer, or 'back'.[/{ASH}]")
+            answer = self._input().strip()
+            return BACK if answer.lower() in BACK_WORDS else answer
+        self._rows(question, previous)
         return self._choose(question)
 
     def _input(self) -> str:
         """One line. Piped input that runs out is an answer we are missing, not a traceback."""
         try:
-            return str(self.console.input("[green]> [/green]"))
+            return str(self.console.input(f"[{ORANGE}]> [/{ORANGE}]"))
         except EOFError as exc:
             raise OnboardError("ran out of input before the interview finished") from exc
 
     def _choose(self, question: Question) -> str:
-        values = [value for value, _label in question.choices]
+        self.console.print(f"[{ASH}]Type a row number or the start of its label, or 'back'."
+                           f"[/{ASH}]")
         while True:
             raw = self._input().strip().lower()
-            if raw.isdigit() and 1 <= int(raw) <= len(values):
-                return values[int(raw) - 1]
-            if raw in values:
-                return raw
-            self.console.print(f"[yellow]Pick 1-{len(values)}.[/yellow]")
+            if raw in BACK_WORDS:
+                return BACK
+            match = match_choice(raw, question.choices)
+            if match is not None:
+                return match
+            self.console.print(f"[{ASH}]No row matches that.[/{ASH}]")
+
+
+def _spaced(label: str) -> str:
+    """A mono uppercase section label, letterspaced the way the design system asks."""
+    return " ".join(label.upper())
+
+
+def match_choice(raw: str, choices: tuple[tuple[str, str], ...]) -> str | None:
+    """The chosen value for a typed row number, exact value, or unambiguous label prefix."""
+    values = [value for value, _label in choices]
+    if raw.isdigit() and 1 <= int(raw) <= len(values):
+        return values[int(raw) - 1]
+    if raw in values:
+        return raw
+    if not raw:
+        return None
+    hits = [value for value, label in choices if label.lower().startswith(raw)]
+    return hits[0] if len(hits) == 1 else None
 
 
 @dataclass
@@ -394,12 +526,13 @@ def _skip(question: Question, answers: dict[str, Any]) -> bool:
     return question.when is not None and answers.get(question.when[0]) != question.when[1]
 
 
-def _collect_examples(transport: Transport, question: Question) -> list[Example]:
+def _collect_examples(transport: Transport, question: Question) -> list[Example] | None:
     """Ask for input/expected pairs until the input comes back blank.
 
     A blank before the minimum is a nudge, not the end: the same question is asked once more.
     A second blank is taken as "that is all I have", which below the minimum is an error the
-    caller reports rather than a loop the user cannot leave.
+    caller reports rather than a loop the user cannot leave. ``None`` means the user asked to
+    go back, which from here means back to the previous question of the script.
     """
     examples: list[Example] = []
     blanks = 0
@@ -407,11 +540,14 @@ def _collect_examples(transport: Transport, question: Question) -> list[Example]
         given = transport.ask(
             Question(
                 id=f"{question.id}_{index}_input",
-                prompt=f"Example {index} — input:",
+                step=question.step,
+                prompt=f"Example {index}. What does the agent receive?",
                 help="" if len(examples) >= MIN_EXAMPLES or blanks == 0
-                else f"{MIN_EXAMPLES - len(examples)} more needed. Blank again to give up.",
+                else f"{MIN_EXAMPLES - len(examples)} more needed. Blank again to stop.",
             )
         )
+        if given == BACK:
+            return None
         if not given.strip():
             blanks += 1
             if len(examples) >= MIN_EXAMPLES or blanks > 1:
@@ -421,17 +557,22 @@ def _collect_examples(transport: Transport, question: Question) -> list[Example]
         expected = transport.ask(
             Question(
                 id=f"{question.id}_{index}_expected",
-                prompt=f"Example {index} — a correct answer:",
+                step=question.step,
+                prompt=f"Example {index}. What does a correct answer look like?",
                 help="JSON is welcome; plain text is fine too.",
             )
         )
+        if expected == BACK:
+            return None
         examples.append(Example(given=given.strip(), expected=expected.strip()))
     if len(examples) < MIN_EXAMPLES:
         raise OnboardError(f"need at least {MIN_EXAMPLES} examples, got {len(examples)}")
     return examples
 
 
-def _do_discovery(interview: Interview, console: Any, pool_factory: Any) -> None:
+def _do_discovery(
+    interview: Interview, sink: Any, pool_factory: Any
+) -> None:
     """Question 3's real work: connect, list, and show the user what was found."""
     choice = interview.answers.get("tools")
     if choice == "mcp":
@@ -448,20 +589,62 @@ def _do_discovery(interview: Interview, console: Any, pool_factory: Any) -> None
             interview.answers["tools"] = "none"
             interview.notes.append(f"module would not import ({error}); continued with none.")
         interview.tools = tools
-    _report_discovery(interview, console)
+    _report_discovery(interview, sink)
 
 
-def _report_discovery(interview: Interview, console: Any) -> None:
-    if console is None:
-        return
+# Tools listed in the pinned panel before it is summarised; a real server publishes more than
+# fits on one screen, and the panel is context for the next question, not the answer to it.
+PINNED_TOOLS = 6
+
+
+def discovery_panel(interview: Interview) -> Any:
+    """What discovery found, as the bordered panel the design system reserves for machine output."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    body = Text()
     for note in interview.notes:
-        console.print(f"[yellow]{note}[/yellow]")
+        body.append(f"{note}\n", style=GRAPHITE)
     if interview.tools:
-        console.print(f"[green]Found {len(interview.tools)} tools:[/green]")
-        for tool in interview.tools:
-            console.print(f"  [cyan]{tool.name}[/cyan] — {tool.description[:80]}")
-    elif interview.answers.get("tools") == "none":
-        console.print("[dim]No tools; the agent will answer from the task text alone.[/dim]")
+        for tool in interview.tools[:PINNED_TOOLS]:
+            body.append(f"{tool.name}  ", style=INK)
+            body.append(f"{tool.description.splitlines()[0][:56]}\n", style=ASH)
+        extra = len(interview.tools) - PINNED_TOOLS
+        if extra > 0:
+            body.append(f"and {extra} more\n", style=ASH)
+        title = f"{len(interview.tools)} TOOLS FOUND"
+    else:
+        body.append("The agent works from the task text alone.\n", style=ASH)
+        title = "NO TOOLS"
+    return Panel(body, title=_spaced(title), title_align="left",
+                 border_style=RULE, padding=(0, 1))
+
+
+def _report_discovery(interview: Interview, sink: Any) -> None:
+    """Pin the discovery panel where the transport can keep it, else print it once."""
+    if sink is None:
+        return
+    panel = discovery_panel(interview)
+    pin = getattr(sink, "pin", None)
+    if callable(pin):
+        pin(panel)
+    else:
+        sink.print(panel)
+
+
+def _previous_index(index: int, answers: dict[str, Any]) -> int:
+    """The index of the question before ``index`` that was actually asked. Never below zero."""
+    for candidate in range(index - 1, -1, -1):
+        if not _skip(SCRIPT[candidate], answers):
+            return candidate
+    return 0
+
+
+def _forget_discovery(interview: Interview) -> None:
+    """Re-answering the tools question throws away what the last answer discovered."""
+    interview.tools = []
+    interview.servers = {}
+    interview.notes = []
 
 
 def run_interview(
@@ -471,24 +654,69 @@ def run_interview(
     console: Any = None,
     pool_factory: Any = mcp.get_pool,
 ) -> Interview:
-    """Walk :data:`SCRIPT` once and return the filled-in :class:`Interview`."""
+    """Walk :data:`SCRIPT` and return the filled-in :class:`Interview`.
+
+    An index loop rather than a for-loop, because Back is a first-class move: it steps to the
+    previous question that was actually asked, offers the answer given last time, and undoes
+    whatever that answer had discovered.
+    """
     interview = Interview()
-    for question in SCRIPT:
+    sink = transport if callable(getattr(transport, "pin", None)) else console
+    index = 0
+    while index < len(SCRIPT):
+        question = SCRIPT[index]
         if _skip(question, interview.answers):
+            index += 1
             continue
         if question.kind == "examples":
-            interview.examples = _collect_examples(transport, question)
+            examples = _collect_examples(transport, question)
+            if examples is None:
+                index = _previous_index(index, interview.answers)
+                continue
+            interview.examples = examples
+            index += 1
             continue
-        interview.answers[question.id] = transport.ask(question)
-        if question.id == "name":
-            _check_free(interview.slug, domains_dir)
-        # Discovery happens the moment we know where to look -- so the user sees the tools
-        # before being asked how to score them, not after.
-        if question.id in ("tools_target", "tools_module"):
-            _do_discovery(interview, console, pool_factory)
-        elif question.id == "tools" and interview.answers["tools"] == "none":
-            _report_discovery(interview, console)
+        index = _ask_one(transport, interview, index, question, domains_dir, sink, pool_factory)
     return interview
+
+
+def _ask_one(
+    transport: Transport,
+    interview: Interview,
+    index: int,
+    question: Question,
+    domains_dir: Path,
+    sink: Any,
+    pool_factory: Any,
+) -> int:
+    """Ask one question, apply its consequences, and return the next index to visit."""
+    from dataclasses import replace
+
+    said_before = str(interview.answers.get(question.id, ""))
+    answer = transport.ask(replace(question, previous=said_before) if said_before else question)
+    if answer == BACK:
+        return _previous_index(index, interview.answers)
+    if not answer.strip() and said_before:  # blank keeps what was said before
+        answer = said_before
+    if question.kind == "choice":
+        # Resolving here rather than in the transport keeps every transport equivalent: a
+        # scripted queue and a typed line both say "3" or "none" and mean the same thing.
+        resolved = match_choice(answer.strip().lower(), question.choices)
+        if resolved is None:
+            raise OnboardError(f"{answer!r} is not one of the choices for {question.id!r}")
+        answer = resolved
+    if question.id == "tools":
+        _forget_discovery(interview)
+    interview.answers[question.id] = answer
+    if question.id == "name":
+        _check_free(interview.slug, domains_dir)
+    # Discovery happens the moment we know where to look -- so the user sees the tools before
+    # being asked how to score them, not after.
+    if question.id in ("tools_target", "tools_module"):
+        _do_discovery(interview, sink, pool_factory)
+    elif question.id == "tools" and answer == "none":
+        _report_discovery(interview, sink)
+    return index + 1
 
 
 def _check_free(slug: str, domains_dir: Path) -> None:
