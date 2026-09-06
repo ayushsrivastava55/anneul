@@ -666,7 +666,7 @@ def test_the_contract_rows_are_always_visible_and_read_the_domain_files(tmp_path
     assert "tools" in contract and "goal" in contract  # domains/airline is in this repo
     assert dashboard.load_contract(tmp_path / "runs", "no-such-domain", {}) == {}
     body = dashboard.render_contract({}, "no-such-domain")
-    assert body.count(f'class="dv mono">{DASH}</span>') == 3
+    assert body.count(f'class="dv">{DASH}</span>') == 3
 
 
 def test_topbar_lists_the_domains_present_in_runs_and_shows_the_budget(tmp_path: Path) -> None:
@@ -725,3 +725,52 @@ def test_a_gate_written_before_reason_parts_is_still_read_out_in_words(tmp_path:
     # reads as words; the field name is never shown
     assert "right 3 times running 0.600 is below the version in use&#x27;s 0.700" in panel
     assert "pass3_rate" not in panel
+
+
+# --- the two reading levels ---------------------------------------------------------------
+
+
+def test_the_plain_view_is_the_default_and_the_technical_one_is_asked_for(
+    tmp_path: Path,
+) -> None:
+    """A person who wanted an agent that triages invoices has no use for run directories."""
+    runs, ledger = write_fixture(tmp_path)
+    client = TestClient(dashboard.create_app(runs, ledger))
+    plain = client.get("/console?domain=airline").text
+    assert 'class="plain"' in plain
+    assert "Show technical detail" in plain
+    technical = client.get("/console?domain=airline&detail=technical").text
+    assert 'class="technical"' in technical
+    assert "Hide technical detail" in technical
+    # nonsense is not a third level
+    assert 'class="plain"' in client.get("/console?domain=airline&detail=wat").text
+
+
+def test_the_switch_returns_you_to_the_view_you_were_looking_at(tmp_path: Path) -> None:
+    runs, ledger = write_fixture(tmp_path)
+    body = TestClient(dashboard.create_app(runs, ledger)).get(
+        "/console?domain=airline&step=gate"
+    ).text
+    assert 'href="?domain=airline&amp;step=gate&amp;detail=technical"' in body
+
+
+def test_the_machinery_is_hidden_by_css_not_removed_from_the_page(tmp_path: Path) -> None:
+    """Hiding by class keeps the switch instant and keeps one page, not two.
+
+    It also means these assertions check the *rule*, since the identifiers are in both
+    documents either way.
+    """
+    runs, ledger = write_fixture(tmp_path)
+    body = TestClient(dashboard.create_app(runs, ledger)).get("/console?domain=airline").text
+    for selector in ("body.plain .dslug", "body.plain .cid", "body.plain .strip"):
+        assert selector in body, selector
+
+
+def test_the_contract_rows_say_what_they_mean_before_naming_the_file(tmp_path: Path) -> None:
+    runs, ledger = write_fixture(tmp_path)
+    body = TestClient(dashboard.create_app(runs, ledger)).get("/console?domain=airline").text
+    for plain in ("What it should do", "What it can use", "How we mark it"):
+        assert plain in body, plain
+    # the loop's own names for the three files survive, as secondary text
+    for technical in ("GOAL", "TOOLS", "SCORER"):
+        assert f'class="dslug mono">{technical}<' in body, technical

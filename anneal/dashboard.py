@@ -658,9 +658,13 @@ def _tools_line(path: Path) -> str | None:
     if not isinstance(tools, list) or not tools:
         return None
     names = [str(t.get("name")) for t in tools if isinstance(t, dict) and t.get("name")]
+    count = f"{len(tools)} tool" if len(tools) == 1 else f"{len(tools)} tools"
+    if not names:
+        return escape(count)
     shown = ", ".join(names[:3])
     more = f" +{len(names) - 3}" if len(names) > 3 else ""
-    return f"{len(tools)} tools · {shown}{more}" if names else f"{len(tools)} tools"
+    # the count is the fact; the function names are the machinery behind it
+    return f'{escape(count)}<span class="dslug mono">{escape(shown + more)}</span>'
 
 
 def _scorer_line(path: Path) -> str | None:
@@ -670,8 +674,17 @@ def _scorer_line(path: Path) -> str | None:
     for line in text.splitlines():
         if line.startswith("THRESHOLD"):
             _, _, value = line.partition("=")
-            return f"eval.py · THRESHOLD {value.strip()}"
-    return "eval.py"
+            # The plain half is a sentence; the filename and the constant follow it as
+            # secondary text that the plain reading level hides.
+            share = value.strip()
+            said = "Every answer has to be right" if share in {"1.0", "1"} else (
+                f"At least {share} of each answer has to be right"
+            )
+            return (
+                f'{escape(said)}<span class="dslug mono">'
+                f'eval.py · THRESHOLD {escape(share)}</span>'
+            )
+    return '<span class="dslug mono">eval.py</span>'
 
 
 def vocab_strip_goal(line: str | None) -> str | None:
@@ -693,7 +706,7 @@ def load_contract(runs_dir: Path | str, domain: str, summary: dict[str, Any]) ->
     found = {
         # the heading in goal.md reads "# Goal: <thing>"; the row is already labelled GOAL, so
         # printing the prefix again would show "GOAL  Goal: airline customer support agent"
-        "goal": vocab_strip_goal(_goal_line(root / "goal.md")),
+        "goal": escape(vocab_strip_goal(_goal_line(root / "goal.md")) or ""),
         "tools": _tools_line(root / "tools.yaml"),
         "scorer": _scorer_line(root / "eval.py"),
     }
@@ -719,10 +732,13 @@ def agent_titles(runs_dir: Path | str, domains: list[str]) -> dict[str, str]:
     return {d: agent_title(runs_dir, d, {}) for d in domains}
 
 
+# Three inputs, named twice: the plain label a person reads and the one a developer expects.
+# GOAL / TOOLS / SCORER are the loop's words for these, and they are worth keeping in the
+# technical view because they are what the three files are called.
 CONTRACT_ROWS = (
-    ("goal", "GOAL", "what the agent is asked to do"),
-    ("tools", "TOOLS", "what it is allowed to call"),
-    ("scorer", "SCORER", "what counts as a pass"),
+    ("goal", "What it should do", "GOAL", "the job you described"),
+    ("tools", "What it can use", "TOOLS", "the tools you gave it"),
+    ("scorer", "How we mark it", "SCORER", "what counts as getting it right"),
 )
 
 
@@ -731,10 +747,13 @@ def render_contract(
 ) -> str:
     """The three inputs, always visible: mono label left, value right."""
     rows = "".join(
-        f'<div class="drow"><span class="dk mono">{escape(label)}</span>'
-        f'<span class="dv mono">{txt(contract.get(key))}</span>'
+        f'<div class="drow"><span class="dk">{escape(plain)}'
+        f'<span class="dslug mono">{escape(technical)}</span></span>'
+        # _tools_line and _scorer_line escape their own text and append the machinery in a
+        # <span>, so this value is already safe markup and must not be escaped a second time.
+        f'<span class="dv">{contract.get(key) or DASH}</span>'
         f'<span class="dh">{escape(hint)}</span></div>'
-        for key, label, hint in CONTRACT_ROWS
+        for key, plain, technical, hint in CONTRACT_ROWS
     )
     name = escape(title or domain or DASH)
     slug = f'<span class="dslug mono">{escape(domain)}</span>' if domain else ""
@@ -1330,6 +1349,26 @@ def render_topbar(
 
 CSS = """
 
+/* --- the two reading levels ----------------------------------------------------------
+   Plain is the default and hides every internal identifier: run directories, candidate
+   ids, domain slugs, tool function names, the evaluator's filename and threshold. None of
+   it is removed from the document, so the switch is instant and the technical view is the
+   same page with the machinery shown rather than a different page. */
+body.plain .dslug,
+body.plain .cid,
+body.plain .strip,
+body.plain .techonly { display:none !important; }
+.switch { margin-left:auto; display:inline-flex; align-items:center; gap:8px; font-size:12px;
+  color:var(--ash); text-decoration:none; }
+.switch:hover { color:var(--ink); }
+.switch .knob { width:26px; height:14px; border:1px solid var(--rule); border-radius:999px;
+  position:relative; background:var(--paper); }
+.switch .knob::after { content:""; position:absolute; top:2px; left:2px; width:8px; height:8px;
+  border-radius:50%; background:var(--ash); transition:left .15s, background .15s; }
+.switch.on { color:var(--ink); }
+.switch.on .knob { border-color:var(--ink); }
+.switch.on .knob::after { left:14px; background:var(--ink); }
+
 /* --- product chrome: the bar that makes three pages one application ------------------- */
 .chrome { display:flex; align-items:center; gap:28px; padding:16px 48px;
   border-bottom:1px solid var(--rule); background:var(--panel); }
@@ -1413,8 +1452,10 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
 .drow { display:grid; grid-template-columns:110px minmax(0,1fr) 200px; gap:16px;
   padding:9px 0; border-top:1px solid var(--rule); align-items:baseline; }
 .drow:first-of-type { border-top:0; }
-.dk { font-size:10px; letter-spacing:0.12em; color:var(--ash); }
-.dv { font-size:12px; color:var(--ink); overflow-wrap:anywhere; }
+.dk { font-size:13px; color:var(--graphite); }
+.dk .dslug { display:block; font-size:10px; letter-spacing:0.12em; color:var(--ash);
+  margin-top:2px; }
+.dv { font-size:14px; color:var(--ink); overflow-wrap:anywhere; }
 .dh { font-size:11px; color:var(--ash); text-align:right; }
 .defs .drow { grid-template-columns:150px minmax(0,1fr); }
 .pillrow { margin-top:14px; }
@@ -1643,8 +1684,16 @@ def _strip(it: Iteration) -> str:
     )
 
 
+def _console_query(domain: str | None, step: str | None) -> str:
+    """The console's current query string, so the switch returns you to the same view."""
+    parts = [f"domain={domain}" if domain else "", f"step={step}" if step else ""]
+    kept = "&".join(part for part in parts if part)
+    return f"?{kept}" if kept else ""
+
+
 def render_page(
-    app_state: AppState, domain: str | None = None, step: str | None = None
+    app_state: AppState, domain: str | None = None, step: str | None = None,
+    level: str = "plain",
 ) -> str:
     """The console: the contract, the measurements, and the step timeline with one step open."""
     selected, domains = _selected(app_state, domain)
@@ -1657,8 +1706,9 @@ def render_page(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>Anneal console</title>"
-        f"<style>{CSS}</style></head><body>"
-        f'{render_nav("/console")}'
+        f"<style>{CSS}</style></head>"
+        f'<body class="{escape(level)}">'
+        f'{render_nav("/console", level, _console_query(selected, step))}'
         f"<div class='wrap'>"
         f"{render_topbar(selected, domains, it, agent_titles(app_state.runs_dir, domains))}"
         f'<main class="product">{_strip(it)}'
@@ -1671,8 +1721,20 @@ def render_page(
 
 NAV = (("/", "Home"), ("/agents", "Agents"), ("/console", "Console"))
 
+# Two reading levels, one page. Everything the loop needs to name a thing precisely -- run
+# directories, candidate ids, domain slugs, evaluator filenames, tool function names -- is
+# machinery, and a person who asked for an agent that triages invoices has no use for it. The
+# plain view hides that layer with CSS rather than dropping it from the document, so turning
+# the switch on is instant and nothing has to be re-fetched or re-rendered to get it back.
+TECHNICAL = "technical"
 
-def render_nav(active: str) -> str:
+
+def detail_level(value: str | None) -> str:
+    """``"technical"`` only when explicitly asked for; plain otherwise, including on nonsense."""
+    return TECHNICAL if (value or "").strip().lower() == TECHNICAL else "plain"
+
+
+def render_nav(active: str, level: str = "plain", query: str = "") -> str:
     """The bar every page carries, so no page is a dead end.
 
     Anneal is three surfaces, not one screen: the landing page explains what it is, the agents
@@ -1684,13 +1746,25 @@ def render_nav(active: str) -> str:
         f'<a class="navlink{" on" if href == active else ""}" href="{href}">{escape(label)}</a>'
         for href, label in NAV
     )
+    on = level == TECHNICAL
+    target = query + ("" if on else ("&" if query else "?") + f"detail={TECHNICAL}")
+    if on:
+        target = "&".join(
+            part for part in query.lstrip("?").split("&")
+            if part and not part.startswith("detail=")
+        )
+        target = f"?{target}" if target else active
+    toggle = (
+        f'<a class="switch{" on" if on else ""}" href="{escape(target or active)}">'
+        f'<span class="knob"></span>{"Hide" if on else "Show"} technical detail</a>'
+    )
     return (
         '<header class="chrome"><a class="mark" href="/">ANNEAL</a>'
-        f'<nav class="navlinks">{links}</nav></header>'
+        f'<nav class="navlinks">{links}</nav>{toggle}</header>'
     )
 
 
-def render_agents(state: AppState) -> str:
+def render_agents(state: AppState, level: str = "plain") -> str:
     """The agents index: every agent that has run, what it does, and where it got to.
 
     This is the page a person lands on after the front door. It answers "what do I have and
@@ -1729,11 +1803,16 @@ def render_agents(state: AppState) -> str:
         "No agents yet — <code>uv run anneal init</code> asks five questions and writes one."
     )
     return (
-        f'{render_nav("/agents")}<div class="wrap">'
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>Anneal — your agents</title>"
+        f"<style>{CSS}</style></head>"
+        f'<body class="{escape(level)}">'
+        f'{render_nav("/agents", level)}<div class="wrap">'
         '<div class="pagehead"><h1>Your agents</h1>'
         '<p>Each one was built from a goal, a set of tools and a way to score it. '
         "Open one to watch the round it is on.</p></div>"
-        f'<div class="agents">{body}</div></div>'
+        f'<div class="agents">{body}</div></div></body></html>'
     )
 
 
@@ -1760,12 +1839,14 @@ def create_app(runs_dir: Path | str = "runs", ledger_path: Path | str = "ledger.
         return _landing()
 
     @app.get("/agents", response_class=HTMLResponse)
-    def agents() -> str:
-        return render_agents(state)
+    def agents(detail: str | None = None) -> str:
+        return render_agents(state, detail_level(detail))
 
     @app.get("/console", response_class=HTMLResponse)
-    def console(domain: str | None = None, step: str | None = None) -> str:
-        return render_page(state, domain, step)
+    def console(
+        domain: str | None = None, step: str | None = None, detail: str | None = None
+    ) -> str:
+        return render_page(state, domain, step, detail_level(detail))
 
     @app.get("/fragments/topbar", response_class=HTMLResponse)
     def topbar(domain: str | None = None) -> str:
