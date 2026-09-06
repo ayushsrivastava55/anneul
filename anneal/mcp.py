@@ -335,6 +335,15 @@ class ToolInfo:
     input_schema: dict[str, Any] = field(default_factory=dict)
 
 
+# Meta keywords real servers ship in inputSchema that strict tool-calling backends reject.
+SCHEMA_META_KEYS = ("$schema", "$id", "additionalProperties")
+
+
+def _clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Drop top-level JSON-schema meta keys the model's provider may refuse."""
+    return {k: v for k, v in schema.items() if k not in SCHEMA_META_KEYS}
+
+
 def parse_tools_list(result: dict[str, Any]) -> dict[str, ToolInfo]:
     """``tools/list`` result -> ``{tool name: ToolInfo}``, tolerating missing optional keys."""
     tools: dict[str, ToolInfo] = {}
@@ -346,7 +355,7 @@ def parse_tools_list(result: dict[str, Any]) -> dict[str, ToolInfo]:
         tools[name] = ToolInfo(
             name=name,
             description=str(entry.get("description") or entry.get("title") or name),
-            input_schema=schema if isinstance(schema, dict) else {},
+            input_schema=_clean_schema(schema) if isinstance(schema, dict) else {},
         )
     return tools
 

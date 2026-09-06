@@ -35,6 +35,7 @@ TOOLS_LIST = {
             "name": "write_file",
             "description": "Create a new file or overwrite an existing one.",
             "inputSchema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                 "required": ["path", "content"],
@@ -119,6 +120,8 @@ def test_parse_tools_list_keeps_schemas_and_skips_junk() -> None:
     tools = mcp.parse_tools_list(TOOLS_LIST)
     assert set(tools) == {"write_file", "list_directory"}
     assert tools["write_file"].input_schema["required"] == ["path", "content"]
+    # meta keywords strict tool-calling backends reject never reach the model
+    assert "$schema" not in tools["write_file"].input_schema
     assert tools["write_file"].description.startswith("Create a new file")
     # no description -> fall back to the title, never empty
     assert tools["list_directory"].description == "List Directory"
