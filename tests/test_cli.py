@@ -83,13 +83,22 @@ def loop(monkeypatch, tmp_path):
         rec.note("architect.propose")
         return [make_spec(f"cand-{i}") for i in range(1, n + 1)]
 
-    def fake_run(spec, domain, split, *, iteration=0, seed=0, concurrency=None, **kw):
+    def fake_run(spec, domain, split, *, iteration=0, seed=0, concurrency=None,
+                 on_row=None, **kw):
+        """Stands in for runner.run, including its per-row ``on_row`` budget callback.
+
+        The real runner fires ``on_row`` as each task lands, which is how the loop meters
+        spend; a fake that ignored it would report every run as free.
+        """
         rec.note(f"runner.run:{spec.id}:{split}")
         base = state["scores"].get(spec.id, 0.5)
-        return [
-            make_row(t.id, spec.id, base, iteration=iteration)
-            for t in domain.eval.load_tasks(split)
-        ]
+        rows = []
+        for t in domain.eval.load_tasks(split):
+            row = make_row(t.id, spec.id, base, iteration=iteration)
+            if on_row is not None:
+                on_row(row)
+            rows.append(row)
+        return rows
 
     def fake_diagnose(rows, domain, spec, *, ledger_path="ledger.json", **kw):
         """One issue per call, cycling classes so operators do not run out immediately."""
@@ -255,6 +264,19 @@ def test_budget_halts_the_loop(loop, tmp_path, monkeypatch):
     assert summaries(tmp_path)[-1]["spend_usd"] >= 10.0
 
 
+def test_budget_stops_mid_split_instead_of_after_it(priced, tmp_path):
+    """The cap interrupts a split in progress rather than charging the whole thing.
+
+    Regression: spend used to be charged once per finished split, so a $0.50 cap on a
+    10-task airline split at ~$0.28/task ran to $2.85 before anything checked. At the
+    fixture's $2.00/task, a $3.00 cap must stop after ~2 tasks, not after all 10.
+    """
+    assert run_cli(tmp_path, "--iterations", "1", "--budget", "3.00", "--models", priced) == 1
+    last = summaries(tmp_path)[-1]
+    assert last["stop_reason"] == "budget"
+    assert 3.0 <= last["spend_usd"] < 20.0
+
+
 def test_budget_message_is_explicit(loop, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         cli.runner, "summarize",
@@ -371,14 +393,21 @@ def priced(loop, tmp_path, monkeypatch):
     llm.load_models.cache_clear()
     base = cli.runner.run
 
-    def run_with_usage(spec_, domain, split, **kw):
-        rows = base(spec_, domain, split, **kw)
+    # backend None is what every offline run records; pricing must fall back to the model
+    # the node's tier requested, not silently charge 0.
+    usage = {"executor": {"tokens_in": 1000, "tokens_out": 1000, "backend": None, "ms": 1.0}}
+
+    def run_with_usage(spec_, domain, split, *, on_row=None, **kw):
+        # The real runner fills per_node before firing on_row, so the budget callback sees a
+        # priced row. Decorating after the split returned would charge every task as free.
+        def decorate(row):
+            row["per_node"] = dict(usage)
+            if on_row is not None:
+                on_row(row)
+
+        rows = base(spec_, domain, split, on_row=decorate, **kw)
         for row in rows:
-            # backend None is what every offline run records; pricing must fall back to the
-            # model the node's tier requested, not silently charge 0.
-            row["per_node"] = {
-                "executor": {"tokens_in": 1000, "tokens_out": 1000, "backend": None, "ms": 1.0}
-            }
+            row.setdefault("per_node", dict(usage))
         return rows
 
     monkeypatch.setattr(cli.runner, "run", run_with_usage)

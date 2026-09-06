@@ -18,6 +18,7 @@ import functools
 import json
 import logging
 import math
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -51,6 +52,7 @@ ROW_KEYS: tuple[str, ...] = (
 NODE_KEYS: tuple[str, ...] = ("tokens_in", "tokens_out", "backend", "ms")
 
 RunTask = Callable[..., Any]
+OnRow = Callable[[dict], None] | None
 
 
 def default_concurrency() -> int:
@@ -141,27 +143,42 @@ async def _run_all(
     iteration: int,
     seed: int,
     concurrency: int,
+    on_row: OnRow = None,
 ) -> list[dict]:
-    """Fan tasks out over a thread pool of exactly ``concurrency`` workers, in task order."""
-    loop = asyncio.get_running_loop()
+    """Fan tasks out over a thread pool of exactly ``concurrency`` workers, in task order.
 
-    def submit(task: Any) -> asyncio.Future[dict]:
+    ``on_row`` is called once per completed task, serialised under a lock so a caller can
+    accumulate spend without racing. If it raises, no task that has not already started will
+    start, and the exception is re-raised once the in-flight ones drain -- so an aborted run
+    overshoots by at most ``concurrency`` tasks rather than by a whole split.
+    """
+    loop = asyncio.get_running_loop()
+    stop: list[BaseException] = []
+    lock = threading.Lock()
+
+    def guarded(task: Any) -> dict | None:
+        if stop:
+            return None
+        row = _run_one(run_task, spec, task, domain, split, iteration, seed)
+        if on_row is not None:
+            with lock:
+                if not stop:
+                    try:
+                        on_row(row)
+                    except BaseException as exc:  # noqa: BLE001 - re-raised to the caller below
+                        stop.append(exc)
+        return row
+
+    def submit(task: Any) -> asyncio.Future[dict | None]:
         # copy_context() carries the caller's contextvars (run context) into the pool thread.
-        call = functools.partial(
-            contextvars.copy_context().run,
-            _run_one,
-            run_task,
-            spec,
-            task,
-            domain,
-            split,
-            iteration,
-            seed,
-        )
+        call = functools.partial(contextvars.copy_context().run, guarded, task)
         return loop.run_in_executor(pool, call)
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency), thread_name_prefix="anneal") as pool:
-        return list(await asyncio.gather(*(submit(t) for t in tasks)))
+        rows = list(await asyncio.gather(*(submit(t) for t in tasks)))
+    if stop:
+        raise stop[0]
+    return [row for row in rows if row is not None]
 
 
 def run_path(
@@ -220,12 +237,14 @@ def run(
     concurrency: int | None = None,
     run_task: RunTask | None = None,
     runs_dir: Path | str | None = None,
+    on_row: OnRow = None,
 ) -> list[dict]:
     """Run ``spec`` over every task in ``split``; write and return the contract rows.
 
     Rows come back in ``load_tasks`` order regardless of completion order. ``run_task``
     defaults to ``anneal.runtime.run_task``; tests inject a stub. ``runs_dir`` defaults to
-    ``<repo>/runs``.
+    ``<repo>/runs``. ``on_row`` fires per completed task and may raise to abort the split,
+    which is how ``--budget`` stops spending without waiting for the split to finish.
     """
     tasks = list(domain.eval.load_tasks(split))
     rows = asyncio.run(
@@ -238,6 +257,7 @@ def run(
             iteration,
             seed,
             concurrency if concurrency is not None else default_concurrency(),
+            on_row,
         )
     )
     path = run_path(runs_dir, domain.name, iteration, spec.id, split, seed)

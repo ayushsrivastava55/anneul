@@ -117,7 +117,13 @@ def _charge(loop: Loop, candidate: Any, rows: list[dict]) -> float:
 
 
 def _budgeted_run(loop: Loop) -> Any:
-    """A ``runner.run`` with ``--concurrency``/``--runs-dir`` bound and spend metered."""
+    """A ``runner.run`` with ``--concurrency``/``--runs-dir`` bound and spend metered.
+
+    Spend is charged per completed task, not per finished split. Charging a whole split at
+    once meant the cap could not interrupt work already running: a 10-task airline split at
+    ~$0.28/task blew a $0.50 budget out to $2.85 before anyone looked. Overshoot is now
+    bounded by whatever is in flight, i.e. ``--concurrency`` tasks.
+    """
 
     def run(spec_, domain, split, *, iteration=0, seed=0, **kw):
         if loop.spend >= loop.budget:
@@ -125,12 +131,11 @@ def _budgeted_run(loop: Loop) -> Any:
                 f"budget exhausted before running {spec_.id}: "
                 f"spent ${loop.spend:.4f} of ${loop.budget:.2f}"
             )
-        rows = runner.run(
+        return runner.run(
             spec_, domain, split, iteration=iteration, seed=seed,
             concurrency=loop.concurrency, runs_dir=loop.runs_dir,
+            on_row=lambda row: _charge(loop, spec_, [row]),
         )
-        _charge(loop, spec_, rows)
-        return rows
 
     return run
 

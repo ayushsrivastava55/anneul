@@ -1,22 +1,29 @@
 # Model tiers used by Architect (initial assignment) and Anneal (downshift order).
-# Fill model ids and prices from the keys you receive in Discord. Prices are USD per 1M tokens.
 # Keep this the ONLY place model names live.
+#
+# All three tiers are Anthropic, reached through its OpenAI-SDK compatibility layer
+# (FRONTIER_BASE_URL=https://api.anthropic.com/v1/), so anneal/llm.py needs no code change.
+#
+# Prices are USD per 1M tokens, base input / output, from platform.claude.com/docs pricing
+# checked 6 Sep 2026. Note Sonnet 5 moved from $2/$10 to $3/$15 on 1 Sep 2026; the current
+# rate is used here. These numbers are what the reported $/task column is computed from, so
+# re-check them if the run happens after a price change.
 tiers:
   frontier:
-    provider: frontier          # direct key if TensorMux passthrough is unavailable
-    model: REPLACE_ME           # e.g. the strongest model you have access to
-    price_in: 0.0
-    price_out: 0.0
+    provider: frontier
+    model: claude-opus-5
+    price_in: 5.0
+    price_out: 25.0
   mid:
-    provider: tensormux
-    model: REPLACE_ME           # e.g. a 70B-class open model on TensorMux hosted
-    price_in: 0.0
-    price_out: 0.0
+    provider: frontier
+    model: claude-sonnet-5
+    price_in: 3.0
+    price_out: 15.0
   cheap:
-    provider: tensormux         # or aigi
-    model: REPLACE_ME           # e.g. an 8B-class model or the AIGI "nano" key
-    price_in: 0.0
-    price_out: 0.0
+    provider: frontier
+    model: claude-haiku-4-5-20251001
+    price_in: 1.0
+    price_out: 5.0
 downshift_order: [frontier, mid, cheap]
 providers:
   tensormux: {base_url_env: TENSORMUX_BASE_URL, api_key_env: TENSORMUX_API_KEY}
