@@ -27,7 +27,7 @@ Phase: 1 core loop merged (architect, runtime, runner, diagnose, mutate, gate). 
 |---|---|---|---|
 | anneal-17 | 2.4 ao-spawn | ao/ao-spawn | merged; selftest spawned real session anneal-27 |
 | anneal-18 | 3.1 domain-invoice | ao/domain-invoice | merged |
-| anneal-19 | 3.2 domain-bugfix | ao/domain-bugfix | working |
+| anneal-19 | 3.2 domain-bugfix | ao/domain-bugfix | merged (40/40 pairs verified) |
 | anneal-30 | 2.5 synth-tool | ao/synth-tool | merged |
 | anneal-28 | 3.3 anneal-stage + 3.4 cost-attrib | ao/anneal-stage | merged |
 | anneal-29 | 4.1 dodo-credits + 4.2 dodo-ship | ao/dodo-credits | working |
@@ -67,8 +67,18 @@ Anneal itself through anneal/ao.py, plus 5 killed first-attempt sessions kept fo
 (`HOLDOUT_SPLIT`) exists only in `anneal/gate.py`, and the annealing stage evaluates by
 delegating to gate. This is deliberate and compliant; do not "fix" it by inlining the split.
 
+## Three-domain check (definition of done)
+All three domains load through the identical `anneal.domain.load_domain`, verified:
+
+    airline   tools=13  train=20 search=10  THRESHOLD=1.0
+    invoices  tools= 4  train=30 search=15  THRESHOLD=1.0
+    bugfix    tools= 2  train=20 search=10  THRESHOLD=1.0
+
+`anneal/` contains no static import of any domain module; the only `domains.` occurrences are
+dynamically built dotted paths for importlib and docstrings.
+
 ## Latest numbers
-main: 284 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 297 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
