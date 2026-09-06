@@ -482,7 +482,7 @@ def line_chart(points: list[Point], metric: str, title: str, fmt: str) -> str:
     known = [(label, v) for label, v in pairs if v is not None]
     if not known:
         return (
-            f'<div class="chart empty"><h4>{escape(title)}</h4>'
+            f'<div class="chart {escape(metric)} empty"><h4>{escape(title)}</h4>'
             f'<p class="note">no {escape(title)} recorded in these summaries</p></div>'
         )
     w, h, pad = 260.0, 130.0, 26.0
@@ -499,7 +499,7 @@ def line_chart(points: list[Point], metric: str, title: str, fmt: str) -> str:
         for (label, v), x, y in zip(known, xs, ys, strict=True)
     )
     return (
-        f'<div class="chart"><h4>{escape(title)}</h4>'
+        f'<div class="chart {escape(metric)}"><h4>{escape(title)}</h4>'
         f'<svg viewBox="0 0 {w:.0f} {h:.0f}" role="img" aria-label="{escape(title)}">'
         f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad / 2}" y2="{h - pad}" class="axis"/>'
         f'<line x1="{pad}" y1="{pad / 2}" x2="{pad}" y2="{h - pad}" class="axis"/>'
@@ -944,7 +944,8 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
 .panel { border-bottom:1px solid var(--rule); padding:16px; background:var(--panel); }
 .ph { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
 .ph h2 { margin:0; font-size:11px; font-weight:500; text-transform:uppercase;
-  letter-spacing:0.14em; color:var(--ash); }
+  letter-spacing:0.14em; color:var(--ash);
+  font-family:"Geist Mono",ui-monospace,monospace; }
 .ph .meta { font-size:11px; color:var(--ash); }
 .note { color:var(--graphite); font-size:12px; margin:8px 0; max-width:65ch; }
 
@@ -1006,8 +1007,11 @@ code { font-family:"Geist Mono",ui-monospace,monospace; color:var(--ink); }
   font-family:"Geist Mono",ui-monospace,monospace; }
 svg { width:100%; height:auto; }
 .axis { stroke:var(--rule); stroke-width:1; }
-.series { fill:none; stroke:var(--orange); stroke-width:2; }
-.chart circle { fill:var(--orange); }
+.series { fill:none; stroke:var(--ink); stroke-width:1.5; }
+.chart circle { fill:var(--ink); }
+/* the accent marks the measured score curve; the other series stay in Ink */
+.chart.score .series { stroke:var(--orange); stroke-width:2; }
+.chart.score circle { fill:var(--orange); }
 .tick { fill:var(--ash); font-size:9px;
   font-family:"Geist Mono",ui-monospace,monospace; }
 .latest { margin:6px 0 0; color:var(--graphite); font-size:11px; }
@@ -1025,9 +1029,14 @@ svg { width:100%; height:auto; }
 """
 
 SCRIPT = """
+// Re-fetch each region every 10s and swap it only when its markup actually changed, so the
+// mount cascade plays once per real update instead of flickering the whole page on a timer.
 const ids=['topbar','rail','candidates','live','ledger','gate','pareto','curves'];
+const last={};
 setInterval(()=>{for(const id of ids){
   fetch('/fragments/'+id+location.search).then(r=>r.text()).then(html=>{
+    if(html===last[id]) return;
+    last[id]=html;
     const el=document.getElementById(id); if(el) el.outerHTML=html;
   }).catch(()=>{});
 }},10000);

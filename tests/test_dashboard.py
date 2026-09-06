@@ -493,7 +493,6 @@ def test_live_run_never_opens_the_reserved_split(tmp_path: Path) -> None:
     reserved.write_text(json.dumps({"task_id": "reserved-task", "score": 1.0}), encoding="utf-8")
     body = TestClient(dashboard.create_app(runs, tmp_path / "l.json")).get("/").text
     assert "reserved-task" not in body
-    assert "holdout" not in dashboard.__file__ or True  # the module never names that split
     assert "holdout" not in Path(dashboard.__file__).read_text(encoding="utf-8")
 
 
