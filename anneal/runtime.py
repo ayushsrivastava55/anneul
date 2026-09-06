@@ -31,6 +31,9 @@ JSON-schema dict (e.g. ``schema_ref: output_schema`` -> ``eval.output_schema``).
 attribute is absent no check runs; when present and the final output fails the shallow
 required/type check, ``schema_error`` is set.
 
+A node's tool schema uses ``spec.tool_overrides[name]`` as the description when the spec
+carries one (written by ``mutate.rewrite_tool_desc``), else the tools.yaml text.
+
 Tool dispatch: ``python:<module>.<fn>`` via ``importlib.import_module`` on the dotted module
 path; ``mcp:`` raises ``NotImplementedError`` for now. Arguments get a shallow
 required/type check against the JSON schema in tools.yaml (``jsonschema`` is not a
@@ -190,12 +193,13 @@ def invoke_tool(tool: ToolSpec, args: dict[str, Any]) -> str:
     return result if isinstance(result, str) else json.dumps(result, default=str)
 
 
-def _openai_tool(tool: ToolSpec) -> dict[str, Any]:
+def _openai_tool(tool: ToolSpec, description: str | None = None) -> dict[str, Any]:
+    """Tool schema for the model. ``description`` overrides the manifest text when given."""
     return {
         "type": "function",
         "function": {
             "name": tool.name,
-            "description": tool.description,
+            "description": description or tool.description,
             "parameters": tool.args or {"type": "object", "properties": {}},
         },
     }
@@ -325,7 +329,11 @@ class _Run:
         if self.steps >= self.spec.step_budget:
             self.hit_step_budget = True
             raise StepBudgetExceeded(node.name)
-        tools = [_openai_tool(self.tools_by_name[n]) for n in node.tools if n in self.tools_by_name]
+        tools = [
+            _openai_tool(self.tools_by_name[n], self.spec.tool_overrides.get(n))
+            for n in node.tools
+            if n in self.tools_by_name
+        ]
         traced = tracing.llm_span(f"llm.{node.name}")(self._complete)
         message, usage = traced(node.model_tier, messages, tools or None)
         self.steps += 1
