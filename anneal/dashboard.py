@@ -78,7 +78,14 @@ def _first(*values: float | None) -> float | None:
 
 
 def _read_json(path: Path) -> Any | None:
-    """Parse ``path``; malformed or unreadable JSON is skipped with a log line, never raised."""
+    """Parse ``path``; malformed or unreadable JSON is skipped with a log line, never raised.
+
+    A file that simply is not there yet is not a fault: every domain lacks a pareto.json
+    until the downshift stage runs for it, and warning about that on every page render makes
+    a normal dashboard look broken.
+    """
+    if not path.exists():
+        return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
