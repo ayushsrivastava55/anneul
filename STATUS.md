@@ -124,7 +124,11 @@ BUT the run exposed two blocking defects in our own system:
    output_format failures are invisible and diagnose logs them as wrong_tool (18 counts).
    The wrong operator is then applied and correctly rejected - which is why nothing is ever
    promoted.
-Fix in flight: anneal-37 (architect-fix). Until it lands, no number here is a capability claim.
+Full run completed: iteration 1 (add_fewshots) also rejected, hard_fails 2 > incumbent 1;
+stopped on plateau. Hard fails did fall 3 -> 1 across the run, a real reliability gain.
+Fixes in flight: anneal-37 (architect-fix), anneal-38 (readme-final, incl. $/task printing as
+0.000 when the real value is 0.000169). Until anneal-37 lands, no score here is a capability
+claim - the agent was never calling tools.
 
 ## Latest numbers
 main: 412 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
