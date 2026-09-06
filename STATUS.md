@@ -77,8 +77,21 @@ All three domains load through the identical `anneal.domain.load_domain`, verifi
 `anneal/` contains no static import of any domain module; the only `domains.` occurrences are
 dynamically built dotted paths for importlib and docstrings.
 
+## Integration bugs found by the e2e test (all fixed except where noted)
+Unit tests passed on every module; these only appeared when the modules ran together.
+1. Gate's reserved-split runs overwrote the incumbent's search rows (same filename). Would have
+   corrupted every reported number. Fixed: filenames now carry split and seed; guarded by a test.
+2. `rewrite_tool_desc` wrote `spec.tool_overrides`, which the runtime never read, so those
+   candidates ran identically to their parent and could never pass the gate. Fixed.
+3. Airline domain shared one DB across concurrent tasks, so tasks scored each other. Fixed with
+   per-task context isolation. invoices/bugfix reported clean by the domain worker.
+4. Cost always resolved to $0 because the price fallback was never passed, so `--budget` could
+   never halt the loop. Fixed.
+5. Row `iteration` disagreed with span `iteration`, breaking any join from runs to traces.
+   Fixed; the loop counter is authoritative.
+
 ## Latest numbers
-main: 297 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
+main: 369 passed, 1 skipped (skip = live gateway call, no key). Holdout literal confined to gate.py.
 
 ## Old latest numbers
 none
