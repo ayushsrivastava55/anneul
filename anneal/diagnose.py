@@ -40,6 +40,8 @@ import httpx
 import yaml
 
 from anneal import config, llm
+from anneal.mcp import decode_response as _decode_mcp_response
+from anneal.mcp import mcp_content as _mcp_content
 from anneal.tracing import llm_span, tool_span
 
 logger = logging.getLogger("anneal.diagnose")
@@ -233,30 +235,6 @@ class NeatlogsMCP:
             )
             return None
         return result if isinstance(result, dict) else {"context": result}
-
-
-def _decode_mcp_response(response: Any) -> dict[str, Any]:
-    """Parse a JSON or SSE (``data:`` lines) MCP response body into the JSON-RPC envelope."""
-    content_type = str(response.headers.get("content-type", ""))
-    if "text/event-stream" not in content_type:
-        return response.json()
-    last: dict[str, Any] = {}
-    for line in response.text.splitlines():
-        if line.startswith("data:"):
-            last = json.loads(line[5:].strip() or "{}")
-    return last
-
-
-def _mcp_content(result: dict[str, Any]) -> Any:
-    """Flatten MCP ``content`` blocks; decode the text as JSON when it is JSON."""
-    if "structuredContent" in result:
-        return result["structuredContent"]
-    texts = [c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"]
-    joined = "\n".join(texts)
-    try:
-        return json.loads(joined)
-    except ValueError:
-        return joined
 
 
 def default_trace_source(rows: Iterable[Row]) -> TraceSource:
