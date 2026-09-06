@@ -321,6 +321,20 @@ def _iteration(
     if result.promoted:
         loop.rejects = 0
         return candidate, cand_rows, body
+    # A plateau is meant to mean "we tried things and they genuinely do not help". A
+    # rejection the gate itself flags as underpowered means only "too few discordant tasks
+    # for any verdict", so counting it conceded the loop on no evidence. That is not
+    # hypothetical: PLATEAU is 2, and both airline and bugfix stopped at iteration 1 on two
+    # such rejections -- one iteration before rewrite_tool_desc, the third operator listed
+    # for their top-ranked issue, would have been tried at all.
+    if gate.is_underpowered(result.wins, result.losses):
+        body["underpowered"] = True
+        console.print(
+            f"    [yellow]not counted toward plateau: only {result.wins + result.losses} "
+            f"discordant task(s), need {gate._min_discordant_to_promote()} for any verdict"
+            "[/yellow]"
+        )
+        return incumbent, rows, body
     loop.rejects += 1
     if loop.rejects >= PLATEAU:
         body["stop_reason"] = "plateau"

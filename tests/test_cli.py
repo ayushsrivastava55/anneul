@@ -77,6 +77,10 @@ def loop(monkeypatch, tmp_path):
         "scores": {},
         "promote": True,
         "classes": ["wrong_tool", "output_format", "unsupported_claim"],
+        # Enough discordant pairs that a rejection carries evidence. Below
+        # gate._min_discordant_to_promote() a rejection is underpowered and, by design,
+        # does not count toward the plateau -- tests that want a plateau need this powered.
+        "wins": 4,
     }
 
     def fake_propose(domain, n=3, **kw):
@@ -127,7 +131,7 @@ def loop(monkeypatch, tmp_path):
         )
         return gate.GateResult(
             domain=domain.name, iteration=iteration, incumbent=inc, candidate=cand,
-            wins=3, losses=0, p=0.01 if promoted else 0.9, promoted=promoted,
+            wins=state["wins"], losses=0, p=0.01 if promoted else 0.9, promoted=promoted,
             reason="promoted" if promoted else "p 0.900 >= alpha 0.1",
             path=Path(runs_dir) / domain.name / str(iteration) / "gate.json",
         )
@@ -234,6 +238,26 @@ def test_plateau_stops_after_two_consecutive_rejects(loop, tmp_path):
     assert run_cli(tmp_path, "--iterations", "6") == 0
     assert len(summaries(tmp_path)) == 2
     assert summaries(tmp_path)[-1]["stop_reason"] == "plateau"
+
+
+def test_underpowered_rejects_do_not_count_toward_the_plateau(loop, tmp_path):
+    """A plateau must mean "tried it, does not help", not "could not measure".
+
+    This is the loop-level half of the airline/bugfix stall: with PLATEAU at 2, two
+    rejections that no sample size could have decided ended the run at iteration 1 --
+    before rewrite_tool_desc, the third operator listed for the top-ranked issue, was ever
+    reached. So the loop conceded on no evidence and never tried the tool-learning fix.
+    """
+    loop.state["promote"] = False
+    loop.state["wins"] = 1  # one discordant task: no verdict is arithmetically possible
+    assert run_cli(tmp_path, "--iterations", "5") == 0
+    got = summaries(tmp_path)
+    assert all(s["decision"] == "reject" for s in got)
+    assert all(s.get("underpowered") for s in got)
+    assert not any(s["stop_reason"] == "plateau" for s in got), "conceded without evidence"
+    # Runs the full budget of iterations rather than giving up at PLATEAU, which is what
+    # lets a later operator in the issue's list get its turn at all.
+    assert len(got) == 5 > cli.PLATEAU
 
 
 def test_promote_resets_the_plateau_counter(loop, tmp_path):

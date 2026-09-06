@@ -201,13 +201,18 @@ def decide(candidate: SpecMetrics, incumbent: SpecMetrics, p: float) -> tuple[bo
     return True, "promoted"
 
 
-def underpowered(result: PairedResult) -> bool:
-    """True when the rejection was arithmetic, not evidence.
+def is_underpowered(wins: int, losses: int) -> bool:
+    """True when no verdict was arithmetically reachable from this many discordant pairs.
 
-    With fewer discordant pairs than ``min_discordant_to_promote`` no outcome could have
-    cleared alpha, however one-sided the win. Such a rejection says nothing about the
-    candidate and must not be read as "the change did not help".
+    Below ``_min_discordant_to_promote`` no outcome could have cleared alpha, however
+    one-sided the win. Such a rejection says nothing about the candidate and must not be
+    read as "the change did not help" -- nor counted toward a plateau.
     """
+    return wins + losses < _min_discordant_to_promote()
+
+
+def underpowered(result: PairedResult) -> bool:
+    """``is_underpowered`` for a computed :class:`PairedResult`."""
     return result.wins + result.losses < result.min_discordant_to_promote
 
 
