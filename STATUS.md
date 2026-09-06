@@ -140,14 +140,13 @@ Shared interfaces for Phase 1 are pinned in docs/CONTRACTS.md.
 - [x] 0.4 anneal-8 - anneal/tracing.py: init_tracing (once, no-op without key), wrap_client, node_span/tool_span/llm_span (sync+async, offline pass-through), run-context tags via contextvar, flush/shutdown, current_trace_id; tests/test_tracing.py (15 tests); smoke `uv run python -m anneal.tracing`
 
 ## Blockers
-- **THE blocker: the system has never run against a real model.** No `.env` on the build
-  machine, and every tier in `specs/models.yaml` is still `REPLACE_ME`. `runs/` holds nothing
-  but `.gitkeep`, so every cell of the README results table is still an em-dash. All 372 tests
-  are offline: they inject a fake client and resolve `REPLACE_ME` as an ordinary model id.
-  Nothing else on this list matters until one OpenAI-compatible key exists.
-  Unblocking needs exactly two things: fill `.env`, and put real model ids + prices in
-  `specs/models.yaml`. Any OpenAI-compatible endpoint works; `llm.get_client` reads
-  `base_url`/`api_key` from the env vars named per provider in that file.
+- ~~THE blocker: the system has never run against a real model.~~ **Cleared 6 Sep**: all
+  five tiers live (`.env` filled, `specs/models.yaml` real), `runs/` holds completed
+  airline + invoices + bugfix runs and the README table is generated from them.
+- Dodo Payments: no key was ever obtained; billing stays unwired and is documented as out
+  of scope (`HANDOFF.md`). The only sponsor not exercised.
+- Push to GitHub needs an authenticated human: this machine's git has no credential for
+  `ayushsrivastava55/anneul` (local SSH identity is a different account).
 - Docker daemon down (only needed for the optional TensorMux OSS gateway).
 
 ## Cleared
@@ -263,11 +262,19 @@ Do not fix this by raising k until it looks good. Report the floor.
 - Unused on purpose: smallest.ai voice (no voice domain) and Dodo (no key yet).
 
 ## Latest numbers
-main: 387 passed, 1 deselected. The deselected one is the live gateway call, now behind
-`-m live`; the default suite is offline by contract and `tests/conftest.py` strips sponsor
-keys so no test can drift onto a live API.
-Live results are being regenerated: the numbers from the first pass all came from the
-frozen gate above, so airline, bugfix and invoices are all re-running.
+main: 417 passed, 1 deselected (the live gateway call behind `-m live`; the default suite
+is offline by contract and `tests/conftest.py` strips sponsor keys).
+Live results (README table is generated from `runs/` by the AO-built splicer):
+- **invoices**: annealed Sonnet -> gpt-5-nano, score 0.989 -> 1.000, ~29x cheaper,
+  $0.0014/task, zero hard fails. Both sponsor tiers on the Pareto front.
+- **airline** (mid): loop tried 4 operators, all honestly rejected; anneal cut hard fails
+  5 -> 3, $/task -28%, p95 -36%.
+- **bugfix** (flash baseline, clean run): incumbent 0.933-0.967, five operators rejected,
+  the last at p=0.125 - one discordant pair short, which is what motivated the escalating
+  gate.
+- **runs-learning/airline** (cheap baseline, escalating gate): five rejects; iteration 3
+  escalated 2-0 -> 3-2 (p=0.5), a false promotion avoided in the field.
+- **runs-learning/bugfix** (flash, escalating gate): in flight at freeze time.
 
 ## Old latest numbers
 none
