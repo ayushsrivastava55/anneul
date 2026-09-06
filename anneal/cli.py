@@ -46,7 +46,7 @@ logger = logging.getLogger("anneal.cli")
 COMMANDS: dict[str, str] = {
     "run": "generate, run, diagnose, mutate and gate candidates for a domain",
     "gate": "re-run the held-out gate on the incumbent",
-    "report": "print the markdown results row(s) from runs/<domain>/<iter>/summary.json",
+    "report": "render the README results block from runs/<domain>/<iter>/summary.json",
     "anneal": "downshift node models along the cost/latency Pareto front",
     "dashboard": "serve the runs/ dashboard on http://localhost:8000",
 }
@@ -523,52 +523,198 @@ def _num(value: Any, digits: int = 3) -> str:
     return DASH if value is None else f"{float(value):.{digits}f}"
 
 
+def _usd(value: Any) -> str:
+    """A cost in dollars at three significant figures -- never a non-zero cost as ``0.000``.
+
+    Local runs cost fractions of a cent per task ($0.000169 is a real figure from the first
+    invoices run), so fixed decimals silently report them as free. ``%g`` keeps three real
+    digits wherever the magnitude lands and switches to exponent notation below 1e-4.
+    """
+    if value is None:
+        return DASH
+    number = float(value)
+    return "0" if number == 0 else f"{number:.3g}"
+
+
+def _secs(ms: Any) -> str:
+    """A latency in seconds with one decimal; 148281 ms is not a number anyone can read."""
+    return DASH if ms is None else f"{float(ms) / 1000:.1f}"
+
+
+def _gate_json(runs_dir: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """The gate.json this iteration wrote, or {} when no gate ran.
+
+    Resolved under ``runs_dir`` rather than from ``body["gate_path"]``: that path is absolute
+    on the machine that produced the run and means nothing anywhere else.
+    """
+    path = Path(runs_dir) / str(body["domain"]) / str(body["iteration"]) / "gate.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _p_value(body: dict[str, Any], gate_json: dict[str, Any]) -> Any:
+    """The exact binomial p of the gate run at this iteration, from summary or gate.json."""
+    p = body.get("p_value")
+    return gate_json.get("p") if p is None else p
+
+
+def _gen_gap(block: dict[str, Any], search: dict[str, Any]) -> Any:
+    """search mean - reserved-split mean, exactly as ``gate.spec_metrics`` defines it.
+
+    The gate only computes a gen_gap for the candidate, so the incumbent's is null in both
+    summary.json and gate.json. Both terms are still on record, so recompute rather than
+    print an em-dash: the gated mean from the gate block, the search mean from summary.
+    """
+    if block.get("gen_gap") is not None:
+        return block["gen_gap"]
+    gated, searched = block.get("mean_score"), search.get("mean_score")
+    if gated is None or searched is None:
+        return None
+    return float(searched) - float(gated)
+
+
 def _row(domain: str, stage: str, block: dict[str, Any], search: dict[str, Any], p: Any) -> str:
     cells = [
         domain, stage, _num(block.get("mean_score")), _num(block.get("pass3_rate")),
-        _num(block.get("gen_gap")),
+        _num(_gen_gap(block, search)),
         DASH if block.get("hard_fails") is None else str(block["hard_fails"]),
-        _num(search.get("cost_per_task")), _num(search.get("p95_latency_ms"), 0), _num(p),
+        _usd(search.get("cost_per_task")), _secs(search.get("p95_latency_ms")), _num(p),
     ]
     return "| " + " | ".join(cells) + " |"
 
 
-def _winner_block(summaries: list[dict[str, Any]]) -> tuple[dict[str, Any], Any]:
-    """Metrics of the spec that survived the last iteration, plus its gate p-value.
+def _winner_block(runs_dir: Path, summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Metrics of the spec that survived the last iteration.
 
     The final iteration may have halted before the gate ran (budget, no operator left), so
-    walk backwards to the most recent summary that actually scored the winning spec.
+    walk backwards to the most recent iteration that actually scored the winning spec, taking
+    the metrics from that summary or, when it recorded none, from the gate.json beside it.
     """
     winner = summaries[-1]["winner_id"]
     for body in reversed(summaries):
+        gate_json = _gate_json(runs_dir, body)
         for key in ("candidate", "incumbent"):
-            block = body.get(key) or {}
+            block = _blocks(body, gate_json, key)
             if block.get("candidate_id") == winner:
-                return block, (body.get("p_value") if key == "candidate" else None)
-    return {}, None
+                return block
+    return {}
 
 
-def _report_rows(summaries: list[dict[str, Any]]) -> list[str]:
+def _blocks(body: dict[str, Any], gate_json: dict[str, Any], key: str) -> dict[str, Any]:
+    """The summary's ``incumbent``/``candidate`` metrics, falling back to the gate's own copy."""
+    return body.get(key) or gate_json.get(key) or {}
+
+
+def _last_p(runs_dir: Path, bodies: list[dict[str, Any]]) -> Any:
+    """The p-value of the most recent iteration whose gate produced one, else None."""
+    for body in reversed(bodies):
+        p = _p_value(body, _gate_json(runs_dir, body))
+        if p is not None:
+            return p
+    return None
+
+
+def _report_rows(runs_dir: Path, summaries: list[dict[str, Any]]) -> list[str]:
+    """Two rows per domain: the iteration-0 baseline and whatever survived the last gate."""
     rows: list[str] = []
     for name in dict.fromkeys(b["domain"] for b in summaries):
         got = [b for b in summaries if b["domain"] == name]
         first, last = got[0], got[-1]
-        rows.append(
-            _row(name, "iteration 0", first.get("incumbent") or {},
-                 first["search"].get(first["incumbent_id"], {}), None)
-        )
-        block, p = _winner_block(got)
-        rows.append(_row(name, "final", block, last["search"].get(last["winner_id"], {}), p))
+        first_gate = _gate_json(runs_dir, first)
+        rows.append(_row(
+            name, "iteration 0", _blocks(first, first_gate, "incumbent"),
+            first["search"].get(first["incumbent_id"], {}), _p_value(first, first_gate),
+        ))
+        rows.append(_row(
+            name, "final", _winner_block(runs_dir, got),
+            last["search"].get(last["winner_id"], {}), _last_p(runs_dir, got),
+        ))
     return rows
 
 
+def _rejected_rows(summaries: list[dict[str, Any]], runs_dir: Path) -> list[str]:
+    """One row per mutation the gate refused, naming the condition that failed."""
+    rows = []
+    for body in summaries:
+        gate_json = _gate_json(runs_dir, body)
+        decision = body.get("decision") or gate_json.get("decision")
+        if decision != "reject":
+            continue
+        reason = body.get("reason") or gate_json.get("reason") or DASH
+        rows.append(
+            f"| {body['domain']} | {body['iteration']} | "
+            f"{body.get('operator') or DASH} | {reason} |"
+        )
+    return rows
+
+
+HEADER = (
+    "| Domain | Stage | Holdout acc | pass^3 | Gen gap | Hard fails | $/task | p95 s | p (gate) |"
+    "\n|---|---|---|---|---|---|---|---|---|"
+)
+REJECT_HEADER = (
+    "**Rejected mutations** — the gate refusing to promote, and which condition failed.\n\n"
+    "| Domain | Iteration | Operator | Gate condition that failed |\n|---|---|---|---|"
+)
+NO_REJECTS = "**Rejected mutations** — no rejected mutations in these runs."
+FOOTNOTE = f"""\
+`{DASH}` means the value does not exist in the runs (no gate ran at that iteration, or the
+spec was never scored on that split) — it is never a zero and never a rounded-away number.
+Holdout accuracy, pass^3, hard fails and p come from the gate's `gate.json`; `$/task` and p95
+are measured on the search split. Gen gap is the search mean minus the gated mean, recomputed
+from those two recorded means when the gate stored it only for the candidate.
+
+Inference is **local** (Ollama, qwen2.5 3b / 1.5b / 0.5b), so these runs cost $0 in real money.
+Tokens and latency are measured. USD is those measured tokens priced at the reference rates in
+`specs/models.yaml`, where each tier carries a `price_source` (`published` or `scaled`); the
+sub-7B rates are scaled from a published 7B rate, not quoted. Do not read `$/task` as the cost
+of a hosted provider."""
+
+
+def render_block(runs_dir: Path | str, summaries: list[dict[str, Any]]) -> str:
+    """The markdown that goes between the README result markers. Every cell comes from runs/."""
+    runs_dir = Path(runs_dir)
+    rejected = _rejected_rows(summaries, runs_dir)
+    parts = [
+        HEADER + "\n" + "\n".join(_report_rows(runs_dir, summaries)),
+        ("\n".join([REJECT_HEADER, *rejected]) if rejected else NO_REJECTS),
+        FOOTNOTE,
+    ]
+    return "\n\n".join(parts) + "\n"
+
+
+RESULTS_START = "<!-- results:start -->"
+RESULTS_END = "<!-- results:end -->"
+
+
+def write_readme(path: Path, block: str) -> None:
+    """Replace the marked results block in ``path`` and touch nothing else."""
+    text = path.read_text(encoding="utf-8")
+    head, marker, rest = text.partition(RESULTS_START)
+    body, end, tail = rest.partition(RESULTS_END)
+    if not marker or not end:
+        raise ValueError(f"{path} has no {RESULTS_START} / {RESULTS_END} block")
+    path.write_text(f"{head}{marker}\n{block}{end}{tail}", encoding="utf-8")
+
+
 def cmd_report(args: argparse.Namespace, console: Console) -> int:
-    summaries = _summaries(Path(args.runs_dir))
+    runs_dir = Path(args.runs_dir)
+    summaries = _summaries(runs_dir)
     if not summaries:
         console.print(f"[red]no summary.json under {args.runs_dir}[/red]")
         return 1
-    for line in _report_rows(summaries):
-        print(line)
+    block = render_block(runs_dir, summaries)
+    if args.write_readme:
+        try:
+            write_readme(Path(args.write_readme), block)
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return 1
+        # stdout stays exactly the block, so `anneal report --write-readme` stays pipeable
+        Console(stderr=True).print(f"[green]wrote[/green] {args.write_readme}")
+    print(block, end="")
     return 0
 
 
@@ -601,6 +747,13 @@ def build_parser() -> argparse.ArgumentParser:
                                      metavar="USD")
     sub.choices["gate"].add_argument("--concurrency", type=int, default=None)
     sub.choices["gate"].add_argument("--models", default=None)
+
+    report = sub.choices["report"]
+    report.add_argument("--markdown", action="store_true",
+                        help="print the README results block (the default output)")
+    report.add_argument("--write-readme", nargs="?", const="README.md", default=None,
+                        metavar="PATH",
+                        help="replace the <!-- results --> block in PATH (default README.md)")
     return parser
 
 

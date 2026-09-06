@@ -335,7 +335,11 @@ def test_report_renders_a_markdown_row_from_the_summary(
     offline_loop: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert cli.main(["report", str(offline_loop["runs_dir"])]) == 0
-    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("|")]
+    out = capsys.readouterr().out
+    lines = [
+        line for line in out.splitlines()
+        if any(line.startswith(f"| airline | {stage} |") for stage in ("iteration 0", "final"))
+    ]
     assert len(lines) == 2
     for line, stage in zip(lines, ("iteration 0", "final"), strict=True):
         cells = [c.strip() for c in line.strip("|").split("|")]
